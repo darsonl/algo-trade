@@ -1,8 +1,9 @@
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(Path(__file__).parent / ".env")
 
 
 @dataclass
@@ -28,7 +29,20 @@ class Config:
     scan_hour: int = int(os.getenv("SCAN_HOUR", "9"))
     scan_minute: int = int(os.getenv("SCAN_MINUTE", "0"))
 
-    db_path: str = os.getenv("DB_PATH", "algo_trade.db")
+    db_path: str = os.getenv("DB_PATH", str(Path(__file__).parent / "algo_trade.db"))
+
+    def validate(self):
+        """Call this at startup (in main.py) to fail fast if credentials are missing."""
+        if not self.schwab_app_key:
+            raise ValueError("SCHWAB_APP_KEY is required in .env")
+        if not self.schwab_app_secret:
+            raise ValueError("SCHWAB_APP_SECRET is required in .env")
+        if not self.discord_token:
+            raise ValueError("DISCORD_TOKEN is required in .env")
+        if not self.anthropic_api_key:
+            raise ValueError("ANTHROPIC_API_KEY is required in .env")
+        if not self.discord_channel_id:
+            raise ValueError("DISCORD_CHANNEL_ID is required in .env")
 
 
 config = Config()
