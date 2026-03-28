@@ -1,0 +1,39 @@
+import sqlite3
+
+
+def get_connection(db_path: str) -> sqlite3.Connection:
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def initialize_db(db_path: str) -> None:
+    conn = get_connection(db_path)
+    conn.executescript("""
+        CREATE TABLE IF NOT EXISTS recommendations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker TEXT NOT NULL,
+            signal TEXT NOT NULL,
+            reasoning TEXT NOT NULL,
+            price REAL NOT NULL,
+            dividend_yield REAL,
+            pe_ratio REAL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            expires_at TEXT NOT NULL DEFAULT (datetime('now', '+24 hours')),
+            discord_message_id TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS trades (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            recommendation_id INTEGER NOT NULL,
+            ticker TEXT NOT NULL,
+            shares REAL NOT NULL,
+            price REAL NOT NULL,
+            order_id TEXT,
+            executed_at TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (recommendation_id) REFERENCES recommendations(id)
+        );
+    """)
+    conn.commit()
+    conn.close()
