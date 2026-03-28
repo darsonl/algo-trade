@@ -1,0 +1,10 @@
+.env
+*.db
+schwab_token.json
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+.venv/

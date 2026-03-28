@@ -1,0 +1,4 @@
+# Add tickers one per line, e.g.:
+# AAPL
+# JNJ
+# VYM
