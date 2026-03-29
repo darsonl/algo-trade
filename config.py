@@ -11,6 +11,7 @@ class Config:
     schwab_app_key: str = os.getenv("SCHWAB_APP_KEY", "")
     schwab_app_secret: str = os.getenv("SCHWAB_APP_SECRET", "")
     schwab_callback_url: str = os.getenv("SCHWAB_CALLBACK_URL", "https://127.0.0.1")
+    schwab_account_hash: str = os.getenv("SCHWAB_ACCOUNT_HASH", "")
     paper_trading: bool = os.getenv("PAPER_TRADING", "true").lower() == "true"
     dry_run: bool = os.getenv("DRY_RUN", "true").lower() == "true"
 
@@ -43,6 +44,8 @@ class Config:
             raise ValueError("ANTHROPIC_API_KEY is required in .env")
         if not self.discord_channel_id:
             raise ValueError("DISCORD_CHANNEL_ID is required in .env")
+        if not self.schwab_account_hash:
+            raise ValueError("SCHWAB_ACCOUNT_HASH is required in .env")
 
 
 config = Config()
