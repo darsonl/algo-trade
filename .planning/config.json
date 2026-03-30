@@ -1,0 +1,10 @@
+{
+  "project_name": "Algo Trade Bot",
+  "milestone": "Milestone 1 — Refactor, Harden, Test, Extend",
+  "model_profile": "balanced",
+  "research_enabled": false,
+  "tdd_enabled": true,
+  "git_integration": true,
+  "atomic_commits": true,
+  "verification_required": true
+}
