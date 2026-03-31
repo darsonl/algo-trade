@@ -6,14 +6,16 @@ from pathlib import Path
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-from config import Config, config
+import yfinance as yf
+
+from config import Config
 from database.models import initialize_db
 from database import queries
 from screener.universe import get_watchlist, get_sp500_tickers, get_universe
 from screener.fundamentals import passes_fundamental_filter, fetch_fundamental_info
 from screener.technicals import passes_technical_filter, fetch_technical_data
 from analyst.news import fetch_news_headlines
-from analyst.claude_analyst import analyze_ticker
+from analyst.claude_analyst import analyze_ticker, create_analyst_client
 from discord_bot.bot import TradingBot
 
 logger = logging.getLogger(__name__)
@@ -31,13 +33,15 @@ def should_recommend(signal: str, tech_data: dict, config: Config) -> bool:
 
 
 def configure_scheduler(scheduler: BackgroundScheduler, config: Config, job_fn) -> None:
-    """Register the daily scan job on an existing scheduler instance."""
-    scheduler.add_job(
-        job_fn,
-        trigger=CronTrigger(hour=config.scan_hour, minute=config.scan_minute),
-        id="daily_scan",
-        replace_existing=True,
-    )
+    """Register one scan job per time in config.scan_times."""
+    for i, time_str in enumerate(config.scan_times):
+        hour, minute = map(int, time_str.split(":"))
+        scheduler.add_job(
+            job_fn,
+            trigger=CronTrigger(hour=hour, minute=minute),
+            id=f"scan_{i}",
+            replace_existing=True,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -59,19 +63,22 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
     universe = get_universe(watchlist_path, extra_tickers=sp500)
     logger.info("Universe: %d tickers", len(universe))
 
+    client = create_analyst_client(config)
+
     for ticker in universe:
         if queries.ticker_recommended_today(config.db_path, ticker):
             continue
 
         try:
-            info = fetch_fundamental_info(ticker)
+            yf_ticker = yf.Ticker(ticker)
+            info = fetch_fundamental_info(yf_ticker)
             if not passes_fundamental_filter(info, config):
                 continue
 
             headlines = fetch_news_headlines(ticker)
-            analysis = analyze_ticker(ticker, info, headlines, config)
+            analysis = analyze_ticker(ticker, info, headlines, config, client=client)
 
-            tech_data = fetch_technical_data(ticker)
+            tech_data = fetch_technical_data(yf_ticker)
             if not should_recommend(analysis["signal"], tech_data, config):
                 continue
 
@@ -83,6 +90,7 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
                 price=tech_data["price"],
                 dividend_yield=info.get("dividendYield"),
                 pe_ratio=info.get("trailingPE"),
+                earnings_growth=info.get("earningsGrowth"),
             )
 
             message_id = await bot.send_recommendation(
@@ -109,15 +117,35 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    )
-
+    config = Config()
     config.validate()
+
+    import logging.handlers
+    log_dir = Path(__file__).parent / "logs"
+    log_dir.mkdir(exist_ok=True)
+
+    _log_level = getattr(logging, config.log_level.upper(), logging.INFO)
+    _fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+
+    _file_handler = logging.handlers.RotatingFileHandler(
+        log_dir / "algo_trade.log",
+        maxBytes=5 * 1024 * 1024,
+        backupCount=3,
+        encoding="utf-8",
+    )
+    _file_handler.setFormatter(_fmt)
+
+    _stream_handler = logging.StreamHandler()
+    _stream_handler.setFormatter(_fmt)
+
+    logging.root.setLevel(_log_level)
+    logging.root.addHandler(_file_handler)
+    logging.root.addHandler(_stream_handler)
+
     initialize_db(config.db_path)
 
     bot = TradingBot(config)
+    bot._scan_callback = lambda: run_scan(bot, config)
     scheduler = BackgroundScheduler()
 
     @bot.event
@@ -131,10 +159,6 @@ def main() -> None:
             "Scheduler started — daily scan at %02d:%02d",
             config.scan_hour, config.scan_minute,
         )
-
-    @bot.event
-    async def on_manual_scan():
-        await run_scan(bot, config)
 
     bot.run(config.discord_token)
 

@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 import math
 import logging
 
@@ -8,6 +9,7 @@ from discord import app_commands
 from config import Config
 from database import queries
 from discord_bot.embeds import build_recommendation_embed
+from schwab_client.orders import place_order
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +41,6 @@ class ApproveRejectView(discord.ui.View):
 
         order_id = None
         if not self.config.dry_run:
-            from schwab_client.orders import place_order
             order_id = place_order(self.ticker, shares, self.config)
 
         queries.create_trade(
@@ -71,6 +72,7 @@ class TradingBot(discord.Client):
         super().__init__(intents=intents)
         self.config = config
         self.tree = app_commands.CommandTree(self)
+        self._scan_callback = None  # Set by main.py after construction
 
     async def setup_hook(self):
         self.tree.add_command(
@@ -84,7 +86,8 @@ class TradingBot(discord.Client):
 
     async def _scan_command(self, interaction: discord.Interaction):
         await interaction.response.send_message("Scan triggered — results incoming...")
-        self.dispatch("manual_scan")
+        if self._scan_callback is not None:
+            asyncio.create_task(self._scan_callback())
 
     async def send_recommendation(
         self,
@@ -96,10 +99,7 @@ class TradingBot(discord.Client):
         dividend_yield: float | None,
         pe_ratio: float | None,
     ) -> str:
-        channel = self.get_channel(self.config.discord_channel_id)
-        if channel is None:
-            raise RuntimeError(f"Discord channel {self.config.discord_channel_id} not found")
-
+        channel = await self.fetch_channel(self.config.discord_channel_id)
         embed = build_recommendation_embed(ticker, signal, reasoning, price, dividend_yield, pe_ratio)
         view = ApproveRejectView(rec_id, ticker, price, self.config)
         msg = await channel.send(embed=embed, view=view)
