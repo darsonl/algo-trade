@@ -1,11 +1,44 @@
 from __future__ import annotations
+import anthropic
+import openai
 from config import Config
+from tenacity import retry, stop_after_attempt, wait_exponential
+
+_retry = retry(
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    stop=stop_after_attempt(3),
+    reraise=True,
+)
 
 _VALID_SIGNALS = {"BUY", "HOLD", "SKIP"}
 
+_OPENAI_BASE_URLS: dict[str, str] = {
+    "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/",
+    "github": "https://models.inference.ai.azure.com",
+}
+
+_DEFAULT_MODELS: dict[str, str] = {
+    "claude": "claude-opus-4-6",
+    "openai": "gpt-4o-mini",
+    "gemini": "gemini-2.0-flash",
+    "github": "gpt-4o-mini",
+}
+
+
+def create_analyst_client(config: Config):
+    """Return an SDK client for the configured analyst provider."""
+    provider = config.analyst_provider
+    api_key = config.analyst_api_key
+
+    if provider == "claude":
+        return anthropic.Anthropic(api_key=api_key or config.anthropic_api_key)
+
+    base_url = _OPENAI_BASE_URLS.get(provider)  # None → default OpenAI endpoint
+    return openai.OpenAI(api_key=api_key, base_url=base_url)
+
 
 def build_prompt(ticker: str, info: dict, headlines: list[str]) -> str:
-    """Build the prompt sent to Claude for a single ticker analysis."""
+    """Build the analysis prompt for a single ticker."""
     pe = info.get("trailingPE", "N/A")
     div_yield = info.get("dividendYield", "N/A")
     earnings_growth = info.get("earningsGrowth", "N/A")
@@ -33,7 +66,7 @@ REASONING: <2-3 sentences explaining your decision>"""
 
 def parse_claude_response(text: str) -> dict:
     """
-    Parse Claude's response into {signal, reasoning}.
+    Parse the analyst response into {signal, reasoning}.
     Raises ValueError if the format is invalid or signal is not BUY/HOLD/SKIP.
     """
     lines = text.strip().splitlines()
@@ -52,12 +85,29 @@ def parse_claude_response(text: str) -> dict:
     if signal not in _VALID_SIGNALS:
         raise ValueError(f"Invalid signal '{signal}': must be one of {_VALID_SIGNALS}")
 
-    # Reasoning may span multiple lines after the REASONING: prefix
     first_reasoning_line = lines[reasoning_start].split(":", 1)[1].strip()
     extra_lines = [l.strip() for l in lines[reasoning_start + 1:] if l.strip()]
     reasoning = " ".join([first_reasoning_line] + extra_lines).strip()
 
     return {"signal": signal, "reasoning": reasoning}
+
+
+@_retry
+def _call_api(client, model: str, prompt: str) -> str:
+    """Make the LLM API call. Only this function is retried, not prompt building or response parsing."""
+    if hasattr(client, "messages"):
+        response = client.messages.create(
+            model=model,
+            max_tokens=256,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return response.content[0].text
+    response = client.chat.completions.create(
+        model=model,
+        max_tokens=256,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return response.choices[0].message.content
 
 
 def analyze_ticker(
@@ -68,19 +118,15 @@ def analyze_ticker(
     client=None,
 ) -> dict:
     """
-    Call Claude API to get a BUY/HOLD/SKIP signal for a ticker.
+    Call the configured analyst provider to get a BUY/HOLD/SKIP signal.
     Returns {"signal": str, "reasoning": str}.
-
-    Pass a pre-built anthropic.Anthropic client, or one will be created from config.
     """
     if client is None:
-        import anthropic
-        client = anthropic.Anthropic(api_key=config.anthropic_api_key)
+        client = create_analyst_client(config)
 
+    model = config.analyst_model or _DEFAULT_MODELS.get(config.analyst_provider, "")
     prompt = build_prompt(ticker, info, headlines)
-    message = client.messages.create(
-        model="claude-opus-4-6",
-        max_tokens=256,
-        messages=[{"role": "user", "content": prompt}],
-    )
-    return parse_claude_response(message.content[0].text)
+
+    text = _call_api(client, model, prompt)
+
+    return parse_claude_response(text)

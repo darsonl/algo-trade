@@ -1,5 +1,16 @@
+import yfinance as yf
 import pandas as pd
 from config import Config
+from tenacity import retry, stop_after_attempt, wait_exponential
+
+_retry = retry(
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    stop=stop_after_attempt(3),
+    reraise=True,
+)
+
+MA_WINDOW = 50
+MIN_HISTORY_BARS = MA_WINDOW + 1  # 51: 50-day MA needs 50 bars, RSI needs +1 for diff
 
 
 def compute_rsi(prices: pd.Series, period: int = 14) -> float:
@@ -51,20 +62,22 @@ def passes_technical_filter(ticker_data: dict, config: Config) -> bool:
         return False
     if price < ma50:
         return False
-    if volume < avg_volume * 0.5:
+    if volume < avg_volume * config.min_volume_ratio:
         return False
 
     return True
 
 
-def fetch_technical_data(ticker: str) -> dict:
-    """Fetch OHLCV history and compute technical indicators for a ticker."""
-    import yfinance as yf
+@_retry
+def _fetch_history(yf_ticker):
+    return yf_ticker.history(period="3mo")
 
-    yf_ticker = yf.Ticker(ticker)
-    hist = yf_ticker.history(period="3mo")
 
-    if hist.empty or len(hist) < 51:
+def fetch_technical_data(yf_ticker: yf.Ticker) -> dict:
+    """Fetch OHLCV history and compute technical indicators via a pre-built yf.Ticker object."""
+    hist = _fetch_history(yf_ticker)
+
+    if hist.empty or len(hist) < MIN_HISTORY_BARS:
         return {
             "rsi": None,
             "price": None,

@@ -1,6 +1,13 @@
 import json
 import datetime
 from pathlib import Path
+from tenacity import retry, stop_after_attempt, wait_exponential
+
+_retry = retry(
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    stop=stop_after_attempt(3),
+    reraise=True,
+)
 
 
 _CACHE_PATH = Path(__file__).parent.parent / "sp500_cache.json"
@@ -66,6 +73,7 @@ def _cache_is_fresh() -> bool:
         return False
 
 
+@_retry
 def _fetch_sp500_from_wikipedia() -> list[str]:
     """Fetch S&P 500 tickers directly from Wikipedia (no cache logic)."""
     import pandas as pd

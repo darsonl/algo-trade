@@ -1,3 +1,12 @@
+from tenacity import retry, stop_after_attempt, wait_exponential
+
+_retry = retry(
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    stop=stop_after_attempt(3),
+    reraise=True,
+)
+
+
 def extract_headlines(news_items: list[dict], max_headlines: int = 5) -> list[str]:
     """Extract headline strings from yfinance news dicts, skipping items without a title."""
     headlines = []
@@ -10,6 +19,7 @@ def extract_headlines(news_items: list[dict], max_headlines: int = 5) -> list[st
     return headlines
 
 
+@_retry
 def fetch_news_headlines(ticker: str, max_headlines: int = 5) -> list[str]:
     """Fetch recent news headlines for a ticker via yfinance."""
     import yfinance as yf

@@ -5,6 +5,7 @@ import logging
 
 import discord
 from discord import app_commands
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 from config import Config
 from database import queries
@@ -12,6 +13,17 @@ from discord_bot.embeds import build_recommendation_embed
 from schwab_client.orders import place_order
 
 logger = logging.getLogger(__name__)
+
+_retry = retry(
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    stop=stop_after_attempt(3),
+    reraise=True,
+)
+
+
+@_retry
+async def _send_message(channel, embed, view):
+    return await channel.send(embed=embed, view=view)
 
 
 def compute_share_quantity(price: float, max_position_usd: float) -> int:
@@ -102,7 +114,7 @@ class TradingBot(discord.Client):
         channel = await self.fetch_channel(self.config.discord_channel_id)
         embed = build_recommendation_embed(ticker, signal, reasoning, price, dividend_yield, pe_ratio)
         view = ApproveRejectView(rec_id, ticker, price, self.config)
-        msg = await channel.send(embed=embed, view=view)
+        msg = await _send_message(channel, embed, view)
         return str(msg.id)
 
     async def send_ops_alert(self, message: str) -> None:

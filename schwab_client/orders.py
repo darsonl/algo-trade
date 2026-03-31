@@ -3,8 +3,15 @@ import logging
 
 import schwab
 from schwab.orders.equities import equity_buy_market
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 logger = logging.getLogger(__name__)
+
+_retry = retry(
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    stop=stop_after_attempt(3),
+    reraise=True,
+)
 
 
 def build_market_buy(ticker: str, shares: int) -> dict:
@@ -38,6 +45,11 @@ def parse_positions(account_response: dict) -> list[dict]:
     return result
 
 
+@_retry
+def _call_place_order(client, account_hash: str, spec) -> object:
+    return client.place_order(account_hash, spec)
+
+
 def place_order(ticker: str, shares: int, config, client=None) -> str:
     """
     Place a market buy order via the Schwab API.
@@ -49,7 +61,7 @@ def place_order(ticker: str, shares: int, config, client=None) -> str:
 
     spec = build_market_buy(ticker, shares)
     try:
-        resp = client.place_order(config.schwab_account_hash, spec)
+        resp = _call_place_order(client, config.schwab_account_hash, spec)
         order_id = resp.headers.get("Location", "").split("/")[-1]
         logger.info("Placed order %s: %s x%d", order_id, ticker, shares)
         return order_id or None
