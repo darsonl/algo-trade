@@ -6,7 +6,7 @@
 
 ---
 
-## Phase 1 — Refactoring & Code Quality
+## Phase 1: Refactoring & Code Quality
 
 **Goal:** Clean up the existing codebase so every subsequent phase builds on a solid foundation.
 
@@ -26,7 +26,7 @@
 
 ---
 
-## Phase 2 — Reliability & Error Handling
+## Phase 2: Reliability & Error Handling
 
 **Goal:** Make the bot production-safe — no silent failures, graceful degradation on API issues.
 
@@ -45,7 +45,7 @@
 
 ---
 
-## Phase 3 — Documentation
+## Phase 3: Documentation
 
 **Goal:** Every public function is documented; new contributors can set up and understand the bot without reading source.
 
@@ -61,7 +61,7 @@
 
 ---
 
-## Phase 4 — Test Coverage Expansion
+## Phase 4: Test Coverage Expansion
 
 **Goal:** Cover the untested pipeline — run_scan, button handlers, API fetchers — with meaningful tests.
 
@@ -78,7 +78,7 @@
 
 ---
 
-## Phase 5 — Position Monitoring
+## Phase 5: Position Monitoring
 
 **Goal:** Track what the bot owns — open positions with cost basis, P&L, and exposure checks.
 
@@ -96,7 +96,7 @@
 
 ---
 
-## Phase 6 — Sell Signals & Sell Orders
+## Phase 6: Sell Signals & Sell Orders
 
 **Goal:** Complete the trading loop — the bot can recommend and execute sells with the same human-approval flow as buys.
 
