@@ -64,6 +64,7 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
     logger.info("Universe: %d tickers", len(universe))
 
     client = create_analyst_client(config)
+    recommendations_posted = 0
 
     for ticker in universe:
         if queries.ticker_recommended_today(config.db_path, ticker):
@@ -104,12 +105,17 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
             )
             queries.set_discord_message_id(config.db_path, rec_id, message_id)
             logger.info("Recommended %s", ticker)
+            recommendations_posted += 1
 
         except Exception as exc:
             logger.error("Error processing %s: %s", ticker, exc)
             continue
 
-    logger.info("Scan complete.")
+    if recommendations_posted == 0:
+        logger.warning("Scan complete: 0 recommendations posted.")
+        await bot.send_ops_alert("Scan complete: 0 recommendations posted.")
+    else:
+        logger.info("Scan complete. %d recommendation(s) posted.", recommendations_posted)
 
 
 # ---------------------------------------------------------------------------
@@ -151,9 +157,36 @@ def main() -> None:
     @bot.event
     async def on_ready():
         logger.info("Discord bot ready as %s", bot.user)
-        configure_scheduler(scheduler, config, lambda: asyncio.run_coroutine_threadsafe(
-            run_scan(bot, config), bot.loop
-        ).result())
+        try:
+            await bot.fetch_channel(config.discord_channel_id)
+            logger.info("Discord channel %s verified.", config.discord_channel_id)
+        except Exception as exc:
+            logger.error(
+                "Cannot access Discord channel %s: %s — aborting startup.",
+                config.discord_channel_id,
+                exc,
+            )
+            raise RuntimeError(
+                f"Discord channel {config.discord_channel_id} not accessible: {exc}"
+            ) from exc
+
+        if not config.dry_run and not config.paper_trading:
+            logger.warning(
+                "LIVE TRADING ACTIVE: DRY_RUN=false and PAPER_TRADING=false. "
+                "Real orders will be placed on Schwab."
+            )
+            await bot.send_ops_alert(
+                "WARNING: Bot started in LIVE TRADING mode. "
+                "DRY_RUN=false AND PAPER_TRADING=false — real orders will be placed."
+            )
+
+        configure_scheduler(
+            scheduler,
+            config,
+            lambda: asyncio.run_coroutine_threadsafe(
+                run_scan(bot, config), bot.loop
+            ).result(),
+        )
         scheduler.start()
         logger.info(
             "Scheduler started — daily scan at %02d:%02d",

@@ -104,3 +104,11 @@ class TradingBot(discord.Client):
         view = ApproveRejectView(rec_id, ticker, price, self.config)
         msg = await channel.send(embed=embed, view=view)
         return str(msg.id)
+
+    async def send_ops_alert(self, message: str) -> None:
+        """Send a plain-text operational alert to the configured Discord channel."""
+        try:
+            channel = await self.fetch_channel(self.config.discord_channel_id)
+            await channel.send(f"[OPS ALERT] {message}")
+        except Exception as exc:
+            logger.error("Failed to send ops alert: %s", exc)
