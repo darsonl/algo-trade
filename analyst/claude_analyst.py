@@ -11,8 +11,10 @@ def _wait_for_retry(retry_state) -> float:
     exc = retry_state.outcome.exception()
     if exc and hasattr(exc, "response"):
         try:
-            delay_str = exc.response.json()["error"]["details"][-1]["retryDelay"]
-            return float(delay_str.rstrip("s")) + 1
+            details = exc.response.json()["error"]["details"]
+            detail = next((d for d in details if "retryDelay" in d), None)
+            if detail is not None:
+                return float(detail["retryDelay"].rstrip("s")) + 1
         except Exception:
             pass
     return min(2 ** retry_state.attempt_number, 60)
