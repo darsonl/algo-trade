@@ -48,17 +48,23 @@ def _dummy_job():
 
 def test_scheduler_has_one_job_after_configure():
     cfg = Config()
-    cfg.scan_hour = 9
-    cfg.scan_minute = 30
+    cfg.scan_times = ["09:30"]
     scheduler = BackgroundScheduler()
     configure_scheduler(scheduler, cfg, _dummy_job)
     assert len(scheduler.get_jobs()) == 1
 
 
+def test_scheduler_registers_multiple_jobs():
+    cfg = Config()
+    cfg.scan_times = ["09:00", "13:00", "16:00"]
+    scheduler = BackgroundScheduler()
+    configure_scheduler(scheduler, cfg, _dummy_job)
+    assert len(scheduler.get_jobs()) == 3
+
+
 def test_scheduler_job_fires_at_configured_hour():
     cfg = Config()
-    cfg.scan_hour = 14
-    cfg.scan_minute = 0
+    cfg.scan_times = ["14:00"]
     scheduler = BackgroundScheduler()
     configure_scheduler(scheduler, cfg, _dummy_job)
     job = scheduler.get_jobs()[0]
@@ -68,8 +74,7 @@ def test_scheduler_job_fires_at_configured_hour():
 
 def test_scheduler_job_fires_at_configured_minute():
     cfg = Config()
-    cfg.scan_hour = 9
-    cfg.scan_minute = 45
+    cfg.scan_times = ["09:45"]
     scheduler = BackgroundScheduler()
     configure_scheduler(scheduler, cfg, _dummy_job)
     job = scheduler.get_jobs()[0]

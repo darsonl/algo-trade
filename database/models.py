@@ -4,6 +4,7 @@ import sqlite3
 def get_connection(db_path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
     return conn
 
 
@@ -18,6 +19,7 @@ def initialize_db(db_path: str) -> None:
             price REAL NOT NULL,
             dividend_yield REAL,
             pe_ratio REAL,
+            earnings_growth REAL,
             status TEXT NOT NULL DEFAULT 'pending',
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             expires_at TEXT NOT NULL DEFAULT (datetime('now', '+24 hours')),
@@ -36,4 +38,11 @@ def initialize_db(db_path: str) -> None:
         );
     """)
     conn.commit()
+    try:
+        conn.execute(
+            "ALTER TABLE recommendations ADD COLUMN earnings_growth REAL"
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # Column already exists
     conn.close()

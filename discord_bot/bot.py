@@ -97,7 +97,10 @@ class TradingBot(discord.Client):
         await self.tree.sync()
 
     async def _scan_command(self, interaction: discord.Interaction):
-        await interaction.response.send_message("Scan triggered — results incoming...")
+        try:
+            await interaction.response.send_message("Scan triggered — results incoming...")
+        except Exception:
+            pass  # Interaction may have expired; still run the scan
         if self._scan_callback is not None:
             asyncio.create_task(self._scan_callback())
 

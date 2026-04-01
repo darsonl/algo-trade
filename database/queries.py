@@ -10,12 +10,14 @@ def create_recommendation(
     price: float,
     dividend_yield: float | None,
     pe_ratio: float | None,
+    earnings_growth: float | None = None,
 ) -> int:
     conn = get_connection(db_path)
     cursor = conn.execute(
-        """INSERT INTO recommendations (ticker, signal, reasoning, price, dividend_yield, pe_ratio)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        (ticker, signal, reasoning, price, dividend_yield, pe_ratio),
+        """INSERT INTO recommendations
+               (ticker, signal, reasoning, price, dividend_yield, pe_ratio, earnings_growth)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (ticker, signal, reasoning, price, dividend_yield, pe_ratio, earnings_growth),
     )
     conn.commit()
     rec_id = cursor.lastrowid

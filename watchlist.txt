@@ -2,3 +2,15 @@
 # AAPL
 # JNJ
 # VYM
+
+# Top 10 ETFs by AUM / broad coverage
+SPY
+QQQ
+VTI
+IVV
+VOO
+VEA
+BND
+GLD
+XLK
+SCHD
