@@ -2,6 +2,7 @@ import json
 import datetime
 from pathlib import Path
 from tenacity import retry, stop_after_attempt, wait_exponential
+import yfinance as yf
 
 _retry = retry(
     wait=wait_exponential(multiplier=1, min=2, max=30),
@@ -107,3 +108,37 @@ def get_sp500_tickers() -> list[str]:
         )
         cached = _load_sp500_cache()
         return cached if cached is not None else []
+
+
+_top_sp500_cache: dict = {}
+
+
+def get_top_sp500_by_fundamentals(config) -> list[str]:
+    """
+    Return top config.top_sp500_count S&P 500 tickers ranked by combined EPS + ROE score.
+
+    Uses in-memory 24h cache so the ~500 yfinance info calls only happen once per day.
+    Falls back to raw get_sp500_tickers() slice on any fetch error.
+    """
+    global _top_sp500_cache
+    if _top_sp500_cache.get("fetched_at"):
+        age = (datetime.datetime.now() - _top_sp500_cache["fetched_at"]).total_seconds()
+        if age < _CACHE_TTL_HOURS * 3600:
+            return _top_sp500_cache["tickers"]
+
+    tickers = get_sp500_tickers()
+    scores: list[tuple[float, str]] = []
+    for t in tickers:
+        try:
+            info = yf.Ticker(t).info
+            eps = info.get("trailingEps") or 0.0
+            roe = info.get("returnOnEquity") or 0.0
+            scores.append((eps + roe, t))
+        except Exception:
+            continue
+
+    scores.sort(key=lambda x: x[0], reverse=True)
+    top = [t for _, t in scores[: config.top_sp500_count]]
+
+    _top_sp500_cache = {"tickers": top, "fetched_at": datetime.datetime.now()}
+    return top
