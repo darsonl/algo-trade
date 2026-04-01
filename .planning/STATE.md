@@ -5,7 +5,7 @@
 See: .planning/PROJECT.md (updated 2026-03-30)
 
 **Core value:** The bot must never place a real order without explicit human approval via Discord.
-**Current focus:** Phase 1 — Refactoring & Code Quality (not started)
+**Current focus:** Phase 2.5 — Analyst Token Minimization (in progress)
 
 ---
 
@@ -13,7 +13,7 @@ See: .planning/PROJECT.md (updated 2026-03-30)
 
 **Milestone 1:** Refactor, Harden, Test, and Extend with Sell Functionality
 **Started:** 2026-03-30
-**Phases:** 6 total
+**Phases:** 6 total (+1 inserted)
 
 ---
 
@@ -21,8 +21,9 @@ See: .planning/PROJECT.md (updated 2026-03-30)
 
 | Phase | Name | Status |
 |-------|------|--------|
-| 1 | Refactoring & Code Quality | ⬜ Not started |
-| 2 | Reliability & Error Handling | ⬜ Not started |
+| 1 | Refactoring & Code Quality | ✅ Complete |
+| 2 | Reliability & Error Handling | ✅ Complete |
+| 2.5 | Analyst Token Minimization | 🔄 In Progress |
 | 3 | Documentation | ⬜ Not started |
 | 4 | Test Coverage Expansion | ⬜ Not started |
 | 5 | Position Monitoring | ⬜ Not started |
@@ -54,6 +55,12 @@ Location: .planning/codebase/
 
 ---
 
+## Phase 2.5 Context
+
+- Source: approved design spec `docs/superpowers/specs/2026-04-01-analyst-token-minimization-design.md`
+- 4 plans: Wave 1 (config+universe, DB cache, rate limiting) → Wave 2 (main.py integration)
+- Branch: feat/analyst-token-minimization
+
 ## Next Action
 
-Run `/gsd:plan-phase 1` to create a detailed execution plan for Phase 1 (Refactoring).
+Complete Phase 2.5 implementation. Run `/gsd:plan-phase 3` after merging to plan Phase 3 — Documentation.

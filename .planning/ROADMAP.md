@@ -45,6 +45,23 @@
 
 ---
 
+## Phase 2.5: Analyst Token Minimization
+
+**Goal:** Reduce analyst API calls to avoid LLM free-tier quota exhaustion on full S&P 500 scans.
+
+**Deliverables:**
+- Config: `TOP_SP500_COUNT=50`, `ANALYST_CALL_DELAY_S=4.0`
+- `get_top_sp500_by_fundamentals(config)` in `screener/universe.py`: rank S&P 500 by EPS+ROE, return top 50, in-memory 24h cache
+- `analyst_cache` SQLite table: `(ticker, headline_hash UNIQUE, signal, reasoning)`
+- `get_cached_analysis()` / `set_cached_analysis()` in `database/queries.py`
+- `main.py`: use narrowed universe; compute SHA-256 headline hash; check/set analyst cache per ticker
+- `analyst/claude_analyst.py`: pre-call `time.sleep(config.analyst_call_delay_s)`; replace `wait_exponential` with `_wait_for_retry` that parses `retryDelay` from 429 body
+
+**Requirements:** TOK-01 to TOK-06
+**Verification:** Universe logs ~60 tickers (not ~500); repeated scan with unchanged news makes 0 analyst calls; `analyst_cache` table exists in DB
+
+---
+
 ## Phase 3: Documentation
 
 **Goal:** Every public function is documented; new contributors can set up and understand the bot without reading source.
