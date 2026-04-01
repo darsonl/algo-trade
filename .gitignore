@@ -9,3 +9,6 @@ dist/
 build/
 .venv/
 .claude/
+.worktrees/
+sp500_cache.json
+logs/
