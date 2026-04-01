@@ -87,10 +87,13 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
                 analysis = cached
             else:
                 analysis = analyze_ticker(ticker, info, headlines, config, client=client)
-                queries.set_cached_analysis(
-                    config.db_path, ticker, headline_hash,
-                    analysis["signal"], analysis["reasoning"]
-                )
+                try:
+                    queries.set_cached_analysis(
+                        config.db_path, ticker, headline_hash,
+                        analysis["signal"], analysis["reasoning"]
+                    )
+                except Exception as cache_exc:
+                    logger.warning("Failed to write analyst cache for %s: %s", ticker, cache_exc)
 
             tech_data = fetch_technical_data(yf_ticker)
             if not should_recommend(analysis["signal"], tech_data, config):
