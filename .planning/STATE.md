@@ -25,7 +25,7 @@ See: .planning/PROJECT.md (updated 2026-03-30)
 | 2 | Reliability & Error Handling | ✅ Complete |
 | 2.5 | Analyst Token Minimization | ✅ Complete |
 | 3 | Documentation | ✅ Complete |
-| 4 | Test Coverage Expansion | ⬜ Not started |
+| 4 | Test Coverage Expansion | 🔄 In progress (2/N plans) |
 | 5 | Position Monitoring | ⬜ Not started |
 | 6 | Sell Signals & Sell Orders | ⬜ Not started |
 
@@ -64,7 +64,14 @@ Location: .planning/codebase/
 
 ## Next Action
 
-Run /gsd:plan-phase 4 to plan Phase 4 — Test Coverage Expansion.
+Continue Phase 4 Test Coverage Expansion — plans 04-01 and 04-02 complete.
+
+### Phase 4 Plan 02 Completed (2026-04-03)
+Tests for Discord button handlers and DB edge cases (TEST-02, TEST-03, TEST-07, TEST-08).
+- Created tests/test_discord_buttons.py: 10 async tests for ApproveRejectView approve/reject
+- Extended tests/test_database.py: 13 new tests for ticker_recommended_today and expire_stale boundary semantics
+- Deviation: discord.py wraps @discord.ui.button methods into Button objects; used view.approve.callback.callback(view, ...) pattern
+- Commit: ccfbaab; 147 tests green
 
 ### Phase 3 Completed (2026-04-02)
 All DOC-01 through DOC-05 applied. Key changes:
