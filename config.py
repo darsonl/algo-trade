@@ -45,8 +45,8 @@ class Config:
     scan_hour: int = int(os.getenv("SCAN_HOUR", "9"))
     scan_minute: int = int(os.getenv("SCAN_MINUTE", "0"))
     scan_times: list = field(default_factory=_parse_scan_times)
-    top_sp500_count: int = int(os.getenv("TOP_SP500_COUNT", "50"))
-    analyst_call_delay_s: float = float(os.getenv("ANALYST_CALL_DELAY_S", "4.0"))
+    top_sp500_count: int = int(os.getenv("TOP_SP500_COUNT", "10"))
+    analyst_call_delay_s: float = float(os.getenv("ANALYST_CALL_DELAY_S", "12.0"))
 
     db_path: str = os.getenv("DB_PATH", str(Path(__file__).parent / "algo_trade.db"))
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
