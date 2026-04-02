@@ -24,7 +24,7 @@ See: .planning/PROJECT.md (updated 2026-03-30)
 | 1 | Refactoring & Code Quality | ✅ Complete |
 | 2 | Reliability & Error Handling | ✅ Complete |
 | 2.5 | Analyst Token Minimization | ✅ Complete |
-| 3 | Documentation | ⬜ Not started |
+| 3 | Documentation | ✅ Complete |
 | 4 | Test Coverage Expansion | ⬜ Not started |
 | 5 | Position Monitoring | ⬜ Not started |
 | 6 | Sell Signals & Sell Orders | ⬜ Not started |
@@ -64,7 +64,19 @@ Location: .planning/codebase/
 
 ## Next Action
 
-Run /gsd:plan-phase 3 to plan Phase 3 — Documentation.
+Run /gsd:plan-phase 4 to plan Phase 4 — Test Coverage Expansion.
+
+### Phase 3 Completed (2026-04-02)
+All DOC-01 through DOC-05 applied. Key changes:
+- Rewrote .env.example with all 14+ Config fields, both analyst provider paths (ANTHROPIC_API_KEY legacy + ANALYST_* multi-provider)
+- Docstrings added to get_connection, initialize_db (database/models.py)
+- Docstrings added to all 8 CRUD functions in database/queries.py
+- Docstring added to build_recommendation_embed (discord_bot/embeds.py)
+- Class + method docstrings for ApproveRejectView, TradingBot, setup_hook, send_recommendation (discord_bot/bot.py)
+- Docstrings for main() and nested on_ready() (main.py)
+- Expanded get_client docstring covering port 8182, callback_url match, token file (schwab_client/auth.py)
+- Expanded passes_technical_filter docstring referencing config.max_rsi, config.min_volume_ratio, None-check (screener/technicals.py)
+- 100 tests green; single atomic commit 07a193e
 
 ### Phase 2.5 Completed (2026-04-02)
 All TOK-01 through TOK-06 applied. Key changes:
