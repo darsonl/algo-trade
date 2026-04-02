@@ -34,6 +34,8 @@ def compute_share_quantity(price: float, max_position_usd: float) -> int:
 
 
 class ApproveRejectView(discord.ui.View):
+    """Discord UI view with Approve and Reject buttons for a pending buy recommendation."""
+
     def __init__(self, rec_id: int, ticker: str, price: float, config: Config):
         super().__init__(timeout=None)
         self.rec_id = rec_id
@@ -79,6 +81,8 @@ class ApproveRejectView(discord.ui.View):
 
 
 class TradingBot(discord.Client):
+    """Discord client that posts stock recommendations and handles Approve/Reject button interactions."""
+
     def __init__(self, config: Config):
         intents = discord.Intents.default()
         super().__init__(intents=intents)
@@ -87,6 +91,7 @@ class TradingBot(discord.Client):
         self._scan_callback = None  # Set by main.py after construction
 
     async def setup_hook(self):
+        """Register and sync the /scan slash command on bot startup."""
         self.tree.add_command(
             app_commands.Command(
                 name="scan",
@@ -114,6 +119,7 @@ class TradingBot(discord.Client):
         dividend_yield: float | None,
         pe_ratio: float | None,
     ) -> str:
+        """Fetch the configured channel, post a recommendation embed with Approve/Reject buttons, and return the message id as a string."""
         channel = await self.fetch_channel(self.config.discord_channel_id)
         embed = build_recommendation_embed(ticker, signal, reasoning, price, dividend_yield, pe_ratio)
         view = ApproveRejectView(rec_id, ticker, price, self.config)

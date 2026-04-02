@@ -139,6 +139,7 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    """Configure logging and the DB, construct the Discord bot and scheduler, then block until the bot exits."""
     config = Config()
     config.validate()
 
@@ -172,6 +173,7 @@ def main() -> None:
 
     @bot.event
     async def on_ready():
+        """Validate the Discord channel, warn if live trading is active, then start the APScheduler scan jobs."""
         logger.info("Discord bot ready as %s", bot.user)
         try:
             await bot.fetch_channel(config.discord_channel_id)

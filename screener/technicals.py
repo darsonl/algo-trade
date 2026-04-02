@@ -45,9 +45,10 @@ def compute_rsi(prices: pd.Series, period: int = 14) -> float:
 
 def passes_technical_filter(ticker_data: dict, config: Config) -> bool:
     """
-    Return True only if all technical criteria are met.
+    Return True only if all three technical criteria are met: RSI <= config.max_rsi,
+    price >= ma50, and volume >= avg_volume * config.min_volume_ratio.
 
-    Expects keys: 'rsi', 'price', 'ma50', 'volume', 'avg_volume'
+    Expects keys: 'rsi', 'price', 'ma50', 'volume', 'avg_volume'. Returns False if any value is None.
     """
     rsi = ticker_data.get("rsi")
     price = ticker_data.get("price")

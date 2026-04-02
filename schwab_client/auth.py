@@ -9,11 +9,12 @@ def get_token_path() -> str:
 
 def get_client(config):
     """
-    Return an authenticated schwab-py client.
+    Return an authenticated schwab-py client using config.schwab_app_key and config.schwab_app_secret.
 
-    On first run this opens a browser for the OAuth2 login flow and writes the
-    token to schwab_token.json.  Subsequent runs load the token from that file
-    and refresh it automatically.
+    On first run, schwab-py starts a local callback server on port 8182 and opens a browser for the
+    Schwab OAuth2 login flow. config.schwab_callback_url must exactly match the redirect URI registered
+    at developer.schwab.com (default https://127.0.0.1) — a mismatch causes a redirect_mismatch error.
+    After login the token is written to schwab_token.json; subsequent calls load and auto-refresh it.
     """
     import schwab.auth as auth
     return auth.easy_client(

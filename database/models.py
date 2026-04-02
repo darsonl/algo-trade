@@ -2,6 +2,7 @@ import sqlite3
 
 
 def get_connection(db_path: str) -> sqlite3.Connection:
+    """Open a SQLite connection to db_path with WAL mode and Row factory enabled."""
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
@@ -9,6 +10,7 @@ def get_connection(db_path: str) -> sqlite3.Connection:
 
 
 def initialize_db(db_path: str) -> None:
+    """Create the recommendations, trades, and analyst_cache tables if absent, and run the earnings_growth migration on existing DBs."""
     conn = get_connection(db_path)
     conn.executescript("""
         CREATE TABLE IF NOT EXISTS recommendations (

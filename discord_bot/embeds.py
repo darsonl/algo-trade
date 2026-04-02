@@ -15,6 +15,7 @@ def build_recommendation_embed(
     dividend_yield: float | None,
     pe_ratio: float | None,
 ) -> discord.Embed:
+    """Build a Discord embed for a BUY/HOLD/SKIP recommendation with price and fundamental fields."""
     if signal not in _SIGNAL_COLORS:
         raise ValueError(f"Invalid signal '{signal}': must be BUY, HOLD, or SKIP")
 

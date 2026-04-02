@@ -12,6 +12,7 @@ def create_recommendation(
     pe_ratio: float | None,
     earnings_growth: float | None = None,
 ) -> int:
+    """Insert a new recommendation row and return its auto-assigned id."""
     conn = get_connection(db_path)
     cursor = conn.execute(
         """INSERT INTO recommendations
@@ -26,6 +27,7 @@ def create_recommendation(
 
 
 def get_recommendation(db_path: str, rec_id: int) -> sqlite3.Row | None:
+    """Return the recommendations row for rec_id, or None if not found."""
     conn = get_connection(db_path)
     row = conn.execute(
         "SELECT * FROM recommendations WHERE id = ?", (rec_id,)
@@ -35,6 +37,7 @@ def get_recommendation(db_path: str, rec_id: int) -> sqlite3.Row | None:
 
 
 def update_recommendation_status(db_path: str, rec_id: int, status: str) -> None:
+    """Set the status column of recommendation rec_id to status."""
     conn = get_connection(db_path)
     conn.execute(
         "UPDATE recommendations SET status = ? WHERE id = ?", (status, rec_id)
@@ -44,6 +47,7 @@ def update_recommendation_status(db_path: str, rec_id: int, status: str) -> None
 
 
 def set_discord_message_id(db_path: str, rec_id: int, message_id: str) -> None:
+    """Store the Discord message id against recommendation rec_id."""
     conn = get_connection(db_path)
     conn.execute(
         "UPDATE recommendations SET discord_message_id = ? WHERE id = ?",
@@ -61,6 +65,7 @@ def create_trade(
     price: float,
     order_id: str | None,
 ) -> int:
+    """Record an executed trade linked to recommendation_id and return the trade id."""
     conn = get_connection(db_path)
     cursor = conn.execute(
         """INSERT INTO trades (recommendation_id, ticker, shares, price, order_id)
@@ -74,6 +79,7 @@ def create_trade(
 
 
 def get_pending_recommendations(db_path: str) -> list[sqlite3.Row]:
+    """Return all pending recommendations ordered newest first."""
     conn = get_connection(db_path)
     rows = conn.execute(
         "SELECT * FROM recommendations WHERE status = 'pending' ORDER BY created_at DESC"
@@ -83,6 +89,7 @@ def get_pending_recommendations(db_path: str) -> list[sqlite3.Row]:
 
 
 def ticker_recommended_today(db_path: str, ticker: str) -> bool:
+    """Return True if ticker has a non-expired, non-rejected recommendation created today (UTC date)."""
     conn = get_connection(db_path)
     row = conn.execute(
         """SELECT id FROM recommendations
@@ -95,6 +102,7 @@ def ticker_recommended_today(db_path: str, ticker: str) -> bool:
 
 
 def expire_stale_recommendations(db_path: str) -> None:
+    """Set status='expired' on all pending recommendations whose expires_at is in the past."""
     conn = get_connection(db_path)
     conn.execute(
         """UPDATE recommendations
