@@ -40,12 +40,12 @@ Add `get_top_sp500_by_fundamentals(n: int = 50) -> list[str]` to `screener/unive
 
 New field in `config.py`:
 ```
-TOP_SP500_COUNT=50   # default: 50
+TOP_SP500_COUNT=10   # default: 10 (Gemini free tier: 20 RPD — 10 S&P + ~10 watchlist ≈ 20 calls/day)
 ```
 
 ### Impact
 
-`run_scan()` in `main.py` replaces `get_sp500_tickers()` with `get_top_sp500_by_fundamentals()`. Universe shrinks from ~500 to ~60 tickers (50 S&P picks + watchlist), an ~88% reduction in analyst calls.
+`run_scan()` in `main.py` replaces `get_sp500_tickers()` with `get_top_sp500_by_fundamentals()`. Universe shrinks from ~500 to ~20 tickers (10 S&P picks + ~10 watchlist), fitting within Gemini's 20 RPD free-tier limit.
 
 ---
 
@@ -115,10 +115,10 @@ Two changes to `analyst/claude_analyst.py`:
 
 New config field:
 ```
-ANALYST_CALL_DELAY_S=4.0   # default: 4.0 seconds
+ANALYST_CALL_DELAY_S=12.0   # default: 12.0 seconds (Gemini free tier: 5 RPM → 60s ÷ 5 = 12s minimum)
 ```
 
-`analyze_ticker()` calls `time.sleep(config.analyst_call_delay_s)` before invoking `_call_api()`. At 4s/call, 60 tickers = ~4 minutes total scan time, safely under Gemini's 15 RPM free-tier limit.
+`analyze_ticker()` calls `time.sleep(config.analyst_call_delay_s)` before invoking `_call_api()`. At 12s/call, 20 tickers = ~4 minutes total scan time, at or under Gemini's 5 RPM free-tier limit. TPM impact is negligible: 5 RPM × ~500 tokens/call ≈ 2,500 TPM, well under the 250k TPM ceiling.
 
 ### Retry Delay Parsing
 
@@ -163,7 +163,10 @@ The scan currently runs on the Discord bot's event loop via `run_coroutine_threa
 
 | Metric | Before | After |
 |---|---|---|
-| Tickers reaching analyst | ~500+ | ~60 |
+| Tickers reaching analyst | ~500+ | ~20 (10 S&P + ~10 watchlist) |
 | Analyst calls on repeated scans | same each day | 0 for unchanged news |
-| 429 on RPM limit | frequent | eliminated by 4s delay |
+| Calls per day (cold cache) | ~500+ | ≤20 — fits Gemini 20 RPD free tier |
+| Calls per minute | uncontrolled | ≤5 — fits Gemini 5 RPM free tier (12s delay) |
+| Tokens per minute | uncontrolled | ~2,500 TPM — well under 250k TPM free tier |
+| 429 on RPM limit | frequent | eliminated by 12s delay |
 | 429 retry behavior | 3 retries in ~6s | respects API-specified delay |

@@ -31,6 +31,15 @@
 - [ ] **REL-07**: place_order distinguishes dry-run None (intentional) from order failure (raises exception)
 - [ ] **REL-08**: Startup channel validation in on_ready (fetch_channel, fail fast with clear error)
 
+### Analyst Token Minimization
+
+- [ ] **TOK-01**: `TOP_SP500_COUNT` config field (default 10); `get_top_sp500_by_fundamentals(n)` in universe.py returns top N S&P 500 tickers ranked by combined EPS + ROE score
+- [ ] **TOK-02**: `get_top_sp500_by_fundamentals` caches its ranked list in-memory with 24h TTL (same TTL pattern as sp500_cache.json)
+- [ ] **TOK-03**: `analyst_cache` table added to SQLite schema: `(id, ticker, headline_hash, signal, reasoning, created_at)` with UNIQUE(ticker, headline_hash); `get_cached_analysis` and `set_cached_analysis` added to queries.py
+- [ ] **TOK-04**: `run_scan` computes SHA-256 hash of sorted headlines; checks analyst cache before calling `analyze_ticker`; stores result in cache after each API call
+- [ ] **TOK-05**: `ANALYST_CALL_DELAY_S=12.0` config field; `analyze_ticker` sleeps `analyst_call_delay_s` seconds before each `_call_api` invocation to enforce ≤5 RPM on Gemini free tier
+- [ ] **TOK-06**: tenacity retry in `claude_analyst.py` uses `_wait_for_retry` callable that parses Gemini `retryDelay` from 429 body (falls back to exponential backoff for Anthropic/OpenAI)
+
 ### Documentation
 
 - [ ] **DOC-01**: .env.example created with all 14+ variables, placeholder values, and inline comments
@@ -114,14 +123,15 @@
 |-------------|-------|--------|
 | REF-01 to REF-10 | Phase 1 | Pending |
 | REL-01 to REL-08 | Phase 2 | Pending |
+| TOK-01 to TOK-06 | Phase 2.5 | Pending |
 | DOC-01 to DOC-05 | Phase 3 | Pending |
 | TEST-01 to TEST-08 | Phase 4 | Pending |
 | POS-01 to POS-06 | Phase 5 | Pending |
 | SELL-01 to SELL-09 | Phase 6 | Pending |
 
 **Coverage:**
-- v1 requirements: 42 total
-- Mapped to phases: 42
+- v1 requirements: 48 total
+- Mapped to phases: 48
 - Unmapped: 0 ✓
 
 ---

@@ -5,7 +5,7 @@
 See: .planning/PROJECT.md (updated 2026-03-30)
 
 **Core value:** The bot must never place a real order without explicit human approval via Discord.
-**Current focus:** Phase 1 — Refactoring & Code Quality (not started)
+**Current focus:** Phase 2.5 — Analyst Token Minimization (planned, ready to execute)
 
 ---
 
@@ -21,8 +21,9 @@ See: .planning/PROJECT.md (updated 2026-03-30)
 
 | Phase | Name | Status |
 |-------|------|--------|
-| 1 | Refactoring & Code Quality | ⬜ Not started |
-| 2 | Reliability & Error Handling | ⬜ Not started |
+| 1 | Refactoring & Code Quality | ✅ Complete |
+| 2 | Reliability & Error Handling | ✅ Complete |
+| 2.5 | Analyst Token Minimization | 📋 Planned |
 | 3 | Documentation | ⬜ Not started |
 | 4 | Test Coverage Expansion | ⬜ Not started |
 | 5 | Position Monitoring | ⬜ Not started |
@@ -56,4 +57,14 @@ Location: .planning/codebase/
 
 ## Next Action
 
-Run `/gsd:plan-phase 1` to create a detailed execution plan for Phase 1 (Refactoring).
+Phase 2.5 planned (2 plans, 2 waves, all TOK-01–TOK-06 covered, checker passed). Run `/gsd:execute-phase 2.5` to execute.
+
+### Phase 1 Completed (2026-03-31)
+All REF-01 through REF-10 applied. Key changes:
+- WAL mode, `earnings_growth` schema + migration, safe `parse_positions` (DB/Schwab)
+- `MA_WINDOW`/`MIN_HISTORY_BARS` constants, `min_volume_ratio` in Config
+- All deferred imports moved to module top level
+- `Config()` singleton removed; `main()` owns its own instance
+- Shared `yf.Ticker` per ticker (halves yfinance network calls)
+- Single `anthropic.Anthropic` client per scan (reuses HTTP connection pool)
+- `bot.dispatch("manual_scan")` replaced with `asyncio.create_task` via stored callback
