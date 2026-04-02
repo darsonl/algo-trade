@@ -9,6 +9,7 @@ from database.queries import (
     create_trade,
     get_pending_recommendations,
     expire_stale_recommendations,
+    ticker_recommended_today,
 )
 
 DB_PATH = "test_algo_trade.db"
@@ -119,3 +120,177 @@ def test_expire_stale_recommendations():
     expire_stale_recommendations(DB_PATH)
     rec = get_recommendation(DB_PATH, rec_id)
     assert rec["status"] == "expired"
+
+
+# --- ticker_recommended_today (TEST-07) ---
+
+def test_ticker_recommended_today_true_for_fresh_pending_rec():
+    create_recommendation(
+        db_path=DB_PATH, ticker="AAPL", signal="BUY",
+        reasoning="Fresh.", price=150.0, dividend_yield=0.03, pe_ratio=20.0,
+    )
+    assert ticker_recommended_today(DB_PATH, "AAPL") is True
+
+
+def test_ticker_recommended_today_false_for_different_ticker():
+    create_recommendation(
+        db_path=DB_PATH, ticker="MSFT", signal="BUY",
+        reasoning="Fresh.", price=400.0, dividend_yield=0.007, pe_ratio=30.0,
+    )
+    assert ticker_recommended_today(DB_PATH, "AAPL") is False
+
+
+def test_ticker_recommended_today_false_when_no_recs_exist():
+    assert ticker_recommended_today(DB_PATH, "NVDA") is False
+
+
+def test_ticker_recommended_today_false_for_expired_status():
+    rec_id = create_recommendation(
+        db_path=DB_PATH, ticker="T", signal="BUY",
+        reasoning=".", price=17.0, dividend_yield=0.06, pe_ratio=8.0,
+    )
+    update_recommendation_status(DB_PATH, rec_id, "expired")
+    assert ticker_recommended_today(DB_PATH, "T") is False
+
+
+def test_ticker_recommended_today_false_for_rejected_status():
+    rec_id = create_recommendation(
+        db_path=DB_PATH, ticker="VZ", signal="BUY",
+        reasoning=".", price=40.0, dividend_yield=0.06, pe_ratio=9.0,
+    )
+    update_recommendation_status(DB_PATH, rec_id, "rejected")
+    assert ticker_recommended_today(DB_PATH, "VZ") is False
+
+
+def test_ticker_recommended_today_true_for_approved_status():
+    """Approved recs still count - prevents re-recommending a bought ticker today."""
+    rec_id = create_recommendation(
+        db_path=DB_PATH, ticker="JNJ", signal="BUY",
+        reasoning=".", price=155.0, dividend_yield=0.03, pe_ratio=15.0,
+    )
+    update_recommendation_status(DB_PATH, rec_id, "approved")
+    assert ticker_recommended_today(DB_PATH, "JNJ") is True
+
+
+def test_ticker_recommended_today_false_for_yesterday_utc_date():
+    """UTC boundary: a record created yesterday (UTC) is not 'today'."""
+    import sqlite3
+    rec_id = create_recommendation(
+        db_path=DB_PATH, ticker="AAPL", signal="BUY",
+        reasoning="Yesterday.", price=150.0, dividend_yield=0.03, pe_ratio=20.0,
+    )
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "UPDATE recommendations SET created_at = datetime('now', '-1 day') WHERE id = ?",
+        (rec_id,),
+    )
+    conn.commit()
+    conn.close()
+    assert ticker_recommended_today(DB_PATH, "AAPL") is False
+
+
+def test_ticker_recommended_today_true_for_today_utc_date():
+    """UTC boundary: a record explicitly created today (UTC) is found."""
+    import sqlite3
+    rec_id = create_recommendation(
+        db_path=DB_PATH, ticker="AAPL", signal="BUY",
+        reasoning="Today.", price=150.0, dividend_yield=0.03, pe_ratio=20.0,
+    )
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "UPDATE recommendations SET created_at = datetime('now') WHERE id = ?",
+        (rec_id,),
+    )
+    conn.commit()
+    conn.close()
+    assert ticker_recommended_today(DB_PATH, "AAPL") is True
+
+
+# --- expire_stale_recommendations edge cases (TEST-08) ---
+
+def test_expire_stale_does_not_expire_fresh_rec():
+    rec_id = create_recommendation(
+        db_path=DB_PATH, ticker="AAPL", signal="BUY",
+        reasoning="Fresh.", price=150.0, dividend_yield=0.03, pe_ratio=20.0,
+    )
+    expire_stale_recommendations(DB_PATH)
+    rec = get_recommendation(DB_PATH, rec_id)
+    assert rec["status"] == "pending"
+
+
+def test_expire_stale_does_not_touch_approved_rec():
+    """Approved records must never be expired even when expires_at is in the past."""
+    import sqlite3
+    rec_id = create_recommendation(
+        db_path=DB_PATH, ticker="MSFT", signal="BUY",
+        reasoning=".", price=400.0, dividend_yield=0.007, pe_ratio=30.0,
+    )
+    update_recommendation_status(DB_PATH, rec_id, "approved")
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "UPDATE recommendations SET expires_at = datetime('now', '-1 hour') WHERE id = ?",
+        (rec_id,),
+    )
+    conn.commit()
+    conn.close()
+    expire_stale_recommendations(DB_PATH)
+    assert get_recommendation(DB_PATH, rec_id)["status"] == "approved"
+
+
+def test_expire_stale_does_not_touch_rejected_rec():
+    """Rejected records must not be overwritten by expire."""
+    import sqlite3
+    rec_id = create_recommendation(
+        db_path=DB_PATH, ticker="VZ", signal="BUY",
+        reasoning=".", price=40.0, dividend_yield=0.06, pe_ratio=9.0,
+    )
+    update_recommendation_status(DB_PATH, rec_id, "rejected")
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "UPDATE recommendations SET expires_at = datetime('now', '-1 hour') WHERE id = ?",
+        (rec_id,),
+    )
+    conn.commit()
+    conn.close()
+    expire_stale_recommendations(DB_PATH)
+    assert get_recommendation(DB_PATH, rec_id)["status"] == "rejected"
+
+
+def test_expire_stale_expires_past_boundary():
+    """A record 1 second past its expires_at is expired."""
+    import sqlite3
+    rec_id = create_recommendation(
+        db_path=DB_PATH, ticker="GE", signal="BUY",
+        reasoning=".", price=100.0, dividend_yield=0.02, pe_ratio=12.0,
+    )
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "UPDATE recommendations SET expires_at = datetime('now', '-1 second') WHERE id = ?",
+        (rec_id,),
+    )
+    conn.commit()
+    conn.close()
+    expire_stale_recommendations(DB_PATH)
+    assert get_recommendation(DB_PATH, rec_id)["status"] == "expired"
+
+
+def test_expire_stale_does_not_expire_at_exact_now():
+    """
+    Production SQL uses strict < so a record expiring exactly at 'now' stays pending.
+    This documents the intended boundary semantics.
+    """
+    import sqlite3
+    rec_id = create_recommendation(
+        db_path=DB_PATH, ticker="IBM", signal="BUY",
+        reasoning=".", price=130.0, dividend_yield=0.04, pe_ratio=14.0,
+    )
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "UPDATE recommendations SET expires_at = datetime('now') WHERE id = ?",
+        (rec_id,),
+    )
+    conn.commit()
+    conn.close()
+    expire_stale_recommendations(DB_PATH)
+    # datetime('now') is NOT < datetime('now'), so the record should remain pending
+    assert get_recommendation(DB_PATH, rec_id)["status"] == "pending"
