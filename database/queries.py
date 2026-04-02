@@ -103,3 +103,30 @@ def expire_stale_recommendations(db_path: str) -> None:
     )
     conn.commit()
     conn.close()
+
+
+def get_cached_analysis(db_path: str, ticker: str, headline_hash: str) -> dict | None:
+    """Return {signal, reasoning} if a cached result exists for (ticker, headline_hash), else None."""
+    conn = get_connection(db_path)
+    row = conn.execute(
+        "SELECT signal, reasoning FROM analyst_cache WHERE ticker = ? AND headline_hash = ?",
+        (ticker, headline_hash),
+    ).fetchone()
+    conn.close()
+    if row is None:
+        return None
+    return {"signal": row["signal"], "reasoning": row["reasoning"]}
+
+
+def set_cached_analysis(
+    db_path: str, ticker: str, headline_hash: str, signal: str, reasoning: str
+) -> None:
+    """Upsert an analyst result keyed by (ticker, headline_hash)."""
+    conn = get_connection(db_path)
+    conn.execute(
+        """INSERT OR REPLACE INTO analyst_cache (ticker, headline_hash, signal, reasoning)
+           VALUES (?, ?, ?, ?)""",
+        (ticker, headline_hash, signal, reasoning),
+    )
+    conn.commit()
+    conn.close()

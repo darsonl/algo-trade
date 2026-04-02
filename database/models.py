@@ -36,6 +36,16 @@ def initialize_db(db_path: str) -> None:
             executed_at TEXT NOT NULL DEFAULT (datetime('now')),
             FOREIGN KEY (recommendation_id) REFERENCES recommendations(id)
         );
+
+        CREATE TABLE IF NOT EXISTS analyst_cache (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker        TEXT NOT NULL,
+            headline_hash TEXT NOT NULL,
+            signal        TEXT NOT NULL,
+            reasoning     TEXT NOT NULL,
+            created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(ticker, headline_hash)
+        );
     """)
     conn.commit()
     try:

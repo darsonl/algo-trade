@@ -1,4 +1,5 @@
 import pytest
+import pytest_asyncio
 from apscheduler.schedulers.background import BackgroundScheduler
 from config import Config
 from main import should_recommend, configure_scheduler
@@ -80,3 +81,76 @@ def test_scheduler_job_fires_at_configured_minute():
     job = scheduler.get_jobs()[0]
     minute_field = next(f for f in job.trigger.fields if f.name == "minute")
     assert str(minute_field) == "45"
+
+
+# --- run_scan cache integration ---
+
+@pytest.mark.asyncio
+async def test_run_scan_cache_hit_skips_analyze_ticker():
+    """When analyst cache has a hit, analyze_ticker is not called."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from main import run_scan
+
+    bot = MagicMock()
+    bot.send_recommendation = AsyncMock(return_value="msg_1")
+    bot.send_ops_alert = AsyncMock()
+
+    config = Config()
+    config.db_path = ":memory:"
+
+    cached = {"signal": "BUY", "reasoning": "Cached reasoning."}
+
+    with patch("main.get_top_sp500_by_fundamentals", return_value=[]):
+        with patch("main.get_universe", return_value=["AAPL"]):
+            with patch("main.queries.ticker_recommended_today", return_value=False):
+                with patch("main.queries.expire_stale_recommendations"):
+                    with patch("main.yf.Ticker"):
+                        with patch("main.fetch_fundamental_info", return_value={"trailingPE": 20.0, "dividendYield": 0.03, "earningsGrowth": 0.1}):
+                            with patch("main.passes_fundamental_filter", return_value=True):
+                                with patch("main.fetch_news_headlines", return_value=["headline A"]):
+                                    with patch("main.queries.get_cached_analysis", return_value=cached):
+                                        with patch("main.analyze_ticker") as mock_analyze:
+                                            with patch("main.fetch_technical_data", return_value={"price": 150.0, "rsi": 60.0, "ma50": 140.0, "volume_ratio": 1.2}):
+                                                with patch("main.passes_technical_filter", return_value=True):
+                                                    with patch("main.queries.create_recommendation", return_value=1):
+                                                        with patch("main.queries.set_discord_message_id"):
+                                                            await run_scan(bot, config)
+                                                            mock_analyze.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_scan_cache_miss_calls_analyze_ticker_and_caches():
+    """On cache miss, analyze_ticker is called and result is written to cache."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from main import run_scan
+
+    bot = MagicMock()
+    bot.send_recommendation = AsyncMock(return_value="msg_1")
+    bot.send_ops_alert = AsyncMock()
+
+    config = Config()
+    config.db_path = ":memory:"
+
+    analysis_result = {"signal": "BUY", "reasoning": "Fresh analysis."}
+
+    with patch("main.get_top_sp500_by_fundamentals", return_value=[]):
+        with patch("main.get_universe", return_value=["AAPL"]):
+            with patch("main.queries.ticker_recommended_today", return_value=False):
+                with patch("main.queries.expire_stale_recommendations"):
+                    with patch("main.yf.Ticker"):
+                        with patch("main.fetch_fundamental_info", return_value={"trailingPE": 20.0, "dividendYield": 0.03, "earningsGrowth": 0.1}):
+                            with patch("main.passes_fundamental_filter", return_value=True):
+                                with patch("main.fetch_news_headlines", return_value=["headline B"]):
+                                    with patch("main.queries.get_cached_analysis", return_value=None):
+                                        with patch("main.analyze_ticker", return_value=analysis_result) as mock_analyze:
+                                            with patch("main.queries.set_cached_analysis") as mock_set_cache:
+                                                with patch("main.fetch_technical_data", return_value={"price": 150.0, "rsi": 60.0, "ma50": 140.0, "volume_ratio": 1.2}):
+                                                    with patch("main.passes_technical_filter", return_value=True):
+                                                        with patch("main.queries.create_recommendation", return_value=1):
+                                                            with patch("main.queries.set_discord_message_id"):
+                                                                await run_scan(bot, config)
+                                                                mock_analyze.assert_called_once()
+                                                                assert mock_set_cache.call_count == 1
+                                                                args = mock_set_cache.call_args[0]
+                                                                assert "BUY" in args
+                                                                assert "Fresh analysis." in args

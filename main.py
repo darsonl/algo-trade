@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import hashlib
 import logging
 from pathlib import Path
 
@@ -11,7 +12,7 @@ import yfinance as yf
 from config import Config
 from database.models import initialize_db
 from database import queries
-from screener.universe import get_watchlist, get_sp500_tickers, get_universe
+from screener.universe import get_watchlist, get_top_sp500_by_fundamentals, get_universe
 from screener.fundamentals import passes_fundamental_filter, fetch_fundamental_info
 from screener.technicals import passes_technical_filter, fetch_technical_data
 from analyst.news import fetch_news_headlines
@@ -55,9 +56,9 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
 
     watchlist_path = str(Path(__file__).parent / "watchlist.txt")
     try:
-        sp500 = get_sp500_tickers()
+        sp500 = get_top_sp500_by_fundamentals(config)
     except Exception as exc:
-        logger.warning("Could not fetch S&P 500 list: %s — using watchlist only", exc)
+        logger.warning("Could not fetch top S&P 500: %s — using watchlist only", exc)
         sp500 = []
 
     universe = get_universe(watchlist_path, extra_tickers=sp500)
@@ -77,7 +78,22 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
                 continue
 
             headlines = fetch_news_headlines(ticker)
-            analysis = analyze_ticker(ticker, info, headlines, config, client=client)
+            headline_hash = hashlib.sha256(
+                "\n".join(sorted(headlines)).encode()
+            ).hexdigest()
+            cached = queries.get_cached_analysis(config.db_path, ticker, headline_hash)
+            if cached:
+                logger.debug("Cache hit for %s (hash %s...)", ticker, headline_hash[:8])
+                analysis = cached
+            else:
+                analysis = analyze_ticker(ticker, info, headlines, config, client=client)
+                try:
+                    queries.set_cached_analysis(
+                        config.db_path, ticker, headline_hash,
+                        analysis["signal"], analysis["reasoning"]
+                    )
+                except Exception as cache_exc:
+                    logger.warning("Failed to write analyst cache for %s: %s", ticker, cache_exc)
 
             tech_data = fetch_technical_data(yf_ticker)
             if not should_recommend(analysis["signal"], tech_data, config):

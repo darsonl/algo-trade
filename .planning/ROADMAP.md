@@ -50,21 +50,23 @@
 **Goal:** Prevent Gemini free-tier rate limit exhaustion (5 RPM / 20 RPD) by narrowing the analyst call universe, caching results by news content, throttling inter-call rate, and respecting API-specified retry delays on 429s.
 
 **Deliverables:**
-- `get_top_sp500_by_fundamentals(n=10)` in universe.py: ranks S&P 500 by EPS+ROE, returns top N, cached 24h in-memory
+- `get_top_sp500_by_fundamentals(config)` in universe.py: ranks S&P 500 by EPS+ROE, returns top `TOP_SP500_COUNT` (default 10), 24h in-memory cache
 - `run_scan()` uses `get_top_sp500_by_fundamentals` instead of `get_sp500_tickers` (universe: ~20 tickers)
 - `analyst_cache` SQLite table keyed by `(ticker, headline_hash)`; `get_cached_analysis`/`set_cached_analysis` in queries.py
 - `run_scan()` checks analyst cache before each `analyze_ticker` call; stores result after API call
-- `ANALYST_CALL_DELAY_S=12.0` config field; `analyze_ticker` sleeps N seconds before `_call_api` (≤5 RPM)
+- `ANALYST_CALL_DELAY_S=12.0` config field; `analyze_ticker` sleeps N seconds before `_call_api` (<=5 RPM on Gemini free tier)
 - `_wait_for_retry` callable in claude_analyst.py parses Gemini `retryDelay` from 429 body; exponential fallback for other providers
 
 **Requirements:** TOK-01 to TOK-06
-**Plans:** 2 plans
+**Plans:** 4 plans (completed)
 
 Plans:
-- [ ] 02.5-01-PLAN.md — Config fields, analyst_cache schema/queries, universe narrowing function
-- [ ] 02.5-02-PLAN.md — Inter-call delay, retry parsing, cache flow in run_scan
+- [x] 02.5-01-PLAN.md -- Config fields, universe fn
+- [x] 02.5-02-PLAN.md -- analyst_cache schema + queries
+- [x] 02.5-03-PLAN.md -- Inter-call delay + _wait_for_retry
+- [x] 02.5-04-PLAN.md -- Cache flow + universe swap in run_scan
 
-**Verification:** Dry-run scan completes with ≤20 analyst calls; cache hit on re-scan (same headlines); 12s delay between API calls visible in logs
+**Verification:** Universe narrows to ~20 tickers; repeated scan with unchanged headlines makes 0 analyst calls; 12s delay enforces <=5 RPM; 100 tests green
 
 ---
 

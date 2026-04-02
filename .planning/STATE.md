@@ -5,7 +5,7 @@
 See: .planning/PROJECT.md (updated 2026-03-30)
 
 **Core value:** The bot must never place a real order without explicit human approval via Discord.
-**Current focus:** Phase 2.5 — Analyst Token Minimization (planned, ready to execute)
+**Current focus:** Phase 3 — Documentation (next after Phase 2.5 merge)
 
 ---
 
@@ -13,7 +13,7 @@ See: .planning/PROJECT.md (updated 2026-03-30)
 
 **Milestone 1:** Refactor, Harden, Test, and Extend with Sell Functionality
 **Started:** 2026-03-30
-**Phases:** 6 total
+**Phases:** 6 total (+1 inserted)
 
 ---
 
@@ -23,7 +23,7 @@ See: .planning/PROJECT.md (updated 2026-03-30)
 |-------|------|--------|
 | 1 | Refactoring & Code Quality | ✅ Complete |
 | 2 | Reliability & Error Handling | ✅ Complete |
-| 2.5 | Analyst Token Minimization | 📋 Planned |
+| 2.5 | Analyst Token Minimization | ✅ Complete |
 | 3 | Documentation | ⬜ Not started |
 | 4 | Test Coverage Expansion | ⬜ Not started |
 | 5 | Position Monitoring | ⬜ Not started |
@@ -55,16 +55,31 @@ Location: .planning/codebase/
 
 ---
 
+## Phase 2.5 Context
+
+- Source: approved design spec docs/superpowers/specs/2026-04-01-analyst-token-minimization-design.md
+- 4 plans executed: Wave 1 (config+universe, DB cache, rate limiting) -> Wave 2 (main.py integration)
+- Branch merged: feat/analyst-token-minimization (100 tests green)
+- Config defaults corrected post-merge: TOP_SP500_COUNT=10, ANALYST_CALL_DELAY_S=12.0
+
 ## Next Action
 
-Phase 2.5 planned (2 plans, 2 waves, all TOK-01–TOK-06 covered, checker passed). Run `/gsd:execute-phase 2.5` to execute.
+Run /gsd:plan-phase 3 to plan Phase 3 — Documentation.
+
+### Phase 2.5 Completed (2026-04-02)
+All TOK-01 through TOK-06 applied. Key changes:
+- get_top_sp500_by_fundamentals(config) in universe.py — top 10 S&P by EPS+ROE, 24h in-memory cache
+- analyst_cache table + get_cached_analysis/set_cached_analysis in queries.py
+- run_scan() — SHA-256 headline hash, cache check before/store after analyze_ticker
+- analyze_ticker() — time.sleep(config.analyst_call_delay_s) before _call_api
+- _wait_for_retry in claude_analyst.py — parses Gemini retryDelay from 429 body
 
 ### Phase 1 Completed (2026-03-31)
 All REF-01 through REF-10 applied. Key changes:
-- WAL mode, `earnings_growth` schema + migration, safe `parse_positions` (DB/Schwab)
-- `MA_WINDOW`/`MIN_HISTORY_BARS` constants, `min_volume_ratio` in Config
+- WAL mode, earnings_growth schema + migration, safe parse_positions (DB/Schwab)
+- MA_WINDOW/MIN_HISTORY_BARS constants, min_volume_ratio in Config
 - All deferred imports moved to module top level
-- `Config()` singleton removed; `main()` owns its own instance
-- Shared `yf.Ticker` per ticker (halves yfinance network calls)
-- Single `anthropic.Anthropic` client per scan (reuses HTTP connection pool)
-- `bot.dispatch("manual_scan")` replaced with `asyncio.create_task` via stored callback
+- Config() singleton removed; main() owns its own instance
+- Shared yf.Ticker per ticker (halves yfinance network calls)
+- Single anthropic.Anthropic client per scan (reuses HTTP connection pool)
+- bot.dispatch("manual_scan") replaced with asyncio.create_task via stored callback

@@ -1,11 +1,27 @@
 from __future__ import annotations
+import time
 import anthropic
 import openai
 from config import Config
-from tenacity import retry, stop_after_attempt, wait_exponential
+from tenacity import retry, stop_after_attempt
+
+
+def _wait_for_retry(retry_state) -> float:
+    """Wait based on retryDelay in 429 response body, fallback to exponential."""
+    exc = retry_state.outcome.exception()
+    if exc and hasattr(exc, "response"):
+        try:
+            details = exc.response.json()["error"]["details"]
+            detail = next((d for d in details if "retryDelay" in d), None)
+            if detail is not None:
+                return float(detail["retryDelay"].rstrip("s")) + 1
+        except Exception:
+            pass
+    return min(2 ** retry_state.attempt_number, 60)
+
 
 _retry = retry(
-    wait=wait_exponential(multiplier=1, min=2, max=30),
+    wait=_wait_for_retry,
     stop=stop_after_attempt(3),
     reraise=True,
 )
@@ -126,6 +142,9 @@ def analyze_ticker(
 
     model = config.analyst_model or _DEFAULT_MODELS.get(config.analyst_provider, "")
     prompt = build_prompt(ticker, info, headlines)
+
+    if config.analyst_call_delay_s > 0:
+        time.sleep(config.analyst_call_delay_s)
 
     text = _call_api(client, model, prompt)
 
