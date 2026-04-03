@@ -78,9 +78,11 @@ def _cache_is_fresh() -> bool:
 def _fetch_sp500_from_wikipedia() -> list[str]:
     """Fetch S&P 500 tickers directly from Wikipedia (no cache logic)."""
     import pandas as pd
-    table = pd.read_html(
-        "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies", header=0
-    )
+    import urllib.request
+    url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req) as response:
+        table = pd.read_html(response, header=0)
     return table[0]["Symbol"].str.upper().tolist()
 
 
