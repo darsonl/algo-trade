@@ -150,6 +150,38 @@ Plans:
 
 ---
 
+## Phase 7: Asyncio Event Loop Fix
+
+**Goal:** Prevent Discord gateway heartbeat blocks during daily scans by offloading synchronous yfinance calls off the event loop.
+
+**Context:** `fetch_fundamental_info`, `fetch_news_headlines`, and `get_top_sp500_by_fundamentals` are synchronous blocking calls currently running directly on the Discord event loop inside `run_scan`. Each call takes 1-3 seconds; across a full universe scan this blocks the heartbeat for 10+ seconds, risking gateway disconnection. Only `analyze_ticker` is currently wrapped in `asyncio.to_thread`. Fix: wrap the three yfinance calls in `asyncio.to_thread` as well.
+
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD
+
+**Depends on:** Phase 6
+
+---
+
+## Phase 8: Skip Fundamental Filtering for ETFs
+
+**Goal:** ETFs in the watchlist (SPY, QQQ, GLD, BND, etc.) are incorrectly dropped by the fundamental filter because they have no earnings growth, low/no dividend yield, and high/no P/E ratio. The filter was designed for individual stocks.
+
+**Context:** Fix by detecting ETFs via `yfinance quoteType='ETF'` and bypassing `passes_fundamental_filter` for them — ETFs pass directly to the analyst. Individual stock thresholds remain unchanged.
+
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD
+
+**Depends on:** Phase 6
+
+---
+
 ## Milestone Complete
 
 **Definition of Done:**
@@ -167,49 +199,23 @@ Plans:
 ```
 Phase 1 (Refactoring)
     |
-Phase 2 (Reliability)      <- depends on clean code from Phase 1
+Phase 2 (Reliability)           <- depends on clean code from Phase 1
     |
-Phase 2.5 (Token Minimization) <- depends on reliability layer from Phase 2
+Phase 2.5 (Token Minimization)  <- depends on reliability layer from Phase 2
     |
-Phase 3 (Documentation)    <- can run in parallel with Phase 2.5, shown sequential for simplicity
+Phase 3 (Documentation)         <- can run in parallel with Phase 2.5
     |
-Phase 4 (Testing)          <- tests the refactored + hardened code
+Phase 4 (Testing)               <- tests the refactored + hardened code
     |
 Phase 5 (Position Monitoring)   <- DB schema + queries needed before sell logic
     |
 Phase 6 (Sell Signals & Orders) <- depends on positions table from Phase 5
+    |
+Phase 7 (Asyncio Event Loop Fix)    <- can run after Phase 6; runtime reliability fix
+    |
+Phase 8 (ETF Fundamental Bypass)    <- can run after Phase 6; correctness fix for watchlist ETFs
 ```
 
 ---
 *Roadmap defined: 2026-03-30*
-*Last updated: 2026-04-03 — Phase 5 complete; backlog 999.1 added*
-
----
-
-## Backlog
-
-### Phase 999.2: Skip Fundamental Filtering for ETFs (BACKLOG)
-
-**Goal:** ETFs in the watchlist (SPY, QQQ, GLD, BND, etc.) are incorrectly dropped by the fundamental filter because they have no earnings growth, low/no dividend yield, and high/no P/E ratio. The filter was designed for individual stocks.
-
-**Context:** Fix by detecting ETFs via `yfinance quoteType='ETF'` and bypassing `passes_fundamental_filter` for them — ETFs pass directly to the analyst. Individual stock thresholds remain unchanged.
-
-**Requirements:** TBD
-**Plans:** 0 plans
-
-Plans:
-- [ ] TBD (promote with /gsd:review-backlog when ready)
-
----
-
-### Phase 999.1: Asyncio Event Loop Blocking — yfinance Calls in run_scan (BACKLOG)
-
-**Goal:** Prevent Discord gateway heartbeat blocks during daily scans by offloading synchronous yfinance calls off the event loop.
-
-**Context:** `fetch_fundamental_info`, `fetch_news_headlines`, and `get_top_sp500_by_fundamentals` are synchronous blocking calls currently running directly on the Discord event loop inside `run_scan`. Each call takes 1-3 seconds; across a full universe scan this blocks the heartbeat for 10+ seconds, risking gateway disconnection. Only `analyze_ticker` is currently wrapped in `asyncio.to_thread`. Fix: wrap the three yfinance calls in `asyncio.to_thread` as well.
-
-**Requirements:** TBD
-**Plans:** 0 plans
-
-Plans:
-- [ ] TBD (promote with /gsd:review-backlog when ready)
+*Last updated: 2026-04-04 — promoted backlog 999.1 → Phase 7, 999.2 → Phase 8*
