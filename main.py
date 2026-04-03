@@ -56,7 +56,7 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
 
     watchlist_path = str(Path(__file__).parent / "watchlist.txt")
     try:
-        sp500 = get_top_sp500_by_fundamentals(config)
+        sp500 = await asyncio.to_thread(get_top_sp500_by_fundamentals, config)
     except Exception as exc:
         logger.warning("Could not fetch top S&P 500: %s — using watchlist only", exc)
         sp500 = []
