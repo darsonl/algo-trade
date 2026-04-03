@@ -188,6 +188,20 @@ Phase 6 (Sell Signals & Orders) <- depends on positions table from Phase 5
 
 ## Backlog
 
+### Phase 999.2: Skip Fundamental Filtering for ETFs (BACKLOG)
+
+**Goal:** ETFs in the watchlist (SPY, QQQ, GLD, BND, etc.) are incorrectly dropped by the fundamental filter because they have no earnings growth, low/no dividend yield, and high/no P/E ratio. The filter was designed for individual stocks.
+
+**Context:** Fix by detecting ETFs via `yfinance quoteType='ETF'` and bypassing `passes_fundamental_filter` for them — ETFs pass directly to the analyst. Individual stock thresholds remain unchanged.
+
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (promote with /gsd:review-backlog when ready)
+
+---
+
 ### Phase 999.1: Asyncio Event Loop Blocking — yfinance Calls in run_scan (BACKLOG)
 
 **Goal:** Prevent Discord gateway heartbeat blocks during daily scans by offloading synchronous yfinance calls off the event loop.
