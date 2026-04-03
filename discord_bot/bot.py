@@ -9,7 +9,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from config import Config
 from database import queries
-from discord_bot.embeds import build_recommendation_embed
+from discord_bot.embeds import build_recommendation_embed, build_positions_embed
 from schwab_client.orders import place_order
 
 logger = logging.getLogger(__name__)
@@ -109,12 +109,19 @@ class TradingBot(discord.Client):
         self._scan_callback = None  # Set by main.py after construction
 
     async def setup_hook(self):
-        """Register and sync the /scan slash command on bot startup."""
+        """Register and sync the /scan and /positions slash commands on bot startup."""
         self.tree.add_command(
             app_commands.Command(
                 name="scan",
                 description="Trigger an immediate stock scan",
                 callback=self._scan_command,
+            )
+        )
+        self.tree.add_command(
+            app_commands.Command(
+                name="positions",
+                description="Show current open positions and estimated P&L",
+                callback=self._positions_command,
             )
         )
         await self.tree.sync()
@@ -126,6 +133,16 @@ class TradingBot(discord.Client):
             pass  # Interaction may have expired; still run the scan
         if self._scan_callback is not None:
             asyncio.create_task(self._scan_callback())
+
+    async def _positions_command(self, interaction: discord.Interaction):
+        """Handle /positions slash command: show open holdings with P&L."""
+        from screener.positions import get_position_summary
+        summaries = await asyncio.to_thread(get_position_summary, self.config.db_path)
+        if not summaries:
+            await interaction.response.send_message("No open positions.")
+            return
+        embed = build_positions_embed(summaries)
+        await interaction.response.send_message(embed=embed)
 
     async def send_recommendation(
         self,

@@ -258,3 +258,66 @@ def test_build_positions_embed_empty():
     embed = build_positions_embed([])
     assert embed.description == "No open positions."
     assert len(embed.fields) == 0
+
+
+# ---------------------------------------------------------------------------
+# Plan 03 Task 2: /positions slash command tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+@patch("discord_bot.bot.queries")
+async def test_positions_command_sends_embed(mock_queries):
+    """_positions_command sends an embed when positions exist."""
+    import asyncio
+    from unittest.mock import AsyncMock
+    from discord_bot.bot import TradingBot
+    from config import Config
+
+    cfg = MagicMock(spec=Config)
+    cfg.db_path = "test.db"
+
+    bot = TradingBot.__new__(TradingBot)
+    bot.config = cfg
+
+    summary = {
+        "ticker": "AAPL",
+        "shares": 5,
+        "avg_cost_usd": 100.0,
+        "current_price": 110.0,
+        "pnl_pct": 0.1,
+    }
+
+    mock_interaction = MagicMock()
+    mock_interaction.response.send_message = AsyncMock()
+
+    with patch("screener.positions.get_open_positions", return_value=[]):
+        with patch("discord_bot.bot.asyncio.to_thread", new=AsyncMock(return_value=[summary])):
+            await bot._positions_command(mock_interaction)
+
+    call_kwargs = mock_interaction.response.send_message.call_args
+    assert call_kwargs is not None
+    # Should be called with embed= kwarg, not a plain string
+    assert "embed" in call_kwargs.kwargs
+
+
+@pytest.mark.asyncio
+@patch("discord_bot.bot.queries")
+async def test_positions_command_empty(mock_queries):
+    """_positions_command sends plain 'No open positions.' text when no positions exist."""
+    from unittest.mock import AsyncMock
+    from discord_bot.bot import TradingBot
+    from config import Config
+
+    cfg = MagicMock(spec=Config)
+    cfg.db_path = "test.db"
+
+    bot = TradingBot.__new__(TradingBot)
+    bot.config = cfg
+
+    mock_interaction = MagicMock()
+    mock_interaction.response.send_message = AsyncMock()
+
+    with patch("discord_bot.bot.asyncio.to_thread", new=AsyncMock(return_value=[])):
+        await bot._positions_command(mock_interaction)
+
+    mock_interaction.response.send_message.assert_called_once_with("No open positions.")
