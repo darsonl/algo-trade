@@ -61,9 +61,9 @@
 
 ### Position Monitoring
 
-- [ ] **POS-01**: positions table added to DB schema (id, ticker, shares, avg_cost_usd, entry_date, status: open/closed)
-- [ ] **POS-02**: On trade approval, a position record is created or existing position is updated (avg cost)
-- [ ] **POS-03**: get_open_positions query returns all open positions with current P&L (uses last known price)
+- [x] **POS-01**: positions table added to DB schema (id, ticker, shares, avg_cost_usd, entry_date, status: open/closed)
+- [x] **POS-02**: On trade approval, a position record is created or existing position is updated (avg cost)
+- [x] **POS-03**: get_open_positions query returns all open positions with current P&L (uses last known price)
 - [ ] **POS-04**: /positions Discord slash command displays open holdings table (ticker, shares, avg cost, current price, P&L%)
 - [ ] **POS-05**: Before approving a buy, check if position size + existing exposure exceeds MAX_POSITION_SIZE_USD
 - [ ] **POS-06**: Daily scan skips BUY analysis for tickers where a position already exists (prevents stacking)

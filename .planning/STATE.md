@@ -5,7 +5,7 @@
 See: .planning/PROJECT.md (updated 2026-03-30)
 
 **Core value:** The bot must never place a real order without explicit human approval via Discord.
-**Current focus:** Phase 3 — Documentation (next after Phase 2.5 merge)
+**Current focus:** Phase 5 — Position Monitoring (next after Phase 4 complete)
 
 ---
 
@@ -25,8 +25,8 @@ See: .planning/PROJECT.md (updated 2026-03-30)
 | 2 | Reliability & Error Handling | ✅ Complete |
 | 2.5 | Analyst Token Minimization | ✅ Complete |
 | 3 | Documentation | ✅ Complete |
-| 4 | Test Coverage Expansion | 🔄 In progress (2/N plans) |
-| 5 | Position Monitoring | ⬜ Not started |
+| 4 | Test Coverage Expansion | ✅ Complete |
+| 5 | Position Monitoring | 🔄 In Progress (Plan 1/3 complete) |
 | 6 | Sell Signals & Sell Orders | ⬜ Not started |
 
 ---
@@ -64,7 +64,23 @@ Location: .planning/codebase/
 
 ## Next Action
 
-Continue Phase 4 Test Coverage Expansion — plans 04-01 and 04-02 complete.
+Continue Phase 5: Position Monitoring — next plan is 05-02 (position sync on trade approval).
+
+### Phase 5 Plan 01 Completed (2026-04-03)
+Positions table DDL and 6 CRUD query functions (POS-01, POS-02, POS-03).
+- Added positions table to initialize_db executescript in database/models.py
+- Added create_position (ON CONFLICT upsert for re-entry), update_position (weighted avg), get_open_positions, has_open_position, close_position, upsert_position to database/queries.py
+- Created tests/test_positions.py with 11 tests; all 11 pass
+- Weighted avg verified: 5@$100 + 5@$120 = $110.00
+- Commit: 24faef6
+
+### Analyst Fallback Provider Added (2026-04-03, outside GSD phases)
+Added optional fallback analyst provider to handle Gemini quota exhaustion gracefully.
+- `config.py`: 3 new fields — `analyst_fallback_provider`, `analyst_fallback_api_key`, `analyst_fallback_model`
+- `analyst/claude_analyst.py`: `create_fallback_client()` + fallback try/except in `analyze_ticker()`; only API failures trigger fallback (not parse errors)
+- `main.py`: creates `fallback_client` once per scan, passes to `analyze_ticker`
+- `.env`: configured with `ANALYST_FALLBACK_PROVIDER=gemini`, same Gemini API key, `ANALYST_FALLBACK_MODEL=gemma-4-31b-it` (15 RPM / 1.5K RPD free tier)
+- `.env.example`: documents new vars with GitHub Models as the recommended alternative
 
 ### Phase 4 Plan 02 Completed (2026-04-03)
 Tests for Discord button handlers and DB edge cases (TEST-02, TEST-03, TEST-07, TEST-08).
