@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-03-30)
 | 2.5 | Analyst Token Minimization | ✅ Complete |
 | 3 | Documentation | ✅ Complete |
 | 4 | Test Coverage Expansion | ✅ Complete |
-| 5 | Position Monitoring | 🔄 In Progress (Plan 1/3 complete) |
+| 5 | Position Monitoring | 🔄 In Progress (Plan 2/3 complete) |
 | 6 | Sell Signals & Sell Orders | ⬜ Not started |
 
 ---
@@ -64,7 +64,14 @@ Location: .planning/codebase/
 
 ## Next Action
 
-Continue Phase 5: Position Monitoring — next plan is 05-02 (position sync on trade approval).
+Continue Phase 5: Position Monitoring — next plan is 05-03 (position display in Discord + /positions command).
+
+### Phase 5 Plan 02 Completed (2026-04-03)
+Exposure guard + position upsert in approve handler; open-position skip guard in run_scan (POS-02, POS-05, POS-06).
+- discord_bot/bot.py: exposure guard blocks buys exceeding MAX_POSITION_SIZE_USD (ephemeral); upsert_position called on successful approve
+- main.py: has_open_position guard skips tickers with open positions before fundamental filter
+- 6 new tests (4 button, 2 run_scan); fixed 2 existing test_main.py tests (Rule 1 auto-fix)
+- Commits: 80f05da, 8891995, 3ab0275; 164 tests green
 
 ### Phase 5 Plan 01 Completed (2026-04-03)
 Positions table DDL and 6 CRUD query functions (POS-01, POS-02, POS-03).
