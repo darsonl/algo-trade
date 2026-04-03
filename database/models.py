@@ -48,6 +48,17 @@ def initialize_db(db_path: str) -> None:
             created_at    TEXT NOT NULL DEFAULT (datetime('now')),
             UNIQUE(ticker, headline_hash)
         );
+
+        CREATE TABLE IF NOT EXISTS positions (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            ticker       TEXT NOT NULL UNIQUE,
+            shares       REAL NOT NULL,
+            avg_cost_usd REAL NOT NULL,
+            entry_date   TEXT NOT NULL DEFAULT (date('now')),
+            status       TEXT NOT NULL DEFAULT 'open',
+            last_price   REAL,
+            last_updated TEXT
+        );
     """)
     conn.commit()
     try:

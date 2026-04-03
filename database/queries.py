@@ -138,3 +138,94 @@ def set_cached_analysis(
     )
     conn.commit()
     conn.close()
+
+
+# --- Position CRUD ---
+
+
+def create_position(db_path: str, ticker: str, shares: float, avg_cost_usd: float) -> int:
+    """Insert a new open position for ticker, or re-open a closed one via ON CONFLICT upsert.
+
+    If a row for ticker already exists (from a prior closed position), the conflict clause
+    resets shares, avg_cost_usd, entry_date, and status back to 'open'. Returns the row id.
+    """
+    conn = get_connection(db_path)
+    cursor = conn.execute(
+        """INSERT INTO positions (ticker, shares, avg_cost_usd, entry_date, status)
+           VALUES (?, ?, ?, date('now'), 'open')
+           ON CONFLICT(ticker) DO UPDATE SET
+               shares=excluded.shares,
+               avg_cost_usd=excluded.avg_cost_usd,
+               entry_date=date('now'),
+               status='open',
+               last_price=NULL,
+               last_updated=NULL""",
+        (ticker, shares, avg_cost_usd),
+    )
+    conn.commit()
+    pos_id = cursor.lastrowid
+    conn.close()
+    return pos_id
+
+
+def update_position(db_path: str, ticker: str, new_shares: float, buy_price: float) -> None:
+    """Add new_shares to the existing open position for ticker using a weighted average cost.
+
+    The weighted average formula is:
+        (existing_shares * existing_avg + new_shares * buy_price) / (existing_shares + new_shares)
+    Only updates rows where status='open'.
+    """
+    conn = get_connection(db_path)
+    conn.execute(
+        """UPDATE positions
+           SET shares = shares + ?,
+               avg_cost_usd = (shares * avg_cost_usd + ? * ?) / (shares + ?)
+           WHERE ticker = ? AND status = 'open'""",
+        (new_shares, new_shares, buy_price, new_shares, ticker),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_open_positions(db_path: str) -> list[sqlite3.Row]:
+    """Return all rows from positions where status='open', ordered by entry_date ascending."""
+    conn = get_connection(db_path)
+    rows = conn.execute(
+        "SELECT * FROM positions WHERE status = 'open' ORDER BY entry_date ASC"
+    ).fetchall()
+    conn.close()
+    return rows
+
+
+def has_open_position(db_path: str, ticker: str) -> bool:
+    """Return True if an open position for ticker exists, False otherwise."""
+    conn = get_connection(db_path)
+    row = conn.execute(
+        "SELECT id FROM positions WHERE ticker = ? AND status = 'open'",
+        (ticker,),
+    ).fetchone()
+    conn.close()
+    return row is not None
+
+
+def close_position(db_path: str, ticker: str) -> None:
+    """Set status='closed' on the open position for ticker."""
+    conn = get_connection(db_path)
+    conn.execute(
+        "UPDATE positions SET status = 'closed' WHERE ticker = ? AND status = 'open'",
+        (ticker,),
+    )
+    conn.commit()
+    conn.close()
+
+
+def upsert_position(db_path: str, ticker: str, shares: float, price: float) -> None:
+    """Create a new position or add shares to an existing open position.
+
+    Dispatches to create_position when no open position exists for ticker,
+    or update_position (weighted avg cost) when one does.
+    """
+    if has_open_position(db_path, ticker):
+        update_position(db_path, ticker, new_shares=shares, buy_price=price)
+    else:
+        create_position(db_path, ticker, shares=shares, avg_cost_usd=price)
