@@ -64,7 +64,16 @@ Location: .planning/codebase/
 
 ## Next Action
 
-Phase 5 complete. Begin Phase 6: Sell Signals & Sell Orders.
+Phase 6: Sell Signals & Sell Orders. Run `/gsd:execute-phase 6`.
+
+### Production Fixes Applied (2026-04-03)
+Two issues discovered during first live run after Phase 5:
+
+1. **get_top_sp500_by_fundamentals blocked event loop** — was called synchronously inside async run_scan, blocking Discord heartbeat for 110+ seconds. Fixed: wrapped in `asyncio.to_thread` (commit ae66e64). Backlog 999.1 tracks remaining yfinance blocking calls (fetch_fundamental_info, fetch_news_headlines).
+
+2. **Production DB missing tables** — algo_trade.db was missing analyst_cache and positions tables (created in Phase 2.5 and Phase 5 respectively). Fixed: ran initialize_db manually against production DB. Root cause: bot was started with stale binary before new code was running. Not a code bug.
+
+3. **Watchlist ETFs filtered out by fundamental filter** — SPY, QQQ etc. have no earnings growth / low dividend yield and fail the stock-oriented fundamental filter. April 3 scan returned 0 recs (also partly due to tariff sell-off). Backlog 999.2 tracks ETF bypass. No code change needed now.
 
 ### Phase 5 Plan 03 Completed (2026-04-03)
 /positions slash command with live P&L display (POS-03, POS-04).
