@@ -68,6 +68,8 @@ Plans:
 
 **Verification:** Universe narrows to ~20 tickers; repeated scan with unchanged headlines makes 0 analyst calls; 12s delay enforces <=5 RPM; 100 tests green
 
+**Post-completion addition (2026-04-03):** Analyst fallback provider — when primary API call fails after retries (quota exhausted, rate limit), `analyze_ticker()` automatically retries with a configurable fallback model. Currently configured with Gemma 4 31B (same Gemini key, 15 RPM / 1.5K RPD).
+
 ---
 
 ## Phase 3: Documentation
@@ -117,6 +119,13 @@ Plans:
 - `screener/positions.py`: get_position_summary helper (fetch last price via yfinance, compute P&L)
 
 **Requirements:** POS-01 to POS-06
+**Plans:** 3 plans
+
+Plans:
+- [ ] 05-01-PLAN.md -- positions table DDL + 6 CRUD query functions + tests
+- [ ] 05-02-PLAN.md -- approve handler exposure check + position upsert + run_scan skip guard
+- [ ] 05-03-PLAN.md -- /positions slash command + get_position_summary helper + embed
+
 **Verification:** `/positions` command shows correct holdings after test buys in dry-run; exposure check blocks over-limit approvals
 
 ---
