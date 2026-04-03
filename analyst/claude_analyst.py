@@ -9,23 +9,25 @@ from tenacity import retry, stop_after_attempt
 def _wait_for_retry(retry_state) -> float:
     """Wait based on retryDelay in 429 response body, fallback to exponential.
 
-    If retryDelay exceeds 60s the quota is exhausted for the day — re-raise
-    immediately so tenacity stops retrying and the error propagates to the
-    per-ticker except block in run_scan.
+    If retryDelay > 60s (daily quota exhausted), re-raises immediately so
+    tenacity stops retrying and the error propagates to the caller.
     """
     exc = retry_state.outcome.exception()
+    delay = None
     if exc and hasattr(exc, "response"):
         try:
             details = exc.response.json()["error"]["details"]
             detail = next((d for d in details if "retryDelay" in d), None)
             if detail is not None:
                 delay = float(detail["retryDelay"].rstrip("s"))
-                if delay > 60:
-                    raise exc  # daily quota exhausted — abort immediately
-                return delay + 1
-        except Exception as inner:
-            if inner is exc:
-                raise
+        except Exception:
+            pass
+
+    if delay is not None:
+        if delay > 60:
+            raise exc  # daily quota exhausted — abort immediately, don't retry
+        return delay + 1
+
     return min(2 ** retry_state.attempt_number, 60)
 
 
