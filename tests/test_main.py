@@ -103,19 +103,20 @@ async def test_run_scan_cache_hit_skips_analyze_ticker():
     with patch("main.get_top_sp500_by_fundamentals", return_value=[]):
         with patch("main.get_universe", return_value=["AAPL"]):
             with patch("main.queries.ticker_recommended_today", return_value=False):
-                with patch("main.queries.expire_stale_recommendations"):
-                    with patch("main.yf.Ticker"):
-                        with patch("main.fetch_fundamental_info", return_value={"trailingPE": 20.0, "dividendYield": 0.03, "earningsGrowth": 0.1}):
-                            with patch("main.passes_fundamental_filter", return_value=True):
-                                with patch("main.fetch_news_headlines", return_value=["headline A"]):
-                                    with patch("main.queries.get_cached_analysis", return_value=cached):
-                                        with patch("main.analyze_ticker") as mock_analyze:
-                                            with patch("main.fetch_technical_data", return_value={"price": 150.0, "rsi": 60.0, "ma50": 140.0, "volume_ratio": 1.2}):
-                                                with patch("main.passes_technical_filter", return_value=True):
-                                                    with patch("main.queries.create_recommendation", return_value=1):
-                                                        with patch("main.queries.set_discord_message_id"):
-                                                            await run_scan(bot, config)
-                                                            mock_analyze.assert_not_called()
+                with patch("main.queries.has_open_position", return_value=False):
+                    with patch("main.queries.expire_stale_recommendations"):
+                        with patch("main.yf.Ticker"):
+                            with patch("main.fetch_fundamental_info", return_value={"trailingPE": 20.0, "dividendYield": 0.03, "earningsGrowth": 0.1}):
+                                with patch("main.passes_fundamental_filter", return_value=True):
+                                    with patch("main.fetch_news_headlines", return_value=["headline A"]):
+                                        with patch("main.queries.get_cached_analysis", return_value=cached):
+                                            with patch("main.analyze_ticker") as mock_analyze:
+                                                with patch("main.fetch_technical_data", return_value={"price": 150.0, "rsi": 60.0, "ma50": 140.0, "volume_ratio": 1.2}):
+                                                    with patch("main.passes_technical_filter", return_value=True):
+                                                        with patch("main.queries.create_recommendation", return_value=1):
+                                                            with patch("main.queries.set_discord_message_id"):
+                                                                await run_scan(bot, config)
+                                                                mock_analyze.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -136,21 +137,22 @@ async def test_run_scan_cache_miss_calls_analyze_ticker_and_caches():
     with patch("main.get_top_sp500_by_fundamentals", return_value=[]):
         with patch("main.get_universe", return_value=["AAPL"]):
             with patch("main.queries.ticker_recommended_today", return_value=False):
-                with patch("main.queries.expire_stale_recommendations"):
-                    with patch("main.yf.Ticker"):
-                        with patch("main.fetch_fundamental_info", return_value={"trailingPE": 20.0, "dividendYield": 0.03, "earningsGrowth": 0.1}):
-                            with patch("main.passes_fundamental_filter", return_value=True):
-                                with patch("main.fetch_news_headlines", return_value=["headline B"]):
-                                    with patch("main.queries.get_cached_analysis", return_value=None):
-                                        with patch("main.analyze_ticker", return_value=analysis_result) as mock_analyze:
-                                            with patch("main.queries.set_cached_analysis") as mock_set_cache:
-                                                with patch("main.fetch_technical_data", return_value={"price": 150.0, "rsi": 60.0, "ma50": 140.0, "volume_ratio": 1.2}):
-                                                    with patch("main.passes_technical_filter", return_value=True):
-                                                        with patch("main.queries.create_recommendation", return_value=1):
-                                                            with patch("main.queries.set_discord_message_id"):
-                                                                await run_scan(bot, config)
-                                                                mock_analyze.assert_called_once()
-                                                                assert mock_set_cache.call_count == 1
-                                                                args = mock_set_cache.call_args[0]
-                                                                assert "BUY" in args
-                                                                assert "Fresh analysis." in args
+                with patch("main.queries.has_open_position", return_value=False):
+                    with patch("main.queries.expire_stale_recommendations"):
+                        with patch("main.yf.Ticker"):
+                            with patch("main.fetch_fundamental_info", return_value={"trailingPE": 20.0, "dividendYield": 0.03, "earningsGrowth": 0.1}):
+                                with patch("main.passes_fundamental_filter", return_value=True):
+                                    with patch("main.fetch_news_headlines", return_value=["headline B"]):
+                                        with patch("main.queries.get_cached_analysis", return_value=None):
+                                            with patch("main.analyze_ticker", return_value=analysis_result) as mock_analyze:
+                                                with patch("main.queries.set_cached_analysis") as mock_set_cache:
+                                                    with patch("main.fetch_technical_data", return_value={"price": 150.0, "rsi": 60.0, "ma50": 140.0, "volume_ratio": 1.2}):
+                                                        with patch("main.passes_technical_filter", return_value=True):
+                                                            with patch("main.queries.create_recommendation", return_value=1):
+                                                                with patch("main.queries.set_discord_message_id"):
+                                                                    await run_scan(bot, config)
+                                                                    mock_analyze.assert_called_once()
+                                                                    assert mock_set_cache.call_count == 1
+                                                                    args = mock_set_cache.call_args[0]
+                                                                    assert "BUY" in args
+                                                                    assert "Fresh analysis." in args
