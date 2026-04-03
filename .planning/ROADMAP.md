@@ -166,13 +166,23 @@ Plans:
 
 ---
 
-## Phase 8: Skip Fundamental Filtering for ETFs
+## Phase 8: ETF Scan Separation
 
-**Goal:** ETFs in the watchlist (SPY, QQQ, GLD, BND, etc.) are incorrectly dropped by the fundamental filter because they have no earnings growth, low/no dividend yield, and high/no P/E ratio. The filter was designed for individual stocks.
+**Goal:** Give ETFs their own scan path — `/scan_etf` Discord command — so the stock screener logic stays clean and ETF analysis isn't hamstrung by stock-centric fundamental filters.
 
-**Context:** Fix by detecting ETFs via `yfinance quoteType='ETF'` and bypassing `passes_fundamental_filter` for them — ETFs pass directly to the analyst. Individual stock thresholds remain unchanged.
+**Context:** ETFs (SPY, QQQ, GLD, BND, etc.) in `watchlist.txt` are currently dropped by `passes_fundamental_filter` because they have no earnings growth, low/no P/E ratio, and atypical yields. Rather than hacking around this with an ETF bypass in the existing flow, the right fix is to separate concerns entirely:
+- `/scan` runs only on individual stocks (current behavior minus ETFs)
+- `/scan_etf` runs only on ETFs from the watchlist, skipping `passes_fundamental_filter` entirely and using a tailored analyst prompt
 
-**Requirements:** TBD
+**Deliverables:**
+- `screener/universe.py`: `partition_watchlist(watchlist)` splits tickers into `(stocks, etfs)` using `yfinance quoteType`
+- `run_scan()` calls `partition_watchlist`, passes only stocks through the existing flow (fundamentals → analyst → technicals)
+- `run_scan_etf()` in `main.py`: iterates ETF tickers, skips fundamental filter, calls analyst with ETF-aware prompt, posts recommendations
+- `analyst/claude_analyst.py`: `build_etf_prompt(ticker, news)` — no earnings/P/E context, focuses on trend/momentum/macro signals
+- `/scan_etf` Discord slash command in `discord_bot/bot.py`: triggers `run_scan_etf()`; same embed + Approve/Reject flow as `/scan`
+- ETF recommendations use the same `recommendations` table (signal, reasoning, status columns unchanged)
+
+**Requirements:** ETF-01 to ETF-06
 **Plans:** 0 plans
 
 Plans:
@@ -213,9 +223,9 @@ Phase 6 (Sell Signals & Orders) <- depends on positions table from Phase 5
     |
 Phase 7 (Asyncio Event Loop Fix)    <- can run after Phase 6; runtime reliability fix
     |
-Phase 8 (ETF Fundamental Bypass)    <- can run after Phase 6; correctness fix for watchlist ETFs
+Phase 8 (ETF Scan Separation)       <- can run after Phase 6; /scan_etf command + partitioned universe
 ```
 
 ---
 *Roadmap defined: 2026-03-30*
-*Last updated: 2026-04-04 — promoted backlog 999.1 → Phase 7, 999.2 → Phase 8*
+*Last updated: 2026-04-04 — Phase 8 expanded: ETF scan separation + /scan_etf command*
