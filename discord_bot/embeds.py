@@ -36,3 +36,28 @@ def build_recommendation_embed(
         inline=True,
     )
     return embed
+
+
+def build_positions_embed(summaries: list[dict]) -> discord.Embed:
+    """Build a Discord embed showing open positions with P&L.
+
+    Each position gets an inline field with ticker, shares, avg cost, current price, and P&L%.
+    Shows 'No open positions.' if summaries is empty. Truncates at 25 fields (Discord limit).
+    """
+    embed = discord.Embed(title="Open Positions", color=discord.Color.blurple())
+    for s in summaries[:25]:
+        pnl_str = f"{s['pnl_pct']:.1%}" if s['pnl_pct'] is not None else "N/A"
+        price_str = f"${s['current_price']:.2f}" if s['current_price'] else "N/A"
+        embed.add_field(
+            name=s["ticker"],
+            value=(
+                f"Shares: {s['shares']}\n"
+                f"Avg Cost: ${s['avg_cost_usd']:.2f}\n"
+                f"Current: {price_str}\n"
+                f"P&L: {pnl_str}"
+            ),
+            inline=True,
+        )
+    if not summaries:
+        embed.description = "No open positions."
+    return embed

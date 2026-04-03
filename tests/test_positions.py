@@ -1,6 +1,7 @@
 import pytest
 import sqlite3
 import os
+from unittest.mock import patch, MagicMock
 from database.models import initialize_db
 from database.queries import (
     create_position,
@@ -152,3 +153,108 @@ def test_upsert_position_updates_when_open_position_exists():
     # 4@100 + 4@120 = 8 shares at $110 avg
     assert row["shares"] == 8.0
     assert abs(row["avg_cost_usd"] - 110.0) < 0.01
+
+
+# ---------------------------------------------------------------------------
+# Plan 03: get_position_summary and build_positions_embed tests
+# ---------------------------------------------------------------------------
+
+def _make_row(ticker, shares, avg_cost, last_price=None):
+    """Create a mock sqlite3.Row-like dict for position rows."""
+    row = MagicMock()
+    row.__getitem__ = lambda self, key: {
+        "ticker": ticker,
+        "shares": shares,
+        "avg_cost_usd": avg_cost,
+        "last_price": last_price,
+    }[key]
+    return row
+
+
+@patch("screener.positions.get_open_positions")
+@patch("screener.positions.yf")
+def test_get_position_summary_computes_pnl(mock_yf, mock_get_open):
+    """get_position_summary fetches current price and computes P&L% correctly."""
+    row1 = _make_row("AAPL", 5, 100.0)
+    row2 = _make_row("MSFT", 3, 100.0)
+    mock_get_open.return_value = [row1, row2]
+
+    ticker1 = MagicMock()
+    ticker1.fast_info.last_price = 110.0
+    ticker2 = MagicMock()
+    ticker2.fast_info.last_price = 90.0
+    mock_yf.Ticker.side_effect = [ticker1, ticker2]
+
+    from screener.positions import get_position_summary
+    results = get_position_summary("any.db")
+
+    assert len(results) == 2
+    assert results[0]["ticker"] == "AAPL"
+    assert results[0]["pnl_pct"] == pytest.approx(0.1)
+    assert results[1]["ticker"] == "MSFT"
+    assert results[1]["pnl_pct"] == pytest.approx(-0.1)
+
+
+@patch("screener.positions.get_open_positions")
+@patch("screener.positions.yf")
+def test_get_position_summary_yfinance_fallback(mock_yf, mock_get_open):
+    """When yfinance raises, falls back to last_price from DB row."""
+    row = _make_row("GOOG", 2, 100.0, last_price=105.0)
+    mock_get_open.return_value = [row]
+    mock_yf.Ticker.side_effect = Exception("network error")
+
+    from screener.positions import get_position_summary
+    results = get_position_summary("any.db")
+
+    assert len(results) == 1
+    assert results[0]["current_price"] == 105.0
+    assert results[0]["pnl_pct"] == pytest.approx(0.05)
+
+
+@patch("screener.positions.get_open_positions")
+@patch("screener.positions.yf")
+def test_get_position_summary_no_price_available(mock_yf, mock_get_open):
+    """When yfinance raises and last_price is None, pnl_pct and current_price are None."""
+    row = _make_row("NVDA", 1, 200.0, last_price=None)
+    mock_get_open.return_value = [row]
+    mock_yf.Ticker.side_effect = Exception("timeout")
+
+    from screener.positions import get_position_summary
+    results = get_position_summary("any.db")
+
+    assert len(results) == 1
+    assert results[0]["current_price"] is None
+    assert results[0]["pnl_pct"] is None
+
+
+@patch("screener.positions.get_open_positions")
+def test_get_position_summary_empty(mock_get_open):
+    """get_position_summary returns empty list when no open positions exist."""
+    mock_get_open.return_value = []
+
+    from screener.positions import get_position_summary
+    results = get_position_summary("any.db")
+
+    assert results == []
+
+
+def test_build_positions_embed_with_data():
+    """build_positions_embed produces embed with title 'Open Positions' and one field per position."""
+    from discord_bot.embeds import build_positions_embed
+    summaries = [
+        {"ticker": "AAPL", "shares": 5, "avg_cost_usd": 100.0, "current_price": 110.0, "pnl_pct": 0.1},
+        {"ticker": "MSFT", "shares": 3, "avg_cost_usd": 200.0, "current_price": 190.0, "pnl_pct": -0.05},
+    ]
+    embed = build_positions_embed(summaries)
+    assert embed.title == "Open Positions"
+    assert len(embed.fields) == 2
+    assert embed.fields[0].name == "AAPL"
+    assert embed.fields[1].name == "MSFT"
+
+
+def test_build_positions_embed_empty():
+    """build_positions_embed with empty list sets description to 'No open positions.'"""
+    from discord_bot.embeds import build_positions_embed
+    embed = build_positions_embed([])
+    assert embed.description == "No open positions."
+    assert len(embed.fields) == 0
