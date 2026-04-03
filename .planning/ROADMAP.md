@@ -182,4 +182,20 @@ Phase 6 (Sell Signals & Orders) <- depends on positions table from Phase 5
 
 ---
 *Roadmap defined: 2026-03-30*
-*Last updated: 2026-04-02 — Phase 2.5 planned (2 plans)*
+*Last updated: 2026-04-03 — Phase 5 complete; backlog 999.1 added*
+
+---
+
+## Backlog
+
+### Phase 999.1: Asyncio Event Loop Blocking — yfinance Calls in run_scan (BACKLOG)
+
+**Goal:** Prevent Discord gateway heartbeat blocks during daily scans by offloading synchronous yfinance calls off the event loop.
+
+**Context:** `fetch_fundamental_info`, `fetch_news_headlines`, and `get_top_sp500_by_fundamentals` are synchronous blocking calls currently running directly on the Discord event loop inside `run_scan`. Each call takes 1-3 seconds; across a full universe scan this blocks the heartbeat for 10+ seconds, risking gateway disconnection. Only `analyze_ticker` is currently wrapped in `asyncio.to_thread`. Fix: wrap the three yfinance calls in `asyncio.to_thread` as well.
+
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (promote with /gsd:review-backlog when ready)
