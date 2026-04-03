@@ -3,25 +3,45 @@ import time
 import anthropic
 import openai
 from config import Config
-from tenacity import retry, stop_after_attempt
+from tenacity import retry, retry_if_exception, stop_after_attempt
+
+
+def _parse_retry_delay(exc) -> float | None:
+    """Parse retryDelay seconds from a 429 response body, or return None."""
+    if not (exc and hasattr(exc, "response")):
+        return None
+    try:
+        details = exc.response.json()["error"]["details"]
+        detail = next((d for d in details if "retryDelay" in d), None)
+        if detail is None:
+            return None
+        raw = detail["retryDelay"]
+        if isinstance(raw, str) and raw.endswith("s"):
+            return float(raw[:-1])
+        return float(raw)
+    except Exception:
+        return None
+
+
+def _should_retry(exc) -> bool:
+    """Return False when daily quota is exhausted (retryDelay > 60s) — don't retry."""
+    delay = _parse_retry_delay(exc)
+    if delay is not None and delay > 60:
+        return False
+    return True
 
 
 def _wait_for_retry(retry_state) -> float:
     """Wait based on retryDelay in 429 response body, fallback to exponential."""
-    exc = retry_state.outcome.exception()
-    if exc and hasattr(exc, "response"):
-        try:
-            details = exc.response.json()["error"]["details"]
-            detail = next((d for d in details if "retryDelay" in d), None)
-            if detail is not None:
-                return float(detail["retryDelay"].rstrip("s")) + 1
-        except Exception:
-            pass
+    delay = _parse_retry_delay(retry_state.outcome.exception())
+    if delay is not None:
+        return delay + 1
     return min(2 ** retry_state.attempt_number, 60)
 
 
 _retry = retry(
     wait=_wait_for_retry,
+    retry=retry_if_exception(_should_retry),
     stop=stop_after_attempt(3),
     reraise=True,
 )

@@ -86,7 +86,7 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
                 logger.debug("Cache hit for %s (hash %s...)", ticker, headline_hash[:8])
                 analysis = cached
             else:
-                analysis = analyze_ticker(ticker, info, headlines, config, client=client)
+                analysis = await asyncio.to_thread(analyze_ticker, ticker, info, headlines, config, client)
                 try:
                     queries.set_cached_analysis(
                         config.db_path, ticker, headline_hash,
