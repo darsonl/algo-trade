@@ -53,6 +53,22 @@ class ApproveRejectView(discord.ui.View):
             )
             return
 
+        # POS-05: exposure guard — block if total portfolio exposure would exceed limit
+        new_exposure = shares * self.price
+        existing_positions = queries.get_open_positions(self.config.db_path)
+        existing_total = sum(
+            p["shares"] * (p["last_price"] if p["last_price"] is not None else p["avg_cost_usd"])
+            for p in existing_positions
+        )
+        if existing_total + new_exposure > self.config.max_position_size_usd:
+            await interaction.response.send_message(
+                f"Blocked: buying {shares} share(s) of {self.ticker} at ${self.price:.2f} "
+                f"(${new_exposure:.0f}) would exceed MAX_POSITION_SIZE_USD "
+                f"(${self.config.max_position_size_usd:.0f}, current exposure: ${existing_total:.0f}).",
+                ephemeral=True,
+            )
+            return
+
         order_id = None
         if not self.config.dry_run:
             order_id = place_order(self.ticker, shares, self.config)
@@ -65,6 +81,8 @@ class ApproveRejectView(discord.ui.View):
             price=self.price,
             order_id=order_id,
         )
+        # POS-02: track position
+        queries.upsert_position(self.config.db_path, self.ticker, shares, self.price)
         queries.update_recommendation_status(self.config.db_path, self.rec_id, "approved")
 
         label = f"[DRY RUN] " if self.config.dry_run else ""
