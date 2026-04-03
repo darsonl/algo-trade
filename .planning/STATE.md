@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-03-30)
 | 2.5 | Analyst Token Minimization | ✅ Complete |
 | 3 | Documentation | ✅ Complete |
 | 4 | Test Coverage Expansion | ✅ Complete |
-| 5 | Position Monitoring | 🔄 In Progress (Plan 2/3 complete) |
+| 5 | Position Monitoring | ✅ Complete (3/3 plans done) |
 | 6 | Sell Signals & Sell Orders | ⬜ Not started |
 
 ---
@@ -64,7 +64,15 @@ Location: .planning/codebase/
 
 ## Next Action
 
-Continue Phase 5: Position Monitoring — next plan is 05-03 (position display in Discord + /positions command).
+Phase 5 complete. Begin Phase 6: Sell Signals & Sell Orders.
+
+### Phase 5 Plan 03 Completed (2026-04-03)
+/positions slash command with live P&L display (POS-03, POS-04).
+- Created screener/positions.py: get_position_summary fetches yfinance fast_info.last_price with DB fallback; computes pnl_pct per position
+- Added build_positions_embed to discord_bot/embeds.py: inline fields per position, truncates at 25, "No open positions." for empty
+- discord_bot/bot.py: /positions registered in setup_hook, _positions_command uses asyncio.to_thread (non-blocking), local import for circular-import prevention
+- 8 new tests (6 summary+embed, 2 command); 172 tests green
+- Commits: 3f479e2, 63470dd
 
 ### Phase 5 Plan 02 Completed (2026-04-03)
 Exposure guard + position upsert in approve handler; open-position skip guard in run_scan (POS-02, POS-05, POS-06).
