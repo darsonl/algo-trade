@@ -39,6 +39,7 @@ def _full_patch(
          patch("main.get_universe", return_value=list(universe)), \
          patch("main.queries.expire_stale_recommendations"), \
          patch("main.queries.ticker_recommended_today", return_value=recommended_today) as m_today, \
+         patch("main.queries.has_open_position", return_value=False) as m_open_pos, \
          patch("main.yf.Ticker"), \
          patch("main.create_analyst_client", return_value=MagicMock()), \
          patch("main.fetch_fundamental_info", return_value=fund_info) as m_fund, \
@@ -57,6 +58,7 @@ def _full_patch(
             "create_recommendation": m_create_rec,
             "set_discord_message_id": m_set_msg,
             "ticker_recommended_today": m_today,
+            "has_open_position": m_open_pos,
         }
 
 
@@ -144,3 +146,35 @@ async def test_run_scan_sets_discord_message_id_after_posting():
         await run_scan(bot, config)
     call_args = mocks["set_discord_message_id"].call_args[0]
     assert "discord_msg_42" in call_args
+
+
+# --- open-position skip guard (POS-06) ---
+
+@pytest.mark.asyncio
+async def test_run_scan_skips_open_position():
+    """has_open_position=True for first ticker -> fetch_fundamental_info not called for it."""
+    bot = _make_bot()
+    config = _make_config()
+
+    def has_open_pos_side_effect(db_path, ticker):
+        return ticker == "TSLA"
+
+    with _full_patch(universe=("TSLA", "AAPL")) as mocks:
+        mocks["has_open_position"].side_effect = has_open_pos_side_effect
+        await run_scan(bot, config)
+
+    # fetch_fundamental_info should only be called for AAPL (once), not TSLA
+    assert mocks["fetch_fundamental_info"].call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_run_scan_allows_ticker_without_position():
+    """has_open_position=False -> ticker proceeds to fetch_fundamental_info."""
+    bot = _make_bot()
+    config = _make_config()
+
+    with _full_patch(universe=("AAPL",)) as mocks:
+        mocks["has_open_position"].return_value = False
+        await run_scan(bot, config)
+
+    mocks["fetch_fundamental_info"].assert_called_once()

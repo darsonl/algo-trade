@@ -16,7 +16,7 @@ from screener.universe import get_watchlist, get_top_sp500_by_fundamentals, get_
 from screener.fundamentals import passes_fundamental_filter, fetch_fundamental_info
 from screener.technicals import passes_technical_filter, fetch_technical_data
 from analyst.news import fetch_news_headlines
-from analyst.claude_analyst import analyze_ticker, create_analyst_client
+from analyst.claude_analyst import analyze_ticker, create_analyst_client, create_fallback_client
 from discord_bot.bot import TradingBot
 
 logger = logging.getLogger(__name__)
@@ -65,10 +65,14 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
     logger.info("Universe: %d tickers", len(universe))
 
     client = create_analyst_client(config)
+    fallback_client = create_fallback_client(config)
     recommendations_posted = 0
 
     for ticker in universe:
         if queries.ticker_recommended_today(config.db_path, ticker):
+            continue
+        if queries.has_open_position(config.db_path, ticker):
+            logger.debug("Skipping %s: open position exists", ticker)
             continue
 
         try:
@@ -86,7 +90,10 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
                 logger.debug("Cache hit for %s (hash %s...)", ticker, headline_hash[:8])
                 analysis = cached
             else:
-                analysis = await asyncio.to_thread(analyze_ticker, ticker, info, headlines, config, client)
+                analysis = await asyncio.to_thread(
+                    analyze_ticker, ticker, info, headlines, config,
+                    client, fallback_client
+                )
                 try:
                     queries.set_cached_analysis(
                         config.db_path, ticker, headline_hash,
