@@ -24,7 +24,7 @@ def _make_mock_ticker(df: pd.DataFrame) -> MagicMock:
 def test_fetch_technical_data_happy_path_returns_all_keys():
     df = _make_price_df(MIN_HISTORY_BARS + 10)
     result = fetch_technical_data(_make_mock_ticker(df))
-    assert set(result.keys()) == {"rsi", "price", "ma50", "volume", "avg_volume"}
+    assert set(result.keys()) == {"rsi", "price", "ma50", "volume", "avg_volume", "macd_line", "signal_line", "macd_histogram"}
     assert result["price"] is not None
     assert result["rsi"] is not None
     assert result["ma50"] is not None

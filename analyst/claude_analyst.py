@@ -49,7 +49,7 @@ _retry = retry(
     reraise=True,
 )
 
-_VALID_SIGNALS = {"BUY", "HOLD", "SKIP"}
+_VALID_SIGNALS = {"BUY", "HOLD", "SKIP", "SELL"}
 
 _OPENAI_BASE_URLS: dict[str, str] = {
     "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/",
@@ -114,6 +114,50 @@ SIGNAL: <BUY|HOLD|SKIP>
 REASONING: <2-3 sentences explaining your decision>"""
 
 
+def build_sell_prompt(
+    ticker: str,
+    entry_price: float,
+    current_price: float,
+    pnl_pct: float,
+    hold_days: int,
+    rsi: float,
+    macd_line: float,
+    signal_line: float,
+    headlines: list[str],
+) -> str:
+    """Build the sell analysis prompt for an open position (per D-07).
+
+    Includes RSI and MACD values so the analyst can assess both overbought
+    level and momentum direction (per D-01/D-10 MACD confirmation gate).
+    """
+    macd_histogram = macd_line - signal_line
+    macd_direction = "bearish (MACD below signal)" if macd_histogram < 0 else "bullish (MACD above signal)"
+    headlines_block = (
+        "\n".join(f"- {h}" for h in headlines) if headlines else "- No recent headlines available."
+    )
+
+    return f"""You are a stock analyst. Evaluate whether to SELL or HOLD the following position. Return exactly two lines.
+
+Ticker: {ticker}
+
+Position:
+- Entry Price: ${entry_price:.2f}
+- Current Price: ${current_price:.2f}
+- P&L: {pnl_pct:+.1%}
+- Hold Duration: {hold_days} days
+
+Technical Indicators:
+- RSI: {rsi:.1f} (overbought above 70)
+- MACD: {macd_line:.4f} | Signal: {signal_line:.4f} | Histogram: {macd_histogram:.4f} ({macd_direction})
+
+Recent news headlines:
+{headlines_block}
+
+Respond with exactly this format (no extra text):
+SIGNAL: <SELL|HOLD>
+REASONING: <2-3 sentences explaining your decision>"""
+
+
 def parse_claude_response(text: str) -> dict:
     """
     Parse the analyst response into {signal, reasoning}.
@@ -170,7 +214,7 @@ def analyze_ticker(
 ) -> dict:
     """
     Call the configured analyst provider to get a BUY/HOLD/SKIP signal.
-    Returns {"signal": str, "reasoning": str}.
+    Returns {"signal": str, "reasoning": str, "provider_used": str}.
     If the primary API call fails and fallback_client is provided, retries with the fallback.
     """
     if client is None:
@@ -182,6 +226,7 @@ def analyze_ticker(
     if config.analyst_call_delay_s > 0:
         time.sleep(config.analyst_call_delay_s)
 
+    provider_used = config.analyst_provider
     try:
         text = _call_api(client, model, prompt)
     except Exception as api_exc:
@@ -195,5 +240,61 @@ def analyze_ticker(
             config.analyst_fallback_provider, ""
         )
         text = _call_api(fallback_client, fallback_model, prompt)
+        provider_used = config.analyst_fallback_provider
 
-    return parse_claude_response(text)
+    result = parse_claude_response(text)
+    result["provider_used"] = provider_used
+    return result
+
+
+def analyze_sell_ticker(
+    ticker: str,
+    entry_price: float,
+    current_price: float,
+    pnl_pct: float,
+    hold_days: int,
+    rsi: float,
+    macd_line: float,
+    signal_line: float,
+    headlines: list[str],
+    config: Config,
+    client=None,
+    fallback_client=None,
+) -> dict:
+    """Call the analyst to get a SELL/HOLD signal for an open position.
+
+    Reuses the same _call_api + fallback pipeline as analyze_ticker (per D-03).
+    Passes RSI and MACD values to the prompt for full technical context (per D-10).
+    Returns {"signal": str, "reasoning": str, "provider_used": str} (per D-11).
+    """
+    if client is None:
+        client = create_analyst_client(config)
+
+    model = config.analyst_model or _DEFAULT_MODELS.get(config.analyst_provider, "")
+    prompt = build_sell_prompt(
+        ticker, entry_price, current_price, pnl_pct, hold_days,
+        rsi, macd_line, signal_line, headlines,
+    )
+
+    if config.analyst_call_delay_s > 0:
+        time.sleep(config.analyst_call_delay_s)
+
+    provider_used = config.analyst_provider
+    try:
+        text = _call_api(client, model, prompt)
+    except Exception as api_exc:
+        if fallback_client is None:
+            raise
+        logger.warning(
+            "Primary analyst failed for %s sell analysis (%s), using fallback provider '%s'",
+            ticker, api_exc, config.analyst_fallback_provider,
+        )
+        fallback_model = config.analyst_fallback_model or _DEFAULT_MODELS.get(
+            config.analyst_fallback_provider, ""
+        )
+        text = _call_api(fallback_client, fallback_model, prompt)
+        provider_used = config.analyst_fallback_provider
+
+    result = parse_claude_response(text)
+    result["provider_used"] = provider_used
+    return result

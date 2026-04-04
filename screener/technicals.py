@@ -43,6 +43,28 @@ def compute_rsi(prices: pd.Series, period: int = 14) -> float:
     return 100.0 - (100.0 / (1.0 + rs))
 
 
+def compute_macd(
+    prices: pd.Series,
+    fast: int = 12,
+    slow: int = 26,
+    signal: int = 9,
+) -> tuple[float | None, float | None, float | None]:
+    """Compute MACD line, signal line, and histogram using standard EWM.
+
+    Returns (macd_line, signal_line, histogram) as floats, or (None, None, None)
+    if there is insufficient data (fewer than slow+signal bars required).
+    Per D-10: fixed parameters, no config fields needed.
+    """
+    if len(prices) < slow + signal:
+        return None, None, None
+    fast_ema = prices.ewm(span=fast, adjust=False).mean()
+    slow_ema = prices.ewm(span=slow, adjust=False).mean()
+    macd_line = fast_ema - slow_ema
+    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    histogram = macd_line - signal_line
+    return float(macd_line.iloc[-1]), float(signal_line.iloc[-1]), float(histogram.iloc[-1])
+
+
 def passes_technical_filter(ticker_data: dict, config: Config) -> bool:
     """
     Return True only if all three technical criteria are met: RSI <= config.max_rsi,
@@ -85,13 +107,18 @@ def fetch_technical_data(yf_ticker: yf.Ticker) -> dict:
             "ma50": None,
             "volume": None,
             "avg_volume": None,
+            "macd_line": None,
+            "signal_line": None,
+            "macd_histogram": None,
         }
 
-    rsi = compute_rsi(hist["Close"])
-    price = hist["Close"].iloc[-1]
-    ma50 = hist["Close"].tail(50).mean()
+    closes = hist["Close"]
+    rsi = compute_rsi(closes)
+    price = closes.iloc[-1]
+    ma50 = closes.tail(50).mean()
     volume = hist["Volume"].iloc[-1]
     avg_volume = hist["Volume"].tail(20).mean()
+    macd_line, signal_line, macd_histogram = compute_macd(closes)
 
     return {
         "rsi": rsi,
@@ -99,4 +126,7 @@ def fetch_technical_data(yf_ticker: yf.Ticker) -> dict:
         "ma50": ma50,
         "volume": volume,
         "avg_volume": avg_volume,
+        "macd_line": macd_line,
+        "signal_line": signal_line,
+        "macd_histogram": macd_histogram,
     }
