@@ -35,6 +35,7 @@ def initialize_db(db_path: str) -> None:
             shares REAL NOT NULL,
             price REAL NOT NULL,
             order_id TEXT,
+            side TEXT NOT NULL DEFAULT 'buy',
             executed_at TEXT NOT NULL DEFAULT (datetime('now')),
             FOREIGN KEY (recommendation_id) REFERENCES recommendations(id)
         );
@@ -57,13 +58,35 @@ def initialize_db(db_path: str) -> None:
             entry_date   TEXT NOT NULL DEFAULT (date('now')),
             status       TEXT NOT NULL DEFAULT 'open',
             last_price   REAL,
-            last_updated TEXT
+            last_updated TEXT,
+            sell_blocked BOOLEAN DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS analyst_calls (
+            date     TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            count    INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (date, provider)
         );
     """)
     conn.commit()
     try:
         conn.execute(
             "ALTER TABLE recommendations ADD COLUMN earnings_growth REAL"
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    try:
+        conn.execute(
+            "ALTER TABLE positions ADD COLUMN sell_blocked BOOLEAN DEFAULT 0"
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    try:
+        conn.execute(
+            "ALTER TABLE trades ADD COLUMN side TEXT DEFAULT 'buy'"
         )
         conn.commit()
     except sqlite3.OperationalError:

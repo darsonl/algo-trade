@@ -17,12 +17,31 @@ Stop-loss / take-profit auto-triggers (SELL-10/11/12) are explicitly deferred to
 ## Implementation Decisions
 
 ### Sell Trigger Gates
-- **D-01:** Two-stage gate mirrors the buy flow — RSI check first (cheap), then analyst call.
-  A SELL recommendation is only posted if **both** conditions are true:
-  1. `rsi > SELL_RSI_THRESHOLD` (exit signal check via `screener/exit_signals.py`)
-  2. `analyze_ticker` (or its sell-prompt variant) returns `SELL`
+- **D-01:** Three-stage gate — RSI check first (cheap), then MACD confirmation (still cheap), then analyst call.
+  A SELL recommendation is only posted if **all three** conditions are true:
+  1. `rsi > SELL_RSI_THRESHOLD` (overbought check via `screener/exit_signals.py`)
+  2. MACD bearish confirmation: `macd_line < signal_line` (i.e., MACD histogram < 0) — prevents false sell signals when RSI is temporarily elevated but trend is still bullish
+  3. `analyze_sell_ticker` returns `SELL`
+  Rationale: RSI alone fires too often in strong uptrends. MACD confirmation filters out overbought-but-still-rising positions.
 - **D-02:** Separate `SELL_RSI_THRESHOLD` config field in `.env` — distinct from `MAX_RSI` (buy filter).
   Typical value will be higher (e.g. 70 for overbought) vs buy threshold (e.g. 55).
+- **D-10:** MACD parameters are fixed: fast=12, slow=26, signal=9 (standard). No config fields — these
+  are industry-standard values unlikely to need tuning. `compute_macd` lives in `screener/technicals.py`
+  alongside `compute_rsi`. `fetch_technical_data` returns `macd_line`, `signal_line`, `macd_histogram`
+  in addition to existing fields. Minimum data requirement: 26 bars (slow EMA period); MACD fields
+  are `None` if insufficient data, causing `check_exit_signals` to return `False` (fail-safe).
+- **D-11:** Daily analyst quota is tracked in the DB (`analyst_calls` table: `date TEXT, provider TEXT,
+  count INT, PRIMARY KEY (date, provider)`). Each provider has its own independent counter — primary
+  and fallback are different models with separate rate limits and must not share a counter.
+  A single config field `ANALYST_DAILY_LIMIT` (default `18`) is applied independently per provider.
+  To know which provider actually responded (primary vs fallback), `analyze_ticker` and
+  `analyze_sell_ticker` include a `"provider_used"` key in their return dict (value is the provider
+  name string, e.g. `"gemini"` or `"openrouter"`). `run_scan` uses this to increment the correct
+  provider's counter. Pre-call quota check uses `config.analyst_provider`'s current count; if
+  primary is exhausted the call still proceeds (fallback may have quota), and the returned
+  `provider_used` determines which counter is incremented post-call. If both providers are
+  exhausted the analyst function raises, `run_scan` catches it, logs a warning, and skips the ticker
+  without incrementing either counter.
 - **D-03:** Reuse the **same `analyze_ticker` function + fallback mechanism** from Phase 2.5 for sell
   analysis. Do NOT duplicate `_call_api` or fallback logic. The sell prompt is a different prompt
   string fed into the same pipeline. `ANALYST_CALL_DELAY_S` applies to sell calls too.
@@ -92,7 +111,9 @@ Stop-loss / take-profit auto-triggers (SELL-10/11/12) are explicitly deferred to
 - `database/models.py` — positions table schema; trades table (no `side` column currently — needs addition)
 
 ### Configuration
-- `config.py` — Config dataclass; `SELL_RSI_THRESHOLD` must be added as a new field with default (e.g. 70)
+- `config.py` — Config dataclass; `SELL_RSI_THRESHOLD` must be added as a new field with default (e.g. 70). No MACD config fields needed (per D-10 — fixed parameters). `ANALYST_DAILY_LIMIT` must be added (default 18, per D-11).
+- `database/models.py` — `analyst_calls` table: `date TEXT PRIMARY KEY, count INT NOT NULL DEFAULT 0`. Must be created in `initialize_db` and not require migration (new table, not a column addition).
+- `database/queries.py` — `get_analyst_call_count_today(db_path)` and `increment_analyst_call_count(db_path)` for daily quota tracking (per D-11).
 - `.env.example` — must document `SELL_RSI_THRESHOLD`
 
 </canonical_refs>
@@ -101,7 +122,7 @@ Stop-loss / take-profit auto-triggers (SELL-10/11/12) are explicitly deferred to
 ## Existing Code Insights
 
 ### Reusable Assets
-- `compute_rsi` / `fetch_technical_data` (technicals.py): already computes RSI — `check_exit_signals` just evaluates `rsi > config.sell_rsi_threshold`. No new RSI math needed.
+- `compute_rsi` / `fetch_technical_data` (technicals.py): already computes RSI. `compute_macd` will be added here alongside it. `fetch_technical_data` will be extended to return `macd_line`, `signal_line`, `macd_histogram`. `check_exit_signals` evaluates both RSI and MACD gates (per D-01, D-10).
 - `analyze_ticker` + fallback (claude_analyst.py): sell analyst reuses this entirely. Only difference is the prompt string fed in.
 - `ApproveRejectView` (bot.py): `SellApproveRejectView` mirrors this — same button pattern, different callback (calls `place_sell_order`, calls `close_position`, creates trade with `side='sell'`).
 - `build_recommendation_embed` (embeds.py): sell embed extends this with entry_price, current_price, pnl_pct fields and red color.
