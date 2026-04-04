@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-03-30)
 | 3 | Documentation | ✅ Complete |
 | 4 | Test Coverage Expansion | ✅ Complete |
 | 5 | Position Monitoring | ✅ Complete (3/3 plans done) |
-| 6 | Sell Signals & Sell Orders | ⬜ Not started |
+| 6 | Sell Signals & Sell Orders | 🔄 In Progress (2/3 plans done) |
 
 ---
 
@@ -64,7 +64,16 @@ Location: .planning/codebase/
 
 ## Next Action
 
-Phase 6: Sell Signals & Sell Orders. Run `/gsd:execute-phase 6`.
+Phase 6 Plan 03: Tests for sell flow (SellApproveRejectView handlers, sell pass, build_sell_embed). Run `/gsd:execute-phase 6`.
+
+### Phase 6 Plan 02 Completed (2026-04-05)
+End-to-end sell pipeline wired: sell pass in run_scan, red Discord embeds, SellApproveRejectView (SELL-03/04/05/06/08/09).
+- discord_bot/embeds.py: build_sell_embed (red embed with entry/current price, P&L%, shares, RSI) + SELL in _SIGNAL_COLORS
+- discord_bot/bot.py: SellApproveRejectView (approve: place_sell_order + create_trade(side='sell') + close_position; reject: set_sell_blocked) + send_sell_recommendation on TradingBot
+- main.py: sell pass loop after buy pass — iterates open positions, skips sell_blocked (RSI auto-reset), check_exit_signals, analyze_sell_ticker, send_sell_recommendation
+- Rule 1 auto-fix: patched get_open_positions in test_main.py + test_run_scan.py (in-memory DB had no positions table)
+- Foundation prerequisite (Plan 01) also implemented: sell_rsi_threshold config, sell_blocked + side schema migrations, screener/exit_signals.py, build_sell_prompt + analyze_sell_ticker, build_market_sell + place_sell_order
+- Commits: 531b66e (foundation), e66962e (discord), 7b59d8b (main.py); 172 tests green
 
 ### Production Fixes Applied (2026-04-03)
 Two issues discovered during first live run after Phase 5:

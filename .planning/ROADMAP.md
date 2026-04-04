@@ -146,11 +146,11 @@ Plans:
 - On sell rejection: recommendation marked 'rejected', position remains open
 
 **Requirements:** SELL-01 to SELL-09
-**Plans:** 3 plans
+**Plans:** 1/3 plans executed
 
 Plans:
 - [ ] 06-01-PLAN.md -- Config + schema migrations + exit signals + sell prompt + Schwab sell order
-- [ ] 06-02-PLAN.md -- Sell embed + SellApproveRejectView + run_scan sell pass
+- [x] 06-02-PLAN.md -- Sell embed + SellApproveRejectView + run_scan sell pass
 - [ ] 06-03-PLAN.md -- Tests for all sell flow components
 
 **Verification:** In dry-run mode, approve a sell → log shows sell order details, position status='closed', trade record created with side='sell'
