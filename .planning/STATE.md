@@ -1,3 +1,16 @@
+---
+gsd_state_version: 1.0
+milestone: v1.0
+milestone_name: milestone
+status: unknown
+last_updated: "2026-04-04T16:17:32.791Z"
+progress:
+  total_phases: 9
+  completed_phases: 2
+  total_plans: 13
+  completed_plans: 6
+---
+
 # Project State
 
 ## Project Reference
@@ -5,7 +18,7 @@
 See: .planning/PROJECT.md (updated 2026-03-30)
 
 **Core value:** The bot must never place a real order without explicit human approval via Discord.
-**Current focus:** Phase 5 — Position Monitoring (next after Phase 4 complete)
+**Current focus:** Phase 06 — sell-signals-sell-orders
 
 ---
 
@@ -64,9 +77,28 @@ Location: .planning/codebase/
 
 ## Next Action
 
-Phase 6: Sell Signals & Sell Orders. Run `/gsd:execute-phase 6`.
+Phase 6: Sell Signals & Sell Orders — Plan 01 complete. Continue with Plan 02 (sell scan loop).
+
+### Phase 6 Plan 01 Completed (2026-04-04)
+
+Foundation layer for sell signals: config, schema migrations, exit signal checker, sell prompt builder, and Schwab sell order functions (SELL-01, SELL-02, SELL-07).
+
+- `config.py`: sell_rsi_threshold (default 70.0) and analyst_daily_limit (default 18)
+- `database/models.py`: analyst_calls table (date, provider composite PK), sell_blocked on positions, side on trades
+- `database/queries.py`: set_sell_blocked, reset_sell_blocked, get_analyst_call_count_today(provider), increment_analyst_call_count(provider), create_trade with side param
+- `screener/technicals.py`: compute_macd (EWM, None tuple on insufficient data), fetch_technical_data extended with macd_line/signal_line/macd_histogram
+- `screener/exit_signals.py`: check_exit_signals — two-gate (RSI + MACD bearish) per D-01/D-10
+- `analyst/claude_analyst.py`: SELL in _VALID_SIGNALS, build_sell_prompt, analyze_sell_ticker, provider_used in analyze_ticker result
+- `schwab_client/orders.py`: build_market_sell, place_sell_order
+- Rule 1 auto-fix: updated test_screener_fetchers.py to include new MACD keys in expected key set
+- 172 tests green; Commits: 40de9e7, 08e7efa
+
+**Key decisions:**
+- Two-gate exit signal (RSI + MACD bearish) prevents RSI-only false signals in strong uptrends (D-01/D-10)
+- Per-provider quota tracking: analyst_calls keyed by (date, provider) — Gemini and fallback counters are independent (D-11)
 
 ### Production Fixes Applied (2026-04-03)
+
 Two issues discovered during first live run after Phase 5:
 
 1. **get_top_sp500_by_fundamentals blocked event loop** — was called synchronously inside async run_scan, blocking Discord heartbeat for 110+ seconds. Fixed: wrapped in `asyncio.to_thread` (commit ae66e64). Backlog 999.1 tracks remaining yfinance blocking calls (fetch_fundamental_info, fetch_news_headlines).
@@ -76,7 +108,9 @@ Two issues discovered during first live run after Phase 5:
 3. **Watchlist ETFs filtered out by fundamental filter** — SPY, QQQ etc. have no earnings growth / low dividend yield and fail the stock-oriented fundamental filter. April 3 scan returned 0 recs (also partly due to tariff sell-off). Backlog 999.2 tracks ETF bypass. No code change needed now.
 
 ### Phase 5 Plan 03 Completed (2026-04-03)
+
 /positions slash command with live P&L display (POS-03, POS-04).
+
 - Created screener/positions.py: get_position_summary fetches yfinance fast_info.last_price with DB fallback; computes pnl_pct per position
 - Added build_positions_embed to discord_bot/embeds.py: inline fields per position, truncates at 25, "No open positions." for empty
 - discord_bot/bot.py: /positions registered in setup_hook, _positions_command uses asyncio.to_thread (non-blocking), local import for circular-import prevention
@@ -84,14 +118,18 @@ Two issues discovered during first live run after Phase 5:
 - Commits: 3f479e2, 63470dd
 
 ### Phase 5 Plan 02 Completed (2026-04-03)
+
 Exposure guard + position upsert in approve handler; open-position skip guard in run_scan (POS-02, POS-05, POS-06).
+
 - discord_bot/bot.py: exposure guard blocks buys exceeding MAX_POSITION_SIZE_USD (ephemeral); upsert_position called on successful approve
 - main.py: has_open_position guard skips tickers with open positions before fundamental filter
 - 6 new tests (4 button, 2 run_scan); fixed 2 existing test_main.py tests (Rule 1 auto-fix)
 - Commits: 80f05da, 8891995, 3ab0275; 164 tests green
 
 ### Phase 5 Plan 01 Completed (2026-04-03)
+
 Positions table DDL and 6 CRUD query functions (POS-01, POS-02, POS-03).
+
 - Added positions table to initialize_db executescript in database/models.py
 - Added create_position (ON CONFLICT upsert for re-entry), update_position (weighted avg), get_open_positions, has_open_position, close_position, upsert_position to database/queries.py
 - Created tests/test_positions.py with 11 tests; all 11 pass
@@ -99,7 +137,9 @@ Positions table DDL and 6 CRUD query functions (POS-01, POS-02, POS-03).
 - Commit: 24faef6
 
 ### Analyst Fallback Provider Added (2026-04-03, outside GSD phases)
+
 Added optional fallback analyst provider to handle Gemini quota exhaustion gracefully.
+
 - `config.py`: 3 new fields — `analyst_fallback_provider`, `analyst_fallback_api_key`, `analyst_fallback_model`
 - `analyst/claude_analyst.py`: `create_fallback_client()` + fallback try/except in `analyze_ticker()`; only API failures trigger fallback (not parse errors)
 - `main.py`: creates `fallback_client` once per scan, passes to `analyze_ticker`
@@ -107,14 +147,18 @@ Added optional fallback analyst provider to handle Gemini quota exhaustion grace
 - `.env.example`: documents new vars with GitHub Models as the recommended alternative
 
 ### Phase 4 Plan 02 Completed (2026-04-03)
+
 Tests for Discord button handlers and DB edge cases (TEST-02, TEST-03, TEST-07, TEST-08).
+
 - Created tests/test_discord_buttons.py: 10 async tests for ApproveRejectView approve/reject
 - Extended tests/test_database.py: 13 new tests for ticker_recommended_today and expire_stale boundary semantics
 - Deviation: discord.py wraps @discord.ui.button methods into Button objects; used view.approve.callback.callback(view, ...) pattern
 - Commit: ccfbaab; 147 tests green
 
 ### Phase 3 Completed (2026-04-02)
+
 All DOC-01 through DOC-05 applied. Key changes:
+
 - Rewrote .env.example with all 14+ Config fields, both analyst provider paths (ANTHROPIC_API_KEY legacy + ANALYST_* multi-provider)
 - Docstrings added to get_connection, initialize_db (database/models.py)
 - Docstrings added to all 8 CRUD functions in database/queries.py
@@ -126,7 +170,9 @@ All DOC-01 through DOC-05 applied. Key changes:
 - 100 tests green; single atomic commit 07a193e
 
 ### Phase 2.5 Completed (2026-04-02)
+
 All TOK-01 through TOK-06 applied. Key changes:
+
 - get_top_sp500_by_fundamentals(config) in universe.py — top 10 S&P by EPS+ROE, 24h in-memory cache
 - analyst_cache table + get_cached_analysis/set_cached_analysis in queries.py
 - run_scan() — SHA-256 headline hash, cache check before/store after analyze_ticker
@@ -134,7 +180,9 @@ All TOK-01 through TOK-06 applied. Key changes:
 - _wait_for_retry in claude_analyst.py — parses Gemini retryDelay from 429 body
 
 ### Phase 1 Completed (2026-03-31)
+
 All REF-01 through REF-10 applied. Key changes:
+
 - WAL mode, earnings_growth schema + migration, safe parse_positions (DB/Schwab)
 - MA_WINDOW/MIN_HISTORY_BARS constants, min_volume_ratio in Config
 - All deferred imports moved to module top level

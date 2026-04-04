@@ -70,13 +70,13 @@
 
 ### Sell Signals
 
-- [ ] **SELL-01**: Claude sell signal prompt built from position data + recent news (SELL/HOLD signal)
-- [ ] **SELL-02**: Technical exit trigger: RSI > MAX_RSI threshold on held position generates SELL candidate
+- [x] **SELL-01**: Claude sell signal prompt built from position data + recent news (SELL/HOLD signal)
+- [x] **SELL-02**: Technical exit trigger: RSI > MAX_RSI threshold on held position generates SELL candidate
 - [ ] **SELL-03**: Daily scan includes sell signal evaluation pass over open positions (after buy scan)
 - [ ] **SELL-04**: Sell recommendation stored in recommendations table (signal='SELL', linked to position)
 - [ ] **SELL-05**: Discord embed for sell recommendation (red color, shows entry price, current price, P&L)
 - [ ] **SELL-06**: Approve/Reject buttons for sell (same pattern as buy) trigger market sell order via Schwab
-- [ ] **SELL-07**: build_market_sell function added to schwab_client/orders.py
+- [x] **SELL-07**: build_market_sell function added to schwab_client/orders.py
 - [ ] **SELL-08**: On sell approval, position status updated to 'closed', trade record created for the sell
 - [ ] **SELL-09**: On sell rejection, position remains open, recommendation marked rejected
 
