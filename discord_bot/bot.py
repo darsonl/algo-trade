@@ -9,8 +9,8 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from config import Config
 from database import queries
-from discord_bot.embeds import build_recommendation_embed, build_positions_embed
-from schwab_client.orders import place_order
+from discord_bot.embeds import build_recommendation_embed, build_positions_embed, build_sell_embed
+from schwab_client.orders import place_order, place_sell_order
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +98,51 @@ class ApproveRejectView(discord.ui.View):
         self.stop()
 
 
+class SellApproveRejectView(discord.ui.View):
+    """Discord UI view with Approve and Reject buttons for a pending sell recommendation."""
+
+    def __init__(self, rec_id: int, ticker: str, shares: float, current_price: float, config: Config):
+        super().__init__(timeout=None)
+        self.rec_id = rec_id
+        self.ticker = ticker
+        self.shares = int(shares)  # Schwab expects int
+        self.current_price = current_price
+        self.config = config
+
+    @discord.ui.button(label="Approve Sell", style=discord.ButtonStyle.danger, emoji="✅")
+    async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
+        order_id = None
+        if not self.config.dry_run:
+            order_id = place_sell_order(self.ticker, self.shares, self.config)
+
+        queries.create_trade(
+            db_path=self.config.db_path,
+            recommendation_id=self.rec_id,
+            ticker=self.ticker,
+            shares=self.shares,
+            price=self.current_price,
+            order_id=order_id,
+            side="sell",
+        )
+        queries.close_position(self.config.db_path, self.ticker)
+        queries.update_recommendation_status(self.config.db_path, self.rec_id, "approved")
+
+        label = "[DRY RUN] " if self.config.dry_run else ""
+        await interaction.response.send_message(
+            f"{label}Approved: selling {self.shares} share(s) of {self.ticker} at ${self.current_price:.2f}.",
+        )
+        self.stop()
+
+    @discord.ui.button(label="Reject", style=discord.ButtonStyle.secondary, emoji="❌")
+    async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
+        queries.update_recommendation_status(self.config.db_path, self.rec_id, "rejected")
+        queries.set_sell_blocked(self.config.db_path, self.ticker)
+        await interaction.response.send_message(
+            f"Rejected sell for {self.ticker}. Position sell-blocked until RSI drops below threshold.",
+        )
+        self.stop()
+
+
 class TradingBot(discord.Client):
     """Discord client that posts stock recommendations and handles Approve/Reject button interactions."""
 
@@ -158,6 +203,24 @@ class TradingBot(discord.Client):
         channel = await self.fetch_channel(self.config.discord_channel_id)
         embed = build_recommendation_embed(ticker, signal, reasoning, price, dividend_yield, pe_ratio)
         view = ApproveRejectView(rec_id, ticker, price, self.config)
+        msg = await _send_message(channel, embed, view)
+        return str(msg.id)
+
+    async def send_sell_recommendation(
+        self,
+        rec_id: int,
+        ticker: str,
+        reasoning: str,
+        entry_price: float,
+        current_price: float,
+        pnl_pct: float,
+        shares: float,
+        rsi: float,
+    ) -> str:
+        """Post a sell recommendation embed with Approve/Reject buttons and return the message id."""
+        channel = await self.fetch_channel(self.config.discord_channel_id)
+        embed = build_sell_embed(ticker, reasoning, entry_price, current_price, pnl_pct, shares, rsi)
+        view = SellApproveRejectView(rec_id, ticker, shares, current_price, self.config)
         msg = await _send_message(channel, embed, view)
         return str(msg.id)
 

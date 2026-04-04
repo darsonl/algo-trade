@@ -4,6 +4,7 @@ _SIGNAL_COLORS = {
     "BUY": discord.Color.green(),
     "HOLD": discord.Color.yellow(),
     "SKIP": discord.Color.red(),
+    "SELL": discord.Color.red(),
 }
 
 
@@ -35,6 +36,29 @@ def build_recommendation_embed(
         value=f"{pe_ratio:.1f}" if pe_ratio is not None else "N/A",
         inline=True,
     )
+    return embed
+
+
+def build_sell_embed(
+    ticker: str,
+    reasoning: str,
+    entry_price: float,
+    current_price: float,
+    pnl_pct: float,
+    shares: float,
+    rsi: float,
+) -> discord.Embed:
+    """Build a Discord embed for a SELL recommendation with position P&L context."""
+    embed = discord.Embed(
+        title=f"{ticker} — SELL",
+        description=reasoning,
+        color=discord.Color.red(),
+    )
+    embed.add_field(name="Entry Price", value=f"${entry_price:.2f}", inline=True)
+    embed.add_field(name="Current Price", value=f"${current_price:.2f}", inline=True)
+    embed.add_field(name="P&L", value=f"{pnl_pct:+.1%}", inline=True)
+    embed.add_field(name="Shares", value=f"{shares}", inline=True)
+    embed.add_field(name="RSI", value=f"{rsi:.1f}", inline=True)
     return embed
 
 
