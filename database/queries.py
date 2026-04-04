@@ -64,13 +64,14 @@ def create_trade(
     shares: float,
     price: float,
     order_id: str | None,
+    side: str = "buy",
 ) -> int:
     """Record an executed trade linked to recommendation_id and return the trade id."""
     conn = get_connection(db_path)
     cursor = conn.execute(
-        """INSERT INTO trades (recommendation_id, ticker, shares, price, order_id)
-           VALUES (?, ?, ?, ?, ?)""",
-        (recommendation_id, ticker, shares, price, order_id),
+        """INSERT INTO trades (recommendation_id, ticker, shares, price, order_id, side)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (recommendation_id, ticker, shares, price, order_id, side),
     )
     conn.commit()
     trade_id = cursor.lastrowid
@@ -229,3 +230,25 @@ def upsert_position(db_path: str, ticker: str, shares: float, price: float) -> N
         update_position(db_path, ticker, new_shares=shares, buy_price=price)
     else:
         create_position(db_path, ticker, shares=shares, avg_cost_usd=price)
+
+
+def set_sell_blocked(db_path: str, ticker: str) -> None:
+    """Set sell_blocked=True on the open position for ticker (per D-04)."""
+    conn = get_connection(db_path)
+    conn.execute(
+        "UPDATE positions SET sell_blocked = 1 WHERE ticker = ? AND status = 'open'",
+        (ticker,),
+    )
+    conn.commit()
+    conn.close()
+
+
+def reset_sell_blocked(db_path: str, ticker: str) -> None:
+    """Reset sell_blocked=False on the open position for ticker (per D-04)."""
+    conn = get_connection(db_path)
+    conn.execute(
+        "UPDATE positions SET sell_blocked = 0 WHERE ticker = ? AND status = 'open'",
+        (ticker,),
+    )
+    conn.commit()
+    conn.close()

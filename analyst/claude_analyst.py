@@ -49,7 +49,7 @@ _retry = retry(
     reraise=True,
 )
 
-_VALID_SIGNALS = {"BUY", "HOLD", "SKIP"}
+_VALID_SIGNALS = {"BUY", "HOLD", "SKIP", "SELL"}
 
 _OPENAI_BASE_URLS: dict[str, str] = {
     "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/",
@@ -189,6 +189,82 @@ def analyze_ticker(
             raise
         logger.warning(
             "Primary analyst failed for %s (%s), using fallback provider '%s'",
+            ticker, api_exc, config.analyst_fallback_provider,
+        )
+        fallback_model = config.analyst_fallback_model or _DEFAULT_MODELS.get(
+            config.analyst_fallback_provider, ""
+        )
+        text = _call_api(fallback_client, fallback_model, prompt)
+
+    return parse_claude_response(text)
+
+
+def build_sell_prompt(
+    ticker: str,
+    entry_price: float,
+    current_price: float,
+    pnl_pct: float,
+    hold_days: int,
+    rsi: float,
+    headlines: list[str],
+) -> str:
+    """Build the sell analysis prompt for an open position (per D-07)."""
+    headlines_block = (
+        "\n".join(f"- {h}" for h in headlines) if headlines else "- No recent headlines available."
+    )
+
+    return f"""You are a stock analyst. Evaluate whether to SELL or HOLD the following position. Return exactly two lines.
+
+Ticker: {ticker}
+
+Position:
+- Entry Price: ${entry_price:.2f}
+- Current Price: ${current_price:.2f}
+- P&L: {pnl_pct:+.1%}
+- Hold Duration: {hold_days} days
+- RSI: {rsi:.1f}
+
+Recent news headlines:
+{headlines_block}
+
+Respond with exactly this format (no extra text):
+SIGNAL: <SELL|HOLD>
+REASONING: <2-3 sentences explaining your decision>"""
+
+
+def analyze_sell_ticker(
+    ticker: str,
+    entry_price: float,
+    current_price: float,
+    pnl_pct: float,
+    hold_days: int,
+    rsi: float,
+    headlines: list[str],
+    config: Config,
+    client=None,
+    fallback_client=None,
+) -> dict:
+    """Call the analyst to get a SELL/HOLD signal for an open position.
+
+    Reuses the same _call_api + fallback pipeline as analyze_ticker (per D-03).
+    Returns {"signal": str, "reasoning": str}.
+    """
+    if client is None:
+        client = create_analyst_client(config)
+
+    model = config.analyst_model or _DEFAULT_MODELS.get(config.analyst_provider, "")
+    prompt = build_sell_prompt(ticker, entry_price, current_price, pnl_pct, hold_days, rsi, headlines)
+
+    if config.analyst_call_delay_s > 0:
+        time.sleep(config.analyst_call_delay_s)
+
+    try:
+        text = _call_api(client, model, prompt)
+    except Exception as api_exc:
+        if fallback_client is None:
+            raise
+        logger.warning(
+            "Primary analyst failed for %s sell analysis (%s), using fallback provider '%s'",
             ticker, api_exc, config.analyst_fallback_provider,
         )
         fallback_model = config.analyst_fallback_model or _DEFAULT_MODELS.get(
