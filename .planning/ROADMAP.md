@@ -146,27 +146,18 @@ Plans:
 - On sell rejection: recommendation marked 'rejected', position remains open
 
 **Requirements:** SELL-01 to SELL-09
+**Plans:** 3 plans
+
+Plans:
+- [ ] 06-01-PLAN.md -- Config + schema migrations + exit signals + sell prompt + Schwab sell order
+- [ ] 06-02-PLAN.md -- Sell embed + SellApproveRejectView + run_scan sell pass
+- [ ] 06-03-PLAN.md -- Tests for all sell flow components
+
 **Verification:** In dry-run mode, approve a sell → log shows sell order details, position status='closed', trade record created with side='sell'
 
 ---
 
-## Phase 7: Asyncio Event Loop Fix
-
-**Goal:** Prevent Discord gateway heartbeat blocks during daily scans by offloading synchronous yfinance calls off the event loop.
-
-**Context:** `fetch_fundamental_info`, `fetch_news_headlines`, and `get_top_sp500_by_fundamentals` are synchronous blocking calls currently running directly on the Discord event loop inside `run_scan`. Each call takes 1-3 seconds; across a full universe scan this blocks the heartbeat for 10+ seconds, risking gateway disconnection. Only `analyze_ticker` is currently wrapped in `asyncio.to_thread`. Fix: wrap the three yfinance calls in `asyncio.to_thread` as well.
-
-**Requirements:** TBD
-**Plans:** 0 plans
-
-Plans:
-- [ ] TBD
-
-**Depends on:** Phase 6
-
----
-
-## Phase 8: ETF Scan Separation
+## Phase 7: ETF Scan Separation
 
 **Goal:** Give ETFs their own scan path — `/scan_etf` Discord command — so the stock screener logic stays clean and ETF analysis isn't hamstrung by stock-centric fundamental filters.
 
@@ -189,6 +180,29 @@ Plans:
 - [ ] TBD
 
 **Depends on:** Phase 6
+
+---
+
+## Phase 8: Asyncio Event Loop Fix
+
+**Goal:** Prevent Discord gateway heartbeat blocks during daily scans by offloading all synchronous yfinance calls off the event loop — comprehensive final sweep after all scan paths are in place.
+
+**Context:** Multiple synchronous yfinance calls run directly on the Discord event loop inside `run_scan` and `run_scan_etf`. Each call takes 1-3 seconds; across a full universe scan this blocks the heartbeat for 10+ seconds, risking gateway disconnection. Only `analyze_ticker` is currently wrapped in `asyncio.to_thread`. This phase is intentionally placed last so it can cover blocking calls added by Phase 6 (sell pass) and Phase 7 (ETF pass) in one comprehensive sweep.
+
+**Calls to wrap in `asyncio.to_thread`:**
+- `fetch_fundamental_info` (buy pass in `run_scan`)
+- `fetch_news_headlines` (buy pass + sell pass in `run_scan`)
+- `get_top_sp500_by_fundamentals` (universe build — already patched as hotfix ae66e64, formalize here)
+- `fetch_technical_data` (buy pass, sell pass, and ETF pass — blocking price history download)
+- `partition_watchlist` (Phase 7 addition — calls `yfinance quoteType` per ticker)
+
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD
+
+**Depends on:** Phase 7
 
 ---
 
@@ -221,11 +235,11 @@ Phase 5 (Position Monitoring)   <- DB schema + queries needed before sell logic
     |
 Phase 6 (Sell Signals & Orders) <- depends on positions table from Phase 5
     |
-Phase 7 (Asyncio Event Loop Fix)    <- can run after Phase 6; runtime reliability fix
+Phase 7 (ETF Scan Separation)       <- depends on Phase 6; /scan_etf command + partitioned universe
     |
-Phase 8 (ETF Scan Separation)       <- can run after Phase 6; /scan_etf command + partitioned universe
+Phase 8 (Asyncio Event Loop Fix)    <- last; comprehensive sweep of all blocking calls added by Phases 6 + 7
 ```
 
 ---
 *Roadmap defined: 2026-03-30*
-*Last updated: 2026-04-04 — Phase 8 expanded: ETF scan separation + /scan_etf command*
+*Last updated: 2026-04-04 — Phase 6 planned: 3 plans across 3 waves (foundation, integration, tests)*
