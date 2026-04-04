@@ -252,34 +252,3 @@ def reset_sell_blocked(db_path: str, ticker: str) -> None:
     )
     conn.commit()
     conn.close()
-
-
-def get_analyst_call_count_today(db_path: str, provider: str) -> int:
-    """Return the number of analyst API calls made today for the given provider.
-
-    Each provider has an independent counter (per D-11 — different models,
-    different rate limits, must not share a counter).
-    """
-    from datetime import date
-    today = date.today().isoformat()
-    conn = get_connection(db_path)
-    row = conn.execute(
-        "SELECT count FROM analyst_calls WHERE date = ? AND provider = ?",
-        (today, provider),
-    ).fetchone()
-    conn.close()
-    return row["count"] if row else 0
-
-
-def increment_analyst_call_count(db_path: str, provider: str) -> None:
-    """Upsert today's analyst_calls row for the given provider and increment by 1."""
-    from datetime import date
-    today = date.today().isoformat()
-    conn = get_connection(db_path)
-    conn.execute(
-        """INSERT INTO analyst_calls (date, provider, count) VALUES (?, ?, 1)
-           ON CONFLICT(date, provider) DO UPDATE SET count = count + 1""",
-        (today, provider),
-    )
-    conn.commit()
-    conn.close()

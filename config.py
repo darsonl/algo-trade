@@ -42,7 +42,6 @@ class Config:
     min_earnings_growth: float = float(os.getenv("MIN_EARNINGS_GROWTH", "0.05"))
     max_rsi: float = float(os.getenv("MAX_RSI", "70.0"))
     sell_rsi_threshold: float = float(os.getenv("SELL_RSI_THRESHOLD", "70.0"))
-    analyst_daily_limit: int = int(os.getenv("ANALYST_DAILY_LIMIT", "18"))
     min_volume_ratio: float = float(os.getenv("MIN_VOLUME_RATIO", "0.5"))
 
     max_position_size_usd: float = float(os.getenv("MAX_POSITION_SIZE_USD", "500.0"))

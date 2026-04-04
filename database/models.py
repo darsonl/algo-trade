@@ -61,13 +61,6 @@ def initialize_db(db_path: str) -> None:
             last_updated TEXT,
             sell_blocked BOOLEAN DEFAULT 0
         );
-
-        CREATE TABLE IF NOT EXISTS analyst_calls (
-            date     TEXT NOT NULL,
-            provider TEXT NOT NULL,
-            count    INTEGER NOT NULL DEFAULT 0,
-            PRIMARY KEY (date, provider)
-        );
     """)
     conn.commit()
     try:
