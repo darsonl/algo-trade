@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+from datetime import date
 from pathlib import Path
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -16,7 +17,8 @@ from screener.universe import get_watchlist, get_top_sp500_by_fundamentals, get_
 from screener.fundamentals import passes_fundamental_filter, fetch_fundamental_info
 from screener.technicals import passes_technical_filter, fetch_technical_data
 from analyst.news import fetch_news_headlines
-from analyst.claude_analyst import analyze_ticker, create_analyst_client, create_fallback_client
+from analyst.claude_analyst import analyze_ticker, create_analyst_client, create_fallback_client, analyze_sell_ticker
+from screener.exit_signals import check_exit_signals
 from discord_bot.bot import TradingBot
 
 logger = logging.getLogger(__name__)
@@ -139,6 +141,86 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
         await bot.send_ops_alert("Scan complete: 0 recommendations posted.")
     else:
         logger.info("Scan complete. %d recommendation(s) posted.", recommendations_posted)
+
+    # --- Sell pass: evaluate open positions for exit signals ---
+    open_positions = queries.get_open_positions(config.db_path)
+    logger.info("Sell pass: evaluating %d open position(s)", len(open_positions))
+
+    for pos in open_positions:
+        ticker = pos["ticker"]
+
+        # D-06: skip sell-blocked positions entirely
+        if pos["sell_blocked"]:
+            logger.debug("Skipping %s: sell_blocked", ticker)
+            # But still check if RSI dropped — reset sell_blocked if so
+            try:
+                yf_ticker = yf.Ticker(ticker)
+                tech_data = fetch_technical_data(yf_ticker)
+                if tech_data.get("rsi") is not None and tech_data["rsi"] <= config.sell_rsi_threshold:
+                    queries.reset_sell_blocked(config.db_path, ticker)
+                    logger.info("Reset sell_blocked for %s (RSI %.1f <= %.1f)", ticker, tech_data["rsi"], config.sell_rsi_threshold)
+            except Exception as exc:
+                logger.warning("Could not check RSI for sell_blocked reset on %s: %s", ticker, exc)
+            continue
+
+        try:
+            yf_ticker = yf.Ticker(ticker)
+            tech_data = fetch_technical_data(yf_ticker)
+
+            # D-01 stage 1: RSI exit signal check
+            if not check_exit_signals(tech_data, config):
+                continue
+
+            # D-01 stage 2: analyst sell analysis
+            entry_price = pos["avg_cost_usd"]
+            current_price = tech_data["price"]
+            pnl_pct = (current_price - entry_price) / entry_price if entry_price else 0.0
+
+            try:
+                entry_date = date.fromisoformat(pos["entry_date"])
+                hold_days = (date.today() - entry_date).days
+            except (ValueError, TypeError):
+                hold_days = 0
+
+            headlines = fetch_news_headlines(ticker)
+
+            analysis = await asyncio.to_thread(
+                analyze_sell_ticker,
+                ticker, entry_price, current_price, pnl_pct, hold_days,
+                tech_data["rsi"], headlines, config, client, fallback_client,
+            )
+
+            if analysis["signal"] != "SELL":
+                logger.info("Analyst says HOLD for %s", ticker)
+                continue
+
+            # Create sell recommendation
+            rec_id = queries.create_recommendation(
+                db_path=config.db_path,
+                ticker=ticker,
+                signal="SELL",
+                reasoning=analysis["reasoning"],
+                price=current_price,
+                dividend_yield=None,
+                pe_ratio=None,
+            )
+
+            message_id = await bot.send_sell_recommendation(
+                rec_id=rec_id,
+                ticker=ticker,
+                reasoning=analysis["reasoning"],
+                entry_price=entry_price,
+                current_price=current_price,
+                pnl_pct=pnl_pct,
+                shares=pos["shares"],
+                rsi=tech_data["rsi"],
+            )
+            queries.set_discord_message_id(config.db_path, rec_id, message_id)
+            logger.info("Sell recommendation posted for %s", ticker)
+
+        except Exception as exc:
+            logger.error("Error in sell evaluation for %s: %s", ticker, exc)
+            continue
 
 
 # ---------------------------------------------------------------------------

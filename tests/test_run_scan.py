@@ -40,6 +40,7 @@ def _full_patch(
          patch("main.queries.expire_stale_recommendations"), \
          patch("main.queries.ticker_recommended_today", return_value=recommended_today) as m_today, \
          patch("main.queries.has_open_position", return_value=False) as m_open_pos, \
+         patch("main.queries.get_open_positions", return_value=[]), \
          patch("main.yf.Ticker"), \
          patch("main.create_analyst_client", return_value=MagicMock()), \
          patch("main.fetch_fundamental_info", return_value=fund_info) as m_fund, \
