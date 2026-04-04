@@ -1,6 +1,7 @@
 import json
 import datetime
 import logging
+import time
 from pathlib import Path
 from tenacity import retry, stop_after_attempt, wait_exponential
 
@@ -138,6 +139,7 @@ def get_top_sp500_by_fundamentals(config) -> list[str]:
             scores.append((eps + roe, t))
         except Exception:
             continue
+        time.sleep(0.15)
 
     scores.sort(key=lambda x: x[0], reverse=True)
     top = [t for _, t in scores[: config.top_sp500_count]]

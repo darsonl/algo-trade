@@ -1,9 +1,12 @@
 from __future__ import annotations
+import logging
 import time
 import anthropic
 import openai
 from config import Config
 from tenacity import retry, retry_if_exception, stop_after_attempt
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_retry_delay(exc) -> float | None:
@@ -71,6 +74,17 @@ def create_analyst_client(config: Config):
 
     base_url = _OPENAI_BASE_URLS.get(provider)  # None → default OpenAI endpoint
     return openai.OpenAI(api_key=api_key, base_url=base_url)
+
+
+def create_fallback_client(config: Config):
+    """Return an SDK client for the fallback provider, or None if not configured."""
+    provider = config.analyst_fallback_provider
+    if not provider or not config.analyst_fallback_api_key:
+        return None
+    if provider == "claude":
+        return anthropic.Anthropic(api_key=config.analyst_fallback_api_key)
+    base_url = _OPENAI_BASE_URLS.get(provider)
+    return openai.OpenAI(api_key=config.analyst_fallback_api_key, base_url=base_url)
 
 
 def build_prompt(ticker: str, info: dict, headlines: list[str]) -> str:
@@ -152,10 +166,12 @@ def analyze_ticker(
     headlines: list[str],
     config: Config,
     client=None,
+    fallback_client=None,
 ) -> dict:
     """
     Call the configured analyst provider to get a BUY/HOLD/SKIP signal.
     Returns {"signal": str, "reasoning": str}.
+    If the primary API call fails and fallback_client is provided, retries with the fallback.
     """
     if client is None:
         client = create_analyst_client(config)
@@ -166,6 +182,18 @@ def analyze_ticker(
     if config.analyst_call_delay_s > 0:
         time.sleep(config.analyst_call_delay_s)
 
-    text = _call_api(client, model, prompt)
+    try:
+        text = _call_api(client, model, prompt)
+    except Exception as api_exc:
+        if fallback_client is None:
+            raise
+        logger.warning(
+            "Primary analyst failed for %s (%s), using fallback provider '%s'",
+            ticker, api_exc, config.analyst_fallback_provider,
+        )
+        fallback_model = config.analyst_fallback_model or _DEFAULT_MODELS.get(
+            config.analyst_fallback_provider, ""
+        )
+        text = _call_api(fallback_client, fallback_model, prompt)
 
     return parse_claude_response(text)

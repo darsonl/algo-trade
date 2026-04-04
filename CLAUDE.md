@@ -56,7 +56,7 @@ python main.py
 | `screener/universe.py` | Watchlist loading, S&P 500 fetch, deduplication |
 | `screener/fundamentals.py` | yfinance fundamental fetch + threshold filter |
 | `screener/technicals.py` | RSI (Wilder's, 14-period), MA50, volume filter |
-| `analyst/claude_analyst.py` | Prompt building, Claude API call, signal parsing |
+| `analyst/claude_analyst.py` | Prompt building, API call (primary + fallback provider), signal parsing |
 | `analyst/news.py` | Fetch 5 headlines per ticker from yfinance |
 | `discord_bot/bot.py` | `TradingBot` (discord.Client), slash commands, Approve/Reject buttons |
 | `discord_bot/embeds.py` | Recommendation embed formatting (green/yellow/red) |
@@ -71,6 +71,7 @@ python main.py
 - **Dry-run by default**: `DRY_RUN=true` and `PAPER_TRADING=true` are the defaults; no orders are placed unless explicitly disabled.
 - **24-hour recommendation expiry**: Stale records are expired at the start of each scan. The `should_recommend()` function in `main.py` is the single source of truth for dupe prevention.
 - **Pure functions for testability**: `should_recommend()`, `configure_scheduler()`, prompt builders, and filter functions are all pure/stateless to enable unit testing without mocking the Discord client or Schwab API.
+- **Analyst fallback provider**: When the primary analyst API call fails (quota exhausted, rate limit, network), `analyze_ticker()` automatically retries with a configurable fallback provider/model. Configured via `ANALYST_FALLBACK_PROVIDER`, `ANALYST_FALLBACK_API_KEY`, `ANALYST_FALLBACK_MODEL` in `.env`. Parse errors do not trigger the fallback — only API-level failures do.
 
 ### Configuration
 
