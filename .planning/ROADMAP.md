@@ -146,12 +146,14 @@ Plans:
 - On sell rejection: recommendation marked 'rejected', position remains open
 
 **Requirements:** SELL-01 to SELL-09
-**Plans:** 1/3 plans executed
+**Plans:** 5 plans (3 original + 2 gap closure)
 
 Plans:
-- [ ] 06-01-PLAN.md -- Config + schema migrations + exit signals + sell prompt + Schwab sell order
+- [x] 06-01-PLAN.md -- Config + schema migrations + exit signals + sell prompt + Schwab sell order
 - [x] 06-02-PLAN.md -- Sell embed + SellApproveRejectView + run_scan sell pass
-- [ ] 06-03-PLAN.md -- Tests for all sell flow components
+- [x] 06-03-PLAN.md -- Tests for all sell flow components
+- [ ] 06-04-PLAN.md -- Gap closure: MACD bearish gate in check_exit_signals + build_sell_prompt MACD params + 2x2 matrix tests
+- [ ] 06-05-PLAN.md -- Gap closure: analyst_daily_limit config + analyst_calls DB table + quota query helpers + provider_used in analyze functions + quota guard in main.py
 
 **Verification:** In dry-run mode, approve a sell → log shows sell order details, position status='closed', trade record created with side='sell'
 
@@ -242,4 +244,4 @@ Phase 8 (Asyncio Event Loop Fix)    <- last; comprehensive sweep of all blocking
 
 ---
 *Roadmap defined: 2026-03-30*
-*Last updated: 2026-04-04 — Phase 6 planned: 3 plans across 3 waves (foundation, integration, tests)*
+*Last updated: 2026-04-05 — Phase 6 gap closure: 2 plans added (06-04, 06-05) for MACD gate and analyst quota system*
