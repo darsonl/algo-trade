@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-03-30)
 | 3 | Documentation | ✅ Complete |
 | 4 | Test Coverage Expansion | ✅ Complete |
 | 5 | Position Monitoring | ✅ Complete (3/3 plans done) |
-| 6 | Sell Signals & Sell Orders | 🔄 In Progress (2/3 plans done) |
+| 6 | Sell Signals & Sell Orders | ✅ Complete (5/5 plans done) |
 
 ---
 
@@ -64,7 +64,27 @@ Location: .planning/codebase/
 
 ## Next Action
 
-Phase 6 Plan 03: Tests for sell flow (SellApproveRejectView handlers, sell pass, build_sell_embed). Run `/gsd:execute-phase 6`.
+Phase 6 Complete. All 5 plans done (including gap-closure plans 04 and 05). Milestone 1 complete — 222 tests green, full sell pipeline with MACD gate and analyst quota tracking implemented.
+
+### Phase 6 Plan 05 Completed (2026-04-05)
+Analyst daily quota system (D-11): per-provider quota tracking to prevent Gemini free-tier exhaustion.
+- config.py: analyst_daily_limit field (default 18, reads ANALYST_DAILY_LIMIT env var)
+- database/models.py: analyst_calls table with PRIMARY KEY (date, provider) in initialize_db executescript
+- database/queries.py: get_analyst_call_count_today + increment_analyst_call_count (ON CONFLICT DO UPDATE)
+- analyst/claude_analyst.py: analyze_ticker and analyze_sell_ticker return provider_used in result dict
+- main.py: quota guard before analyze_ticker (buy pass) and analyze_sell_ticker (sell pass); increment after each successful call; cache hits bypass both guard and increment
+- Updated test mock fixtures in test_sell_scan.py, test_run_scan.py, test_main.py to include provider_used
+- Commits: a100170 (infra), 5868923 (analyze functions + main.py); 222 tests green
+
+### Phase 6 Plan 03 Completed (2026-04-05)
+Comprehensive test coverage for sell flow components: exit signals (RSI gate), sell prompt + SELL signal parsing, sell embed, SellApproveRejectView approve/reject handlers, run_scan sell pass (SELL-01 through SELL-09).
+- tests/test_exit_signals.py: 10 RSI gate tests
+- tests/test_sell_prompt.py: 8 prompt + parse tests
+- tests/test_sell_embed.py: 8 embed + market_sell tests
+- tests/test_sell_buttons.py: 9 SellApproveRejectView async tests
+- tests/test_sell_scan.py: 9 run_scan sell pass integration tests
+- Adapted from plan: exit_signals.py only checks RSI (not MACD); build_sell_prompt has no MACD params; quota test replaced with no-positions test
+- Commits: b2780f5 (Task 1), 2457b73 (Task 2); 216 tests green
 
 ### Phase 6 Plan 02 Completed (2026-04-05)
 End-to-end sell pipeline wired: sell pass in run_scan, red Discord embeds, SellApproveRejectView (SELL-03/04/05/06/08/09).
