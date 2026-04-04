@@ -76,6 +76,15 @@ Analyst daily quota system (D-11): per-provider quota tracking to prevent Gemini
 - Updated test mock fixtures in test_sell_scan.py, test_run_scan.py, test_main.py to include provider_used
 - Commits: a100170 (infra), 5868923 (analyze functions + main.py); 222 tests green
 
+### Phase 6 Plan 04 Completed (2026-04-05)
+MACD bearish gate added to check_exit_signals (two-gate logic per D-01/D-10).
+- screener/exit_signals.py: replaced RSI-only gate with RSI AND macd_line < signal_line; None guard on all three values
+- analyst/claude_analyst.py: build_sell_prompt and analyze_sell_ticker gained macd_line/signal_line keyword params; prompt shows MACD line/signal/histogram/direction or N/A
+- main.py: analyze_sell_ticker call site passes tech_data.get("macd_line") and tech_data.get("signal_line")
+- tests/test_exit_signals.py: 4 existing tests updated to supply MACD bearish data; 6 new MACD 2x2 matrix tests added; 16 total
+- Commits: f94a657 (exit_signals + tests); analyst/main.py landed in 5868923 (06-05 parallel)
+- 222 tests green
+
 ### Phase 6 Plan 03 Completed (2026-04-05)
 Comprehensive test coverage for sell flow components: exit signals (RSI gate), sell prompt + SELL signal parsing, sell embed, SellApproveRejectView approve/reject handlers, run_scan sell pass (SELL-01 through SELL-09).
 - tests/test_exit_signals.py: 10 RSI gate tests
