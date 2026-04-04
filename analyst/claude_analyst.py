@@ -170,7 +170,7 @@ def analyze_ticker(
 ) -> dict:
     """
     Call the configured analyst provider to get a BUY/HOLD/SKIP signal.
-    Returns {"signal": str, "reasoning": str}.
+    Returns {"signal": str, "reasoning": str, "provider_used": str}.
     If the primary API call fails and fallback_client is provided, retries with the fallback.
     """
     if client is None:
@@ -182,6 +182,7 @@ def analyze_ticker(
     if config.analyst_call_delay_s > 0:
         time.sleep(config.analyst_call_delay_s)
 
+    provider_used = config.analyst_provider
     try:
         text = _call_api(client, model, prompt)
     except Exception as api_exc:
@@ -195,8 +196,11 @@ def analyze_ticker(
             config.analyst_fallback_provider, ""
         )
         text = _call_api(fallback_client, fallback_model, prompt)
+        provider_used = config.analyst_fallback_provider
 
-    return parse_claude_response(text)
+    result = parse_claude_response(text)
+    result["provider_used"] = provider_used
+    return result
 
 
 def build_sell_prompt(
@@ -207,11 +211,20 @@ def build_sell_prompt(
     hold_days: int,
     rsi: float,
     headlines: list[str],
+    macd_line: float | None = None,
+    signal_line: float | None = None,
 ) -> str:
-    """Build the sell analysis prompt for an open position (per D-07)."""
+    """Build the sell analysis prompt for an open position (per D-07/D-10)."""
     headlines_block = (
         "\n".join(f"- {h}" for h in headlines) if headlines else "- No recent headlines available."
     )
+
+    if macd_line is not None and signal_line is not None:
+        histogram = macd_line - signal_line
+        macd_direction = "Bearish" if macd_line < signal_line else "Bullish"
+        macd_block = f"- MACD Line: {macd_line:.4f}\n- Signal Line: {signal_line:.4f}\n- Histogram: {histogram:.4f} ({macd_direction})"
+    else:
+        macd_block = "- MACD: N/A (insufficient data)"
 
     return f"""You are a stock analyst. Evaluate whether to SELL or HOLD the following position. Return exactly two lines.
 
@@ -223,6 +236,8 @@ Position:
 - P&L: {pnl_pct:+.1%}
 - Hold Duration: {hold_days} days
 - RSI: {rsi:.1f}
+- MACD Trend:
+{macd_block}
 
 Recent news headlines:
 {headlines_block}
@@ -243,21 +258,27 @@ def analyze_sell_ticker(
     config: Config,
     client=None,
     fallback_client=None,
+    macd_line: float | None = None,
+    signal_line: float | None = None,
 ) -> dict:
     """Call the analyst to get a SELL/HOLD signal for an open position.
 
     Reuses the same _call_api + fallback pipeline as analyze_ticker (per D-03).
-    Returns {"signal": str, "reasoning": str}.
+    Returns {"signal": str, "reasoning": str, "provider_used": str}.
     """
     if client is None:
         client = create_analyst_client(config)
 
     model = config.analyst_model or _DEFAULT_MODELS.get(config.analyst_provider, "")
-    prompt = build_sell_prompt(ticker, entry_price, current_price, pnl_pct, hold_days, rsi, headlines)
+    prompt = build_sell_prompt(
+        ticker, entry_price, current_price, pnl_pct, hold_days, rsi, headlines,
+        macd_line=macd_line, signal_line=signal_line,
+    )
 
     if config.analyst_call_delay_s > 0:
         time.sleep(config.analyst_call_delay_s)
 
+    provider_used = config.analyst_provider
     try:
         text = _call_api(client, model, prompt)
     except Exception as api_exc:
@@ -271,5 +292,8 @@ def analyze_sell_ticker(
             config.analyst_fallback_provider, ""
         )
         text = _call_api(fallback_client, fallback_model, prompt)
+        provider_used = config.analyst_fallback_provider
 
-    return parse_claude_response(text)
+    result = parse_claude_response(text)
+    result["provider_used"] = provider_used
+    return result

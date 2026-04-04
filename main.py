@@ -92,9 +92,29 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
                 logger.debug("Cache hit for %s (hash %s...)", ticker, headline_hash[:8])
                 analysis = cached
             else:
+                # D-11: quota guard — skip if both providers exhausted
+                primary_count = queries.get_analyst_call_count_today(
+                    config.db_path, config.analyst_provider
+                )
+                fallback_count = (
+                    queries.get_analyst_call_count_today(
+                        config.db_path, config.analyst_fallback_provider
+                    )
+                    if config.analyst_fallback_provider
+                    else config.analyst_daily_limit
+                )
+                if primary_count >= config.analyst_daily_limit and fallback_count >= config.analyst_daily_limit:
+                    logger.warning(
+                        "Daily analyst quota reached for all providers, skipping analysis for %s",
+                        ticker,
+                    )
+                    continue
                 analysis = await asyncio.to_thread(
                     analyze_ticker, ticker, info, headlines, config,
                     client, fallback_client
+                )
+                queries.increment_analyst_call_count(
+                    config.db_path, analysis["provider_used"]
                 )
                 try:
                     queries.set_cached_analysis(
@@ -184,10 +204,33 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
 
             headlines = fetch_news_headlines(ticker)
 
+            # D-11: quota guard for sell analyst call
+            primary_count = queries.get_analyst_call_count_today(
+                config.db_path, config.analyst_provider
+            )
+            fallback_count = (
+                queries.get_analyst_call_count_today(
+                    config.db_path, config.analyst_fallback_provider
+                )
+                if config.analyst_fallback_provider
+                else config.analyst_daily_limit
+            )
+            if primary_count >= config.analyst_daily_limit and fallback_count >= config.analyst_daily_limit:
+                logger.warning(
+                    "Daily analyst quota reached for all providers, skipping sell analysis for %s",
+                    ticker,
+                )
+                continue
+
             analysis = await asyncio.to_thread(
                 analyze_sell_ticker,
                 ticker, entry_price, current_price, pnl_pct, hold_days,
                 tech_data["rsi"], headlines, config, client, fallback_client,
+                macd_line=tech_data.get("macd_line"),
+                signal_line=tech_data.get("signal_line"),
+            )
+            queries.increment_analyst_call_count(
+                config.db_path, analysis["provider_used"]
             )
 
             if analysis["signal"] != "SELL":

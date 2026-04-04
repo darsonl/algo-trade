@@ -54,7 +54,7 @@ TECH_DATA_NORMAL = {
 @pytest.mark.asyncio
 @patch("main.fetch_news_headlines", return_value=["Headline 1"])
 @patch("main.fetch_technical_data", return_value=TECH_DATA_OVERBOUGHT)
-@patch("main.analyze_sell_ticker", return_value={"signal": "SELL", "reasoning": "Overbought"})
+@patch("main.analyze_sell_ticker", return_value={"signal": "SELL", "reasoning": "Overbought", "provider_used": "gemini"})
 @patch("main.fetch_fundamental_info", return_value={"trailingPE": 20, "dividendYield": 0.03, "earningsGrowth": 0.1})
 @patch("main.get_top_sp500_by_fundamentals", return_value=[])
 @patch("main.get_universe", return_value=[])
@@ -95,7 +95,7 @@ async def test_sell_pass_skips_when_rsi_below_threshold(
 @pytest.mark.asyncio
 @patch("main.fetch_news_headlines", return_value=[])
 @patch("main.fetch_technical_data", return_value=TECH_DATA_OVERBOUGHT)
-@patch("main.analyze_sell_ticker", return_value={"signal": "HOLD", "reasoning": "Momentum strong"})
+@patch("main.analyze_sell_ticker", return_value={"signal": "HOLD", "reasoning": "Momentum strong", "provider_used": "gemini"})
 @patch("main.fetch_fundamental_info", return_value={"trailingPE": 20, "dividendYield": 0.03, "earningsGrowth": 0.1})
 @patch("main.get_top_sp500_by_fundamentals", return_value=[])
 @patch("main.get_universe", return_value=[])
@@ -195,7 +195,7 @@ async def test_sell_pass_no_positions_skips_sell_evaluation(
 @pytest.mark.asyncio
 @patch("main.fetch_news_headlines", return_value=["Headline"])
 @patch("main.fetch_technical_data", return_value=TECH_DATA_OVERBOUGHT)
-@patch("main.analyze_sell_ticker", return_value={"signal": "SELL", "reasoning": "Overbought"})
+@patch("main.analyze_sell_ticker", return_value={"signal": "SELL", "reasoning": "Overbought", "provider_used": "gemini"})
 @patch("main.fetch_fundamental_info", return_value={"trailingPE": 20, "dividendYield": 0.03, "earningsGrowth": 0.1})
 @patch("main.get_top_sp500_by_fundamentals", return_value=[])
 @patch("main.get_universe", return_value=[])
@@ -216,7 +216,7 @@ async def test_sell_pass_sets_discord_message_id_after_posting(
 @pytest.mark.asyncio
 @patch("main.fetch_news_headlines", return_value=[])
 @patch("main.fetch_technical_data", return_value=TECH_DATA_OVERBOUGHT)
-@patch("main.analyze_sell_ticker", return_value={"signal": "SELL", "reasoning": "Overbought"})
+@patch("main.analyze_sell_ticker", return_value={"signal": "SELL", "reasoning": "Overbought", "provider_used": "gemini"})
 @patch("main.fetch_fundamental_info", return_value={"trailingPE": 20, "dividendYield": 0.03, "earningsGrowth": 0.1})
 @patch("main.get_top_sp500_by_fundamentals", return_value=[])
 @patch("main.get_universe", return_value=[])

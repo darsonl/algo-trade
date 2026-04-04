@@ -28,7 +28,7 @@ def _full_patch(
     technical_pass=True,
     rec_id=1,
 ):
-    analysis = analysis or {"signal": "BUY", "reasoning": "Strong."}
+    analysis = analysis or {"signal": "BUY", "reasoning": "Strong.", "provider_used": "gemini"}
     fund_info = {"trailingPE": 20.0, "dividendYield": 0.03, "earningsGrowth": 0.10}
     tech_data = {
         "price": 150.0, "rsi": 55.0, "ma50": 140.0,
@@ -47,6 +47,8 @@ def _full_patch(
          patch("main.passes_fundamental_filter", return_value=fundamental_pass), \
          patch("main.fetch_news_headlines", return_value=["headline A"]), \
          patch("main.queries.get_cached_analysis", return_value=None), \
+         patch("main.queries.get_analyst_call_count_today", return_value=0), \
+         patch("main.queries.increment_analyst_call_count"), \
          patch("main.analyze_ticker", return_value=analysis) as m_analyze, \
          patch("main.queries.set_cached_analysis"), \
          patch("main.fetch_technical_data", return_value=tech_data), \

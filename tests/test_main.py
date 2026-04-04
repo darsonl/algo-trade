@@ -133,7 +133,7 @@ async def test_run_scan_cache_miss_calls_analyze_ticker_and_caches():
     config = Config()
     config.db_path = ":memory:"
 
-    analysis_result = {"signal": "BUY", "reasoning": "Fresh analysis."}
+    analysis_result = {"signal": "BUY", "reasoning": "Fresh analysis.", "provider_used": "gemini"}
 
     with patch("main.get_top_sp500_by_fundamentals", return_value=[]):
         with patch("main.get_universe", return_value=["AAPL"]):
@@ -146,15 +146,17 @@ async def test_run_scan_cache_miss_calls_analyze_ticker_and_caches():
                                     with patch("main.passes_fundamental_filter", return_value=True):
                                         with patch("main.fetch_news_headlines", return_value=["headline B"]):
                                             with patch("main.queries.get_cached_analysis", return_value=None):
-                                                with patch("main.analyze_ticker", return_value=analysis_result) as mock_analyze:
-                                                    with patch("main.queries.set_cached_analysis") as mock_set_cache:
-                                                        with patch("main.fetch_technical_data", return_value={"price": 150.0, "rsi": 60.0, "ma50": 140.0, "volume_ratio": 1.2}):
-                                                            with patch("main.passes_technical_filter", return_value=True):
-                                                                with patch("main.queries.create_recommendation", return_value=1):
-                                                                    with patch("main.queries.set_discord_message_id"):
-                                                                        await run_scan(bot, config)
-                                                                        mock_analyze.assert_called_once()
-                                                                        assert mock_set_cache.call_count == 1
-                                                                        args = mock_set_cache.call_args[0]
-                                                                        assert "BUY" in args
-                                                                        assert "Fresh analysis." in args
+                                                with patch("main.queries.get_analyst_call_count_today", return_value=0):
+                                                    with patch("main.queries.increment_analyst_call_count"):
+                                                        with patch("main.analyze_ticker", return_value=analysis_result) as mock_analyze:
+                                                            with patch("main.queries.set_cached_analysis") as mock_set_cache:
+                                                                with patch("main.fetch_technical_data", return_value={"price": 150.0, "rsi": 60.0, "ma50": 140.0, "volume_ratio": 1.2}):
+                                                                    with patch("main.passes_technical_filter", return_value=True):
+                                                                        with patch("main.queries.create_recommendation", return_value=1):
+                                                                            with patch("main.queries.set_discord_message_id"):
+                                                                                await run_scan(bot, config)
+                                                                                mock_analyze.assert_called_once()
+                                                                                assert mock_set_cache.call_count == 1
+                                                                                args = mock_set_cache.call_args[0]
+                                                                                assert "BUY" in args
+                                                                                assert "Fresh analysis." in args
