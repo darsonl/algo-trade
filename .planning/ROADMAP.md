@@ -45,10 +45,12 @@ See `.planning/milestones/v1.0-ROADMAP.md` for full phase details.
 - ETF recommendations use the same `recommendations` table (signal, reasoning, status columns unchanged)
 
 **Requirements:** ETF-01 to ETF-06
-**Plans:** 0 plans
+**Plans:** 3 plans
 
 Plans:
-- [ ] TBD
+- [ ] 07-01-PLAN.md — Foundation: partition_watchlist, etf_watchlist.txt, asset_type migration
+- [ ] 07-02-PLAN.md — Analyst: build_etf_prompt, analyze_etf_ticker, ETF embed
+- [ ] 07-03-PLAN.md — Wiring: run_scan_etf, /scan_etf command, fundamentals cleanup
 
 **Depends on:** Phase 6
 
@@ -88,9 +90,9 @@ Plans:
 | 4. Test Coverage Expansion | v1.0 | 2/2 | Complete | 2026-04-03 |
 | 5. Position Monitoring | v1.0 | 3/3 | Complete | 2026-04-03 |
 | 6. Sell Signals & Sell Orders | v1.0 | 5/5 | Complete | 2026-04-06 |
-| 7. ETF Scan Separation | v1.1 | 0/TBD | Not started | - |
+| 7. ETF Scan Separation | v1.1 | 0/3 | Planning | - |
 | 8. Asyncio Event Loop Fix | v1.1 | 0/TBD | Not started | - |
 
 ---
 *Roadmap defined: 2026-03-30*
-*Last updated: 2026-04-06 — v1.0 shipped; Phases 1-6 archived*
+*Last updated: 2026-04-07 — Phase 7 planned (3 plans)*
