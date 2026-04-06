@@ -89,5 +89,30 @@ ETF issue noted: SPY, QQQ etc. fail the stock-oriented fundamental filter (no ea
 | RSI+MACD two-gate exit signal | Single-indicator exits are noisy; conjunction reduces false positives | ✓ Good |
 | Human approval required for every order | Core value; operator trust requires full visibility | ✓ Good — never compromised |
 
+## Current Milestone: v1.1 ETF + Async
+
+**Goal:** Add ETF scan capability and eliminate all blocking yfinance calls from the Discord event loop.
+
+**Target features:**
+- ETF scan separation (`/scan_etf` command, `partition_watchlist`, ETF-aware analyst prompt)
+- Asyncio event loop fix (wrap all remaining yfinance calls in `asyncio.to_thread`)
+
+## Evolution
+
+This document evolves at phase transitions and milestone boundaries.
+
+**After each phase transition** (via `/gsd-transition`):
+1. Requirements invalidated? → Move to Out of Scope with reason
+2. Requirements validated? → Move to Validated with phase reference
+3. New requirements emerged? → Add to Active
+4. Decisions to log? → Add to Key Decisions
+5. "What This Is" still accurate? → Update if drifted
+
+**After each milestone** (via `/gsd-complete-milestone`):
+1. Full review of all sections
+2. Core Value check — still the right priority?
+3. Audit Out of Scope — reasons still valid?
+4. Update Context with current state
+
 ---
-*Last updated: 2026-04-06 after v1.0 milestone*
+*Last updated: 2026-04-06 after v1.1 milestone started*

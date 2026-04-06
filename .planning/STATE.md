@@ -2,8 +2,8 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: ETF + Async
-status: unknown
-last_updated: "2026-04-06T09:21:04.472Z"
+status: defining_requirements
+last_updated: "2026-04-06T00:00:00.000Z"
 progress:
   total_phases: 2
   completed_phases: 0
@@ -18,7 +18,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-06)
 
 **Core value:** The bot must never place a real order without explicit human approval via Discord.
-**Current focus:** v1.0 shipped — planning v1.1 (Phases 7-8: ETF scan separation + asyncio event loop fix)
+**Current focus:** v1.1 ETF + Async — Defining requirements
+
+## Current Position
+
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-04-06 — Milestone v1.1 started
 
 ---
 
