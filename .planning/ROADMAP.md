@@ -152,8 +152,8 @@ Plans:
 - [x] 06-01-PLAN.md -- Config + schema migrations + exit signals + sell prompt + Schwab sell order
 - [x] 06-02-PLAN.md -- Sell embed + SellApproveRejectView + run_scan sell pass
 - [x] 06-03-PLAN.md -- Tests for all sell flow components
-- [ ] 06-04-PLAN.md -- Gap closure: MACD bearish gate in check_exit_signals + build_sell_prompt MACD params + 2x2 matrix tests
-- [ ] 06-05-PLAN.md -- Gap closure: analyst_daily_limit config + analyst_calls DB table + quota query helpers + provider_used in analyze functions + quota guard in main.py
+- [x] 06-04-PLAN.md -- Gap closure: MACD bearish gate in check_exit_signals + build_sell_prompt MACD params + 2x2 matrix tests
+- [x] 06-05-PLAN.md -- Gap closure: analyst_daily_limit config + analyst_calls DB table + quota query helpers + provider_used in analyze functions + quota guard in main.py
 
 **Verification:** In dry-run mode, approve a sell → log shows sell order details, position status='closed', trade record created with side='sell'
 
