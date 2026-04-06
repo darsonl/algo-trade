@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-03-30)
 | 3 | Documentation | ✅ Complete |
 | 4 | Test Coverage Expansion | ✅ Complete |
 | 5 | Position Monitoring | ✅ Complete (3/3 plans done) |
-| 6 | Sell Signals & Sell Orders | 🔄 In Progress (2/3 plans done) |
+| 6 | Sell Signals & Sell Orders | ✅ Complete (3/3 plans done) |
 
 ---
 
@@ -64,7 +64,17 @@ Location: .planning/codebase/
 
 ## Next Action
 
-Phase 6 Plan 03: Tests for sell flow (SellApproveRejectView handlers, sell pass, build_sell_embed). Run `/gsd:execute-phase 6`.
+Phase 6 Complete. All 3 plans done. Milestone 1 complete — 216 tests green, full sell pipeline implemented and tested.
+
+### Phase 6 Plan 03 Completed (2026-04-05)
+Comprehensive test coverage for sell flow components: exit signals (RSI gate), sell prompt + SELL signal parsing, sell embed, SellApproveRejectView approve/reject handlers, run_scan sell pass (SELL-01 through SELL-09).
+- tests/test_exit_signals.py: 10 RSI gate tests
+- tests/test_sell_prompt.py: 8 prompt + parse tests
+- tests/test_sell_embed.py: 8 embed + market_sell tests
+- tests/test_sell_buttons.py: 9 SellApproveRejectView async tests
+- tests/test_sell_scan.py: 9 run_scan sell pass integration tests
+- Adapted from plan: exit_signals.py only checks RSI (not MACD); build_sell_prompt has no MACD params; quota test replaced with no-positions test
+- Commits: b2780f5 (Task 1), 2457b73 (Task 2); 216 tests green
 
 ### Phase 6 Plan 02 Completed (2026-04-05)
 End-to-end sell pipeline wired: sell pass in run_scan, red Discord embeds, SellApproveRejectView (SELL-03/04/05/06/08/09).
