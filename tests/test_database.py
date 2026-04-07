@@ -294,36 +294,3 @@ def test_expire_stale_does_not_expire_at_exact_now():
     expire_stale_recommendations(DB_PATH)
     # datetime('now') is NOT < datetime('now'), so the record should remain pending
     assert get_recommendation(DB_PATH, rec_id)["status"] == "pending"
-
-
-# --- asset_type column tests ---
-
-def test_create_recommendation_with_asset_type_etf():
-    """asset_type='etf' is stored and retrievable."""
-    rec_id = create_recommendation(
-        db_path=DB_PATH,
-        ticker="SPY",
-        signal="BUY",
-        reasoning="Broad market ETF.",
-        price=500.0,
-        dividend_yield=0.013,
-        pe_ratio=None,
-        asset_type="etf",
-    )
-    rec = get_recommendation(DB_PATH, rec_id)
-    assert rec["asset_type"] == "etf"
-
-
-def test_create_recommendation_default_asset_type():
-    """asset_type defaults to 'stock' when not specified."""
-    rec_id = create_recommendation(
-        db_path=DB_PATH,
-        ticker="AAPL",
-        signal="BUY",
-        reasoning="Strong fundamentals.",
-        price=175.0,
-        dividend_yield=0.005,
-        pe_ratio=28.0,
-    )
-    rec = get_recommendation(DB_PATH, rec_id)
-    assert rec["asset_type"] == "stock"

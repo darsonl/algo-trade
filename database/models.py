@@ -25,8 +25,7 @@ def initialize_db(db_path: str) -> None:
             status TEXT NOT NULL DEFAULT 'pending',
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             expires_at TEXT NOT NULL DEFAULT (datetime('now', '+24 hours')),
-            discord_message_id TEXT,
-            asset_type TEXT NOT NULL DEFAULT 'stock'
+            discord_message_id TEXT
         );
 
         CREATE TABLE IF NOT EXISTS trades (
@@ -88,13 +87,6 @@ def initialize_db(db_path: str) -> None:
     try:
         conn.execute(
             "ALTER TABLE trades ADD COLUMN side TEXT DEFAULT 'buy'"
-        )
-        conn.commit()
-    except sqlite3.OperationalError:
-        pass  # Column already exists
-    try:
-        conn.execute(
-            "ALTER TABLE recommendations ADD COLUMN asset_type TEXT DEFAULT 'stock'"
         )
         conn.commit()
     except sqlite3.OperationalError:

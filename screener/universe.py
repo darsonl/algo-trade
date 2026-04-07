@@ -4,7 +4,6 @@ import logging
 import time
 from pathlib import Path
 from tenacity import retry, stop_after_attempt, wait_exponential
-import yfinance as yf
 
 _retry = retry(
     wait=wait_exponential(multiplier=1, min=2, max=30),
@@ -12,7 +11,6 @@ _retry = retry(
     reraise=True,
 )
 
-_ETF_ALLOWLIST = {"SPY", "QQQ", "VTI", "IVV", "VOO", "VEA", "BND", "GLD", "XLK", "SCHD"}
 
 _CACHE_PATH = Path(__file__).parent.parent / "sp500_cache.json"
 _CACHE_TTL_HOURS = 24
@@ -41,42 +39,6 @@ def get_universe(watchlist_path: str, extra_tickers: list[str] | None = None) ->
             seen.add(ticker)
             result.append(ticker)
     return result
-
-
-def partition_watchlist(tickers: list[str]) -> tuple[list[str], list[str]]:
-    """
-    Classify tickers as stocks or ETFs using yfinance quoteType.
-
-    For each ticker, queries yf.Ticker(ticker).info['quoteType']. If quoteType
-    equals 'ETF', the ticker is classified as an ETF. Otherwise it is treated as
-    a stock. When yfinance raises any exception, falls back to _ETF_ALLOWLIST:
-    tickers in the allowlist go to etfs, all others go to stocks.
-
-    Do NOT use @_retry — per-ticker failures are handled by the allowlist fallback.
-    The function will be wrapped in asyncio.to_thread at its call site (Plan 03).
-
-    Returns:
-        (stocks, etfs) — two lists of uppercase ticker strings.
-    """
-    log = logging.getLogger(__name__)
-    stocks: list[str] = []
-    etfs: list[str] = []
-    for ticker in tickers:
-        try:
-            quote_type = yf.Ticker(ticker).info.get("quoteType", "")
-            if quote_type == "ETF":
-                etfs.append(ticker)
-            else:
-                stocks.append(ticker)
-        except Exception:
-            log.debug(
-                "yfinance quoteType lookup failed for %s, using allowlist fallback", ticker
-            )
-            if ticker.upper() in _ETF_ALLOWLIST:
-                etfs.append(ticker)
-            else:
-                stocks.append(ticker)
-    return stocks, etfs
 
 
 def _load_sp500_cache() -> list[str] | None:
