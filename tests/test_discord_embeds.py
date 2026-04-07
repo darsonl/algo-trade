@@ -1,6 +1,6 @@
 import discord
 import pytest
-from discord_bot.embeds import build_recommendation_embed
+from discord_bot.embeds import build_recommendation_embed, build_etf_recommendation_embed
 
 
 def make_embed(signal="BUY", ticker="AAPL", price=175.50, div_yield=0.006, pe_ratio=24.5):
@@ -99,3 +99,83 @@ def test_embed_raises_on_invalid_signal():
             ticker="AAPL", signal="MAYBE", reasoning="Dunno.",
             price=100.0, dividend_yield=None, pe_ratio=None,
         )
+
+
+# --- build_etf_recommendation_embed ---
+
+def make_etf_embed(
+    ticker="SPY",
+    signal="BUY",
+    reasoning="Strong uptrend with low expense ratio.",
+    price=450.0,
+    rsi=65.0,
+    ma50=440.0,
+    expense_ratio=0.0009,
+):
+    return build_etf_recommendation_embed(
+        ticker=ticker,
+        signal=signal,
+        reasoning=reasoning,
+        price=price,
+        rsi=rsi,
+        ma50=ma50,
+        expense_ratio=expense_ratio,
+    )
+
+
+def test_etf_embed_buy_signal_is_green():
+    """Test 1: build_etf_recommendation_embed with signal='BUY' returns embed with green color."""
+    embed = make_etf_embed(signal="BUY")
+    assert embed.color == discord.Color.green()
+
+
+def test_etf_embed_has_required_fields():
+    """Test 2: build_etf_recommendation_embed includes fields: Price, RSI, MA50 Trend, Expense Ratio."""
+    embed = make_etf_embed()
+    field_names = [f.name for f in embed.fields]
+    assert "Price" in field_names
+    assert "RSI" in field_names
+    assert "MA50 Trend" in field_names
+    assert "Expense Ratio" in field_names
+
+
+def test_etf_embed_expense_ratio_none_shows_na():
+    """Test 3: build_etf_recommendation_embed with expense_ratio=None shows 'N/A' for Expense Ratio field."""
+    embed = build_etf_recommendation_embed(
+        ticker="BND",
+        signal="HOLD",
+        reasoning="Neutral bond ETF.",
+        price=75.0,
+        rsi=50.0,
+        ma50=74.0,
+        expense_ratio=None,
+    )
+    fields = {f.name: f.value for f in embed.fields}
+    assert fields["Expense Ratio"] == "N/A"
+
+
+def test_etf_embed_rsi_none_shows_na():
+    """Test 4: build_etf_recommendation_embed with rsi=None shows 'N/A' for RSI field."""
+    embed = build_etf_recommendation_embed(
+        ticker="VTI",
+        signal="BUY",
+        reasoning="Broad market ETF.",
+        price=220.0,
+        rsi=None,
+        ma50=215.0,
+        expense_ratio=0.0003,
+    )
+    fields = {f.name: f.value for f in embed.fields}
+    assert fields["RSI"] == "N/A"
+
+
+def test_etf_embed_title_format():
+    """Test 5: build_etf_recommendation_embed title format is '{ticker} — {signal} [ETF]'."""
+    embed = make_etf_embed(ticker="QQQ", signal="SKIP")
+    assert embed.title == "QQQ — SKIP [ETF]"
+
+
+def test_etf_embed_hold_signal_is_yellow():
+    """Test 6: build_etf_recommendation_embed with signal='HOLD' returns embed with yellow color."""
+    embed = make_etf_embed(signal="HOLD")
+    assert embed.color == discord.Color.yellow()
