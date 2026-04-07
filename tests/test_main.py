@@ -137,26 +137,165 @@ async def test_run_scan_cache_miss_calls_analyze_ticker_and_caches():
 
     with patch("main.get_top_sp500_by_fundamentals", return_value=[]):
         with patch("main.get_universe", return_value=["AAPL"]):
-            with patch("main.queries.ticker_recommended_today", return_value=False):
-                with patch("main.queries.has_open_position", return_value=False):
-                    with patch("main.queries.expire_stale_recommendations"):
-                        with patch("main.queries.get_open_positions", return_value=[]):
-                            with patch("main.yf.Ticker"):
-                                with patch("main.fetch_fundamental_info", return_value={"trailingPE": 20.0, "dividendYield": 0.03, "earningsGrowth": 0.1}):
-                                    with patch("main.passes_fundamental_filter", return_value=True):
-                                        with patch("main.fetch_news_headlines", return_value=["headline B"]):
-                                            with patch("main.queries.get_cached_analysis", return_value=None):
-                                                with patch("main.queries.get_analyst_call_count_today", return_value=0):
-                                                    with patch("main.queries.increment_analyst_call_count"):
-                                                        with patch("main.analyze_ticker", return_value=analysis_result) as mock_analyze:
-                                                            with patch("main.queries.set_cached_analysis") as mock_set_cache:
-                                                                with patch("main.fetch_technical_data", return_value={"price": 150.0, "rsi": 60.0, "ma50": 140.0, "volume_ratio": 1.2}):
-                                                                    with patch("main.passes_technical_filter", return_value=True):
-                                                                        with patch("main.queries.create_recommendation", return_value=1):
-                                                                            with patch("main.queries.set_discord_message_id"):
-                                                                                await run_scan(bot, config)
-                                                                                mock_analyze.assert_called_once()
-                                                                                assert mock_set_cache.call_count == 1
-                                                                                args = mock_set_cache.call_args[0]
-                                                                                assert "BUY" in args
-                                                                                assert "Fresh analysis." in args
+            with patch("main.partition_watchlist", return_value=(["AAPL"], [])):
+                with patch("main.queries.ticker_recommended_today", return_value=False):
+                    with patch("main.queries.has_open_position", return_value=False):
+                        with patch("main.queries.expire_stale_recommendations"):
+                            with patch("main.queries.get_open_positions", return_value=[]):
+                                with patch("main.yf.Ticker"):
+                                    with patch("main.fetch_fundamental_info", return_value={"trailingPE": 20.0, "dividendYield": 0.03, "earningsGrowth": 0.1}):
+                                        with patch("main.passes_fundamental_filter", return_value=True):
+                                            with patch("main.fetch_news_headlines", return_value=["headline B"]):
+                                                with patch("main.queries.get_cached_analysis", return_value=None):
+                                                    with patch("main.queries.get_analyst_call_count_today", return_value=0):
+                                                        with patch("main.queries.increment_analyst_call_count"):
+                                                            with patch("main.analyze_ticker", return_value=analysis_result) as mock_analyze:
+                                                                with patch("main.queries.set_cached_analysis") as mock_set_cache:
+                                                                    with patch("main.fetch_technical_data", return_value={"price": 150.0, "rsi": 60.0, "ma50": 140.0, "volume_ratio": 1.2}):
+                                                                        with patch("main.passes_technical_filter", return_value=True):
+                                                                            with patch("main.queries.create_recommendation", return_value=1):
+                                                                                with patch("main.queries.set_discord_message_id"):
+                                                                                    await run_scan(bot, config)
+                                                                                    mock_analyze.assert_called_once()
+                                                                                    assert mock_set_cache.call_count == 1
+                                                                                    args = mock_set_cache.call_args[0]
+                                                                                    assert "BUY" in args
+                                                                                    assert "Fresh analysis." in args
+
+
+# ---------------------------------------------------------------------------
+# run_scan_etf tests
+# ---------------------------------------------------------------------------
+
+def _make_etf_bot():
+    """Build a minimal mock TradingBot for ETF scan tests."""
+    from unittest.mock import AsyncMock, MagicMock
+    bot = MagicMock()
+    bot.send_etf_recommendation = AsyncMock(return_value="12345")
+    bot.send_ops_alert = AsyncMock()
+    return bot
+
+
+def _make_etf_config():
+    """Config with in-memory DB and default quota settings."""
+    config = Config()
+    config.db_path = ":memory:"
+    config.analyst_provider = "gemini"
+    config.analyst_fallback_provider = None
+    config.analyst_daily_limit = 18
+    return config
+
+
+_ETF_TECH_DATA = {"price": 480.0, "rsi": 55.0, "ma50": 460.0, "volume": 1_200_000, "avg_volume": 1_000_000}
+_ETF_ANALYSIS_BUY = {"signal": "BUY", "reasoning": "Strong trend", "provider_used": "gemini"}
+_ETF_ANALYSIS_HOLD = {"signal": "HOLD", "reasoning": "Sideways", "provider_used": "gemini"}
+
+
+@pytest.mark.asyncio
+async def test_run_scan_etf_posts_buy_recommendation():
+    """run_scan_etf posts a BUY embed and creates rec with asset_type='etf'."""
+    from unittest.mock import patch, MagicMock
+    from main import run_scan_etf
+
+    bot = _make_etf_bot()
+    config = _make_etf_config()
+
+    with patch("main.get_watchlist", return_value=["SPY", "QQQ"]):
+        with patch("main.partition_watchlist", return_value=([], ["SPY", "QQQ"])):
+            with patch("main.queries.expire_stale_recommendations"):
+                with patch("main.queries.ticker_recommended_today", return_value=False):
+                    with patch("main.queries.has_open_position", return_value=False):
+                        with patch("main.yf.Ticker", return_value=MagicMock()):
+                            with patch("main.fetch_technical_data", return_value=_ETF_TECH_DATA):
+                                with patch("main.fetch_fundamental_info", return_value={"annualReportExpenseRatio": 0.0009}):
+                                    with patch("main.fetch_news_headlines", return_value=["headline1"]):
+                                        with patch("main.queries.get_cached_analysis", return_value=None):
+                                            with patch("main.queries.get_analyst_call_count_today", return_value=0):
+                                                with patch("main.queries.increment_analyst_call_count"):
+                                                    with patch("main.analyze_etf_ticker", return_value=_ETF_ANALYSIS_BUY):
+                                                        with patch("main.queries.set_cached_analysis"):
+                                                            with patch("main.queries.create_recommendation", return_value=1) as mock_create_rec:
+                                                                with patch("main.queries.set_discord_message_id"):
+                                                                    await run_scan_etf(bot, config)
+                                                                    assert bot.send_etf_recommendation.call_count >= 1
+                                                                    first_call = bot.send_etf_recommendation.call_args_list[0]
+                                                                    assert first_call.kwargs.get("ticker") == "SPY" or first_call.kwargs.get("signal") == "BUY"
+                                                                    # asset_type="etf" must be in create_recommendation call
+                                                                    calls = mock_create_rec.call_args_list
+                                                                    assert any(c.kwargs.get("asset_type") == "etf" for c in calls)
+
+
+@pytest.mark.asyncio
+async def test_run_scan_etf_skips_non_buy():
+    """run_scan_etf does not post when analysis signal is HOLD."""
+    from unittest.mock import patch, MagicMock
+    from main import run_scan_etf
+
+    bot = _make_etf_bot()
+    config = _make_etf_config()
+
+    with patch("main.get_watchlist", return_value=["SPY"]):
+        with patch("main.partition_watchlist", return_value=([], ["SPY"])):
+            with patch("main.queries.expire_stale_recommendations"):
+                with patch("main.queries.ticker_recommended_today", return_value=False):
+                    with patch("main.queries.has_open_position", return_value=False):
+                        with patch("main.yf.Ticker", return_value=MagicMock()):
+                            with patch("main.fetch_technical_data", return_value=_ETF_TECH_DATA):
+                                with patch("main.fetch_fundamental_info", return_value={"annualReportExpenseRatio": 0.0009}):
+                                    with patch("main.fetch_news_headlines", return_value=["headline1"]):
+                                        with patch("main.queries.get_cached_analysis", return_value=None):
+                                            with patch("main.queries.get_analyst_call_count_today", return_value=0):
+                                                with patch("main.queries.increment_analyst_call_count"):
+                                                    with patch("main.analyze_etf_ticker", return_value=_ETF_ANALYSIS_HOLD):
+                                                        with patch("main.queries.set_cached_analysis"):
+                                                            await run_scan_etf(bot, config)
+                                                            bot.send_etf_recommendation.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_scan_etf_skips_already_recommended():
+    """run_scan_etf skips tickers already recommended today without calling analyze_etf_ticker."""
+    from unittest.mock import patch, MagicMock
+    from main import run_scan_etf
+
+    bot = _make_etf_bot()
+    config = _make_etf_config()
+
+    with patch("main.get_watchlist", return_value=["SPY"]):
+        with patch("main.partition_watchlist", return_value=([], ["SPY"])):
+            with patch("main.queries.expire_stale_recommendations"):
+                with patch("main.queries.ticker_recommended_today", return_value=True):
+                    with patch("main.queries.has_open_position", return_value=False):
+                        with patch("main.analyze_etf_ticker") as mock_analyze:
+                            await run_scan_etf(bot, config)
+                            mock_analyze.assert_not_called()
+                            bot.send_etf_recommendation.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_run_scan_etf_zero_recs_sends_ops_alert():
+    """run_scan_etf sends an ops alert when 0 recommendations are posted."""
+    from unittest.mock import patch, MagicMock
+    from main import run_scan_etf
+
+    bot = _make_etf_bot()
+    config = _make_etf_config()
+
+    with patch("main.get_watchlist", return_value=["SPY"]):
+        with patch("main.partition_watchlist", return_value=([], ["SPY"])):
+            with patch("main.queries.expire_stale_recommendations"):
+                with patch("main.queries.ticker_recommended_today", return_value=False):
+                    with patch("main.queries.has_open_position", return_value=False):
+                        with patch("main.yf.Ticker", return_value=MagicMock()):
+                            with patch("main.fetch_technical_data", return_value=_ETF_TECH_DATA):
+                                with patch("main.fetch_fundamental_info", return_value={"annualReportExpenseRatio": 0.0009}):
+                                    with patch("main.fetch_news_headlines", return_value=["headline1"]):
+                                        with patch("main.queries.get_cached_analysis", return_value=None):
+                                            with patch("main.queries.get_analyst_call_count_today", return_value=0):
+                                                with patch("main.queries.increment_analyst_call_count"):
+                                                    with patch("main.analyze_etf_ticker", return_value=_ETF_ANALYSIS_HOLD):
+                                                        with patch("main.queries.set_cached_analysis"):
+                                                            await run_scan_etf(bot, config)
+                                                            bot.send_ops_alert.assert_called_once()
+                                                            alert_msg = bot.send_ops_alert.call_args[0][0]
+                                                            assert "ETF scan complete: 0" in alert_msg

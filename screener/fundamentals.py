@@ -9,19 +9,14 @@ _retry = retry(
 )
 
 
-_ETF_ALLOWLIST = {"SPY", "QQQ", "VTI", "IVV", "VOO", "VEA", "BND", "GLD", "XLK", "SCHD"}
-
-
 def passes_fundamental_filter(info: dict, config: Config) -> bool:
     """
     Return True only if all fundamental criteria are met.
 
     Expects keys: 'trailingPE', 'dividendYield', 'earningsGrowth'
     (matching yfinance Ticker.info keys).
+    ETFs are handled by the separate ETF scan pipeline and should not reach this filter.
     """
-    if info.get("symbol", "").upper() in _ETF_ALLOWLIST:
-        return True
-
     pe = info.get("trailingPE")
     div_yield = info.get("dividendYield")
     earnings_growth = info.get("earningsGrowth")
