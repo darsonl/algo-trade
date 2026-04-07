@@ -114,6 +114,54 @@ SIGNAL: <BUY|HOLD|SKIP>
 REASONING: <2-3 sentences explaining your decision>"""
 
 
+def build_etf_prompt(
+    ticker: str,
+    headlines: list[str],
+    rsi: float | None = None,
+    macd_line: float | None = None,
+    signal_line: float | None = None,
+    macd_histogram: float | None = None,
+    expense_ratio: float | None = None,
+    price: float | None = None,
+    ma50: float | None = None,
+) -> str:
+    """Build the analysis prompt for an ETF ticker (per D-01, D-02, D-07)."""
+    if expense_ratio is None:
+        logger.debug("Expense ratio unavailable for %s", ticker)
+
+    price_str = f"${price:.2f}" if price is not None else "N/A"
+    ma50_str = f"${ma50:.2f}" if ma50 is not None else "N/A"
+    rsi_str = f"{rsi:.1f}" if rsi is not None else "N/A"
+    macd_line_str = f"{macd_line:.4f}" if macd_line is not None else "N/A"
+    signal_line_str = f"{signal_line:.4f}" if signal_line is not None else "N/A"
+    macd_histogram_str = f"{macd_histogram:.4f}" if macd_histogram is not None else "N/A"
+    expense_ratio_str = f"{expense_ratio:.4f}" if expense_ratio is not None else "N/A"
+
+    headlines_block = (
+        "\n".join(f"- {h}" for h in headlines) if headlines else "- No recent headlines available."
+    )
+
+    return f"""You are an ETF analyst. Analyze the following ETF and return exactly two lines.
+
+Ticker: {ticker}
+
+Technical Indicators:
+- Price: {price_str}
+- 50-Day MA: {ma50_str}
+- RSI (14): {rsi_str}
+- MACD Line: {macd_line_str}
+- Signal Line: {signal_line_str}
+- Histogram: {macd_histogram_str}
+- Expense Ratio: {expense_ratio_str}
+
+Recent news headlines:
+{headlines_block}
+
+Respond with exactly this format (no extra text):
+SIGNAL: <BUY|HOLD|SKIP>
+REASONING: <2-3 sentences explaining your decision>"""
+
+
 def parse_claude_response(text: str) -> dict:
     """
     Parse the analyst response into {signal, reasoning}.
@@ -190,6 +238,58 @@ def analyze_ticker(
             raise
         logger.warning(
             "Primary analyst failed for %s (%s), using fallback provider '%s'",
+            ticker, api_exc, config.analyst_fallback_provider,
+        )
+        fallback_model = config.analyst_fallback_model or _DEFAULT_MODELS.get(
+            config.analyst_fallback_provider, ""
+        )
+        text = _call_api(fallback_client, fallback_model, prompt)
+        provider_used = config.analyst_fallback_provider
+
+    result = parse_claude_response(text)
+    result["provider_used"] = provider_used
+    return result
+
+
+def analyze_etf_ticker(
+    ticker: str,
+    headlines: list[str],
+    tech_data: dict,
+    expense_ratio: float | None,
+    config: Config,
+    client=None,
+    fallback_client=None,
+) -> dict:
+    """Call the analyst for an ETF BUY/HOLD/SKIP signal (per D-01, D-03).
+    Returns {"signal": str, "reasoning": str, "provider_used": str}.
+    """
+    if client is None:
+        client = create_analyst_client(config)
+
+    model = config.analyst_model or _DEFAULT_MODELS.get(config.analyst_provider, "")
+    prompt = build_etf_prompt(
+        ticker,
+        headlines,
+        rsi=tech_data.get("rsi"),
+        macd_line=tech_data.get("macd_line"),
+        signal_line=tech_data.get("signal_line"),
+        macd_histogram=tech_data.get("macd_histogram"),
+        expense_ratio=expense_ratio,
+        price=tech_data.get("price"),
+        ma50=tech_data.get("ma50"),
+    )
+
+    if config.analyst_call_delay_s > 0:
+        time.sleep(config.analyst_call_delay_s)
+
+    provider_used = config.analyst_provider
+    try:
+        text = _call_api(client, model, prompt)
+    except Exception as api_exc:
+        if fallback_client is None:
+            raise
+        logger.warning(
+            "Primary analyst failed for %s ETF analysis (%s), using fallback provider '%s'",
             ticker, api_exc, config.analyst_fallback_provider,
         )
         fallback_model = config.analyst_fallback_model or _DEFAULT_MODELS.get(
