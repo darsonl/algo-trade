@@ -39,6 +39,47 @@ def build_recommendation_embed(
     return embed
 
 
+def build_etf_recommendation_embed(
+    ticker: str,
+    signal: str,
+    reasoning: str,
+    price: float | None,
+    rsi: float | None,
+    ma50: float | None,
+    expense_ratio: float | None,
+) -> discord.Embed:
+    """Build a Discord embed for an ETF BUY/HOLD/SKIP recommendation with technical and expense ratio fields (per ETF-04)."""
+    if signal not in _SIGNAL_COLORS:
+        raise ValueError(f"Invalid signal '{signal}': must be BUY, HOLD, or SKIP")
+
+    embed = discord.Embed(
+        title=f"{ticker} — {signal} [ETF]",
+        description=reasoning,
+        color=_SIGNAL_COLORS[signal],
+    )
+    embed.add_field(
+        name="Price",
+        value=f"${price:.2f}" if price is not None else "N/A",
+        inline=True,
+    )
+    embed.add_field(
+        name="RSI",
+        value=f"{rsi:.1f}" if rsi is not None else "N/A",
+        inline=True,
+    )
+    if price is not None and ma50 is not None:
+        trend = "Above MA50" if price >= ma50 else "Below MA50"
+    else:
+        trend = "N/A"
+    embed.add_field(name="MA50 Trend", value=trend, inline=True)
+    embed.add_field(
+        name="Expense Ratio",
+        value=f"{expense_ratio:.4f}" if expense_ratio is not None else "N/A",
+        inline=True,
+    )
+    return embed
+
+
 def build_sell_embed(
     ticker: str,
     reasoning: str,
