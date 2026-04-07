@@ -1,16 +1,4 @@
-# Add tickers one per line, e.g.:
+# Stock watchlist — scanned by /scan
+# Add stock tickers one per line, e.g.:
 # AAPL
 # JNJ
-# VYM
-
-# Top 10 ETFs by AUM / broad coverage
-SPY
-QQQ
-VTI
-IVV
-VOO
-VEA
-BND
-GLD
-XLK
-SCHD

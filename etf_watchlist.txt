@@ -1,0 +1,11 @@
+# ETF watchlist — scanned by /scan_etf
+SPY
+QQQ
+VTI
+IVV
+VOO
+VEA
+BND
+GLD
+XLK
+SCHD
