@@ -48,9 +48,9 @@ See `.planning/milestones/v1.0-ROADMAP.md` for full phase details.
 **Plans:** 3 plans
 
 Plans:
-- [ ] 07-01-PLAN.md — Foundation: partition_watchlist, etf_watchlist.txt, asset_type migration
-- [ ] 07-02-PLAN.md — Analyst: build_etf_prompt, analyze_etf_ticker, ETF embed
-- [ ] 07-03-PLAN.md — Wiring: run_scan_etf, /scan_etf command, fundamentals cleanup
+- [x] 07-01-PLAN.md — Foundation: partition_watchlist, etf_watchlist.txt, asset_type migration
+- [x] 07-02-PLAN.md — Analyst: build_etf_prompt, analyze_etf_ticker, ETF embed
+- [x] 07-03-PLAN.md — Wiring: run_scan_etf, /scan_etf command, fundamentals cleanup
 
 **Depends on:** Phase 6
 
