@@ -13,11 +13,11 @@ import yfinance as yf
 from config import Config
 from database.models import initialize_db
 from database import queries
-from screener.universe import get_watchlist, get_top_sp500_by_fundamentals, get_universe
+from screener.universe import get_watchlist, get_top_sp500_by_fundamentals, get_universe, partition_watchlist
 from screener.fundamentals import passes_fundamental_filter, fetch_fundamental_info
 from screener.technicals import passes_technical_filter, fetch_technical_data
 from analyst.news import fetch_news_headlines
-from analyst.claude_analyst import analyze_ticker, create_analyst_client, create_fallback_client, analyze_sell_ticker
+from analyst.claude_analyst import analyze_ticker, create_analyst_client, create_fallback_client, analyze_sell_ticker, analyze_etf_ticker
 from screener.exit_signals import check_exit_signals
 from discord_bot.bot import TradingBot
 
@@ -64,6 +64,12 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
         sp500 = []
 
     universe = get_universe(watchlist_path, extra_tickers=sp500)
+    # Filter ETFs out of stock scan universe
+    try:
+        stocks_only, _etfs = await asyncio.to_thread(partition_watchlist, universe)
+        universe = stocks_only
+    except Exception as exc:
+        logger.warning("partition_watchlist failed: %s — using full universe", exc)
     logger.info("Universe: %d tickers", len(universe))
 
     client = create_analyst_client(config)
@@ -267,6 +273,130 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
 
 
 # ---------------------------------------------------------------------------
+# ETF scan pipeline
+# ---------------------------------------------------------------------------
+
+async def run_scan_etf(bot: TradingBot, config: Config) -> None:
+    """Run the ETF screening pipeline and post qualifying tickers to Discord (per ETF-02)."""
+    logger.info("Starting ETF scan...")
+    queries.expire_stale_recommendations(config.db_path)
+
+    etf_watchlist_path = str(Path(__file__).parent / "etf_watchlist.txt")
+    etf_tickers = get_watchlist(etf_watchlist_path)
+
+    # D-08 / ASYNC-03: wrap partition_watchlist in asyncio.to_thread
+    _stocks, etfs = await asyncio.to_thread(partition_watchlist, etf_tickers)
+    logger.info("ETF universe: %d tickers", len(etfs))
+
+    client = create_analyst_client(config)
+    fallback_client = create_fallback_client(config)
+    recommendations_posted = 0
+
+    for ticker in etfs:
+        if queries.ticker_recommended_today(config.db_path, ticker):
+            continue
+        if queries.has_open_position(config.db_path, ticker):
+            logger.debug("Skipping %s: open position exists", ticker)
+            continue
+
+        try:
+            yf_ticker = yf.Ticker(ticker)
+
+            # Fetch technical data (no fundamental filter for ETFs)
+            tech_data = fetch_technical_data(yf_ticker)
+
+            # Fetch expense ratio from yfinance info
+            info = fetch_fundamental_info(yf_ticker)
+            expense_ratio = info.get("annualReportExpenseRatio")
+            if expense_ratio is None:
+                logger.debug("Expense ratio unavailable for %s", ticker)
+
+            # Fetch news headlines (per D-01)
+            headlines = fetch_news_headlines(ticker)
+
+            # Analyst cache check (same pattern as run_scan)
+            headline_hash = hashlib.sha256(
+                "\n".join(sorted(headlines)).encode()
+            ).hexdigest()
+            cached = queries.get_cached_analysis(config.db_path, ticker, headline_hash)
+            if cached:
+                logger.debug("Cache hit for %s (hash %s...)", ticker, headline_hash[:8])
+                analysis = cached
+            else:
+                # Quota guard (same pattern as run_scan buy pass)
+                primary_count = queries.get_analyst_call_count_today(
+                    config.db_path, config.analyst_provider
+                )
+                fallback_count = (
+                    queries.get_analyst_call_count_today(
+                        config.db_path, config.analyst_fallback_provider
+                    )
+                    if config.analyst_fallback_provider
+                    else config.analyst_daily_limit
+                )
+                if primary_count >= config.analyst_daily_limit and fallback_count >= config.analyst_daily_limit:
+                    logger.warning(
+                        "Daily analyst quota reached for all providers, skipping analysis for %s",
+                        ticker,
+                    )
+                    continue
+
+                analysis = await asyncio.to_thread(
+                    analyze_etf_ticker, ticker, headlines, tech_data,
+                    expense_ratio, config, client, fallback_client
+                )
+                queries.increment_analyst_call_count(
+                    config.db_path, analysis["provider_used"]
+                )
+                try:
+                    queries.set_cached_analysis(
+                        config.db_path, ticker, headline_hash,
+                        analysis["signal"], analysis["reasoning"]
+                    )
+                except Exception as cache_exc:
+                    logger.warning("Failed to write analyst cache for %s: %s", ticker, cache_exc)
+
+            # ETF uses BUY signal check but no technical filter (no fundamental filter per ETF-02)
+            if analysis["signal"] != "BUY":
+                continue
+
+            rec_id = queries.create_recommendation(
+                db_path=config.db_path,
+                ticker=ticker,
+                signal=analysis["signal"],
+                reasoning=analysis["reasoning"],
+                price=tech_data["price"] or 0.0,
+                dividend_yield=None,
+                pe_ratio=None,
+                asset_type="etf",
+            )
+
+            message_id = await bot.send_etf_recommendation(
+                rec_id=rec_id,
+                ticker=ticker,
+                signal=analysis["signal"],
+                reasoning=analysis["reasoning"],
+                price=tech_data.get("price"),
+                rsi=tech_data.get("rsi"),
+                ma50=tech_data.get("ma50"),
+                expense_ratio=expense_ratio,
+            )
+            queries.set_discord_message_id(config.db_path, rec_id, message_id)
+            logger.info("ETF recommended %s", ticker)
+            recommendations_posted += 1
+
+        except Exception as exc:
+            logger.error("Error processing ETF %s: %s", ticker, exc)
+            continue
+
+    if recommendations_posted == 0:
+        logger.warning("ETF scan complete: 0 recommendations posted.")
+        await bot.send_ops_alert("ETF scan complete: 0 recommendations posted.")
+    else:
+        logger.info("ETF scan complete. %d recommendation(s) posted.", recommendations_posted)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -301,6 +431,7 @@ def main() -> None:
 
     bot = TradingBot(config)
     bot._scan_callback = lambda: run_scan(bot, config)
+    bot._scan_etf_callback = lambda: run_scan_etf(bot, config)
     scheduler = BackgroundScheduler()
 
     @bot.event

@@ -9,7 +9,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from config import Config
 from database import queries
-from discord_bot.embeds import build_recommendation_embed, build_positions_embed, build_sell_embed
+from discord_bot.embeds import build_recommendation_embed, build_positions_embed, build_sell_embed, build_etf_recommendation_embed
 from schwab_client.orders import place_order, place_sell_order
 
 logger = logging.getLogger(__name__)
@@ -152,6 +152,7 @@ class TradingBot(discord.Client):
         self.config = config
         self.tree = app_commands.CommandTree(self)
         self._scan_callback = None  # Set by main.py after construction
+        self._scan_etf_callback = None  # Set by main.py after construction
 
     async def setup_hook(self):
         """Register and sync the /scan and /positions slash commands on bot startup."""
@@ -169,6 +170,13 @@ class TradingBot(discord.Client):
                 callback=self._positions_command,
             )
         )
+        self.tree.add_command(
+            app_commands.Command(
+                name="scan_etf",
+                description="Trigger an immediate ETF scan",
+                callback=self._scan_etf_command,
+            )
+        )
         await self.tree.sync()
 
     async def _scan_command(self, interaction: discord.Interaction):
@@ -178,6 +186,14 @@ class TradingBot(discord.Client):
             pass  # Interaction may have expired; still run the scan
         if self._scan_callback is not None:
             asyncio.create_task(self._scan_callback())
+
+    async def _scan_etf_command(self, interaction: discord.Interaction):
+        try:
+            await interaction.response.send_message("ETF scan triggered — results incoming...")
+        except Exception:
+            pass
+        if self._scan_etf_callback is not None:
+            asyncio.create_task(self._scan_etf_callback())
 
     async def _positions_command(self, interaction: discord.Interaction):
         """Handle /positions slash command: show open holdings with P&L."""
@@ -221,6 +237,24 @@ class TradingBot(discord.Client):
         channel = await self.fetch_channel(self.config.discord_channel_id)
         embed = build_sell_embed(ticker, reasoning, entry_price, current_price, pnl_pct, shares, rsi)
         view = SellApproveRejectView(rec_id, ticker, shares, current_price, self.config)
+        msg = await _send_message(channel, embed, view)
+        return str(msg.id)
+
+    async def send_etf_recommendation(
+        self,
+        rec_id: int,
+        ticker: str,
+        signal: str,
+        reasoning: str,
+        price: float | None,
+        rsi: float | None,
+        ma50: float | None,
+        expense_ratio: float | None,
+    ) -> str:
+        """Post an ETF recommendation embed with Approve/Reject buttons and return the message id."""
+        channel = await self.fetch_channel(self.config.discord_channel_id)
+        embed = build_etf_recommendation_embed(ticker, signal, reasoning, price, rsi, ma50, expense_ratio)
+        view = ApproveRejectView(rec_id, ticker, price or 0.0, self.config)
         msg = await _send_message(channel, embed, view)
         return str(msg.id)
 
