@@ -59,7 +59,7 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
 
     watchlist_path = str(Path(__file__).parent / "watchlist.txt")
     try:
-        sp500 = await asyncio.to_thread(get_top_sp500_by_fundamentals, config)
+        sp500 = await asyncio.to_thread(get_top_sp500_by_fundamentals, config)  # P8-audit: already wrapped (hotfix ae66e64)
     except Exception as exc:
         logger.warning("Could not fetch top S&P 500: %s — using watchlist only", exc)
         sp500 = []
@@ -67,7 +67,7 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
     universe = get_universe(watchlist_path, extra_tickers=sp500)
     # Filter ETFs out of stock scan universe
     try:
-        stocks_only, _etfs = await asyncio.to_thread(partition_watchlist, universe)
+        stocks_only, _etfs = await asyncio.to_thread(partition_watchlist, universe)  # P8-audit: already wrapped (Phase 7)
         universe = stocks_only
     except Exception as exc:
         logger.warning("partition_watchlist failed: %s — using full universe", exc)
@@ -86,11 +86,13 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
 
         try:
             yf_ticker = yf.Ticker(ticker)
-            info = fetch_fundamental_info(yf_ticker)
+            info = await asyncio.to_thread(fetch_fundamental_info, yf_ticker)
             if not passes_fundamental_filter(info, config):
                 continue
 
-            headlines = fetch_news_headlines(ticker, alpha_vantage_api_key=config.alpha_vantage_api_key)
+            headlines = await asyncio.to_thread(
+                fetch_news_headlines, ticker, alpha_vantage_api_key=config.alpha_vantage_api_key
+            )
             headline_hash = hashlib.sha256(
                 "\n".join(sorted(headlines)).encode()
             ).hexdigest()
@@ -131,7 +133,7 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
                 except Exception as cache_exc:
                     logger.warning("Failed to write analyst cache for %s: %s", ticker, cache_exc)
 
-            tech_data = fetch_technical_data(yf_ticker)
+            tech_data = await asyncio.to_thread(fetch_technical_data, yf_ticker)
             if not should_recommend(analysis["signal"], tech_data, config):
                 continue
 
@@ -182,7 +184,7 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
             # But still check if RSI dropped — reset sell_blocked if so
             try:
                 yf_ticker = yf.Ticker(ticker)
-                tech_data = fetch_technical_data(yf_ticker)
+                tech_data = await asyncio.to_thread(fetch_technical_data, yf_ticker)
                 if tech_data.get("rsi") is not None and tech_data["rsi"] <= config.sell_rsi_threshold:
                     queries.reset_sell_blocked(config.db_path, ticker)
                     logger.info("Reset sell_blocked for %s (RSI %.1f <= %.1f)", ticker, tech_data["rsi"], config.sell_rsi_threshold)
@@ -192,7 +194,7 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
 
         try:
             yf_ticker = yf.Ticker(ticker)
-            tech_data = fetch_technical_data(yf_ticker)
+            tech_data = await asyncio.to_thread(fetch_technical_data, yf_ticker)
 
             # D-01 stage 1: RSI exit signal check
             if not check_exit_signals(tech_data, config):
@@ -209,7 +211,9 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
             except (ValueError, TypeError):
                 hold_days = 0
 
-            headlines = fetch_news_headlines(ticker, alpha_vantage_api_key=config.alpha_vantage_api_key)
+            headlines = await asyncio.to_thread(
+                fetch_news_headlines, ticker, alpha_vantage_api_key=config.alpha_vantage_api_key
+            )
 
             # D-11: quota guard for sell analyst call
             primary_count = queries.get_analyst_call_count_today(
@@ -286,7 +290,7 @@ async def run_scan_etf(bot: TradingBot, config: Config) -> None:
     etf_tickers = get_watchlist(etf_watchlist_path)
 
     # D-08 / ASYNC-03: wrap partition_watchlist in asyncio.to_thread
-    _stocks, etfs = await asyncio.to_thread(partition_watchlist, etf_tickers)
+    _stocks, etfs = await asyncio.to_thread(partition_watchlist, etf_tickers)  # P8-audit: already wrapped (Phase 7)
     logger.info("ETF universe: %d tickers", len(etfs))
 
     client = create_analyst_client(config)
@@ -304,16 +308,18 @@ async def run_scan_etf(bot: TradingBot, config: Config) -> None:
             yf_ticker = yf.Ticker(ticker)
 
             # Fetch technical data (no fundamental filter for ETFs)
-            tech_data = fetch_technical_data(yf_ticker)
+            tech_data = await asyncio.to_thread(fetch_technical_data, yf_ticker)
 
             # Fetch expense ratio from yfinance info
-            info = fetch_fundamental_info(yf_ticker)
+            info = await asyncio.to_thread(fetch_fundamental_info, yf_ticker)
             expense_ratio = info.get("netExpenseRatio")
             if expense_ratio is None:
                 logger.debug("Expense ratio unavailable for %s", ticker)
 
             # Fetch news headlines (per D-01)
-            headlines = fetch_news_headlines(ticker, alpha_vantage_api_key=config.alpha_vantage_api_key)
+            headlines = await asyncio.to_thread(
+                fetch_news_headlines, ticker, alpha_vantage_api_key=config.alpha_vantage_api_key
+            )
 
             # Analyst cache check (same pattern as run_scan)
             headline_hash = hashlib.sha256(
