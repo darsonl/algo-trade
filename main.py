@@ -90,7 +90,7 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
             if not passes_fundamental_filter(info, config):
                 continue
 
-            headlines = fetch_news_headlines(ticker)
+            headlines = fetch_news_headlines(ticker, alpha_vantage_api_key=config.alpha_vantage_api_key)
             headline_hash = hashlib.sha256(
                 "\n".join(sorted(headlines)).encode()
             ).hexdigest()
@@ -209,7 +209,7 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
             except (ValueError, TypeError):
                 hold_days = 0
 
-            headlines = fetch_news_headlines(ticker)
+            headlines = fetch_news_headlines(ticker, alpha_vantage_api_key=config.alpha_vantage_api_key)
 
             # D-11: quota guard for sell analyst call
             primary_count = queries.get_analyst_call_count_today(
@@ -308,12 +308,12 @@ async def run_scan_etf(bot: TradingBot, config: Config) -> None:
 
             # Fetch expense ratio from yfinance info
             info = fetch_fundamental_info(yf_ticker)
-            expense_ratio = info.get("annualReportExpenseRatio")
+            expense_ratio = info.get("netExpenseRatio")
             if expense_ratio is None:
                 logger.debug("Expense ratio unavailable for %s", ticker)
 
             # Fetch news headlines (per D-01)
-            headlines = fetch_news_headlines(ticker)
+            headlines = fetch_news_headlines(ticker, alpha_vantage_api_key=config.alpha_vantage_api_key)
 
             # Analyst cache check (same pattern as run_scan)
             headline_hash = hashlib.sha256(

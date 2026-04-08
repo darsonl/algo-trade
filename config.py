@@ -53,6 +53,8 @@ class Config:
     top_sp500_count: int = int(os.getenv("TOP_SP500_COUNT", "10"))
     analyst_call_delay_s: float = float(os.getenv("ANALYST_CALL_DELAY_S", "12.0"))
 
+    alpha_vantage_api_key: str = os.getenv("ALPHA_VANTAGE_API_KEY", "")
+
     db_path: str = os.getenv("DB_PATH", str(Path(__file__).parent / "algo_trade.db"))
     log_level: str = os.getenv("LOG_LEVEL", "INFO")
 
