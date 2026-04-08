@@ -2,7 +2,7 @@ import pytest
 from contextlib import contextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 from config import Config
-from main import run_scan
+from main import run_scan, run_scan_etf
 
 
 def _make_bot():
@@ -181,3 +181,61 @@ async def test_run_scan_allows_ticker_without_position():
         await run_scan(bot, config)
 
     mocks["fetch_fundamental_info"].assert_called_once()
+
+
+# --- G-3: run_scan excludes ETFs from stock universe ---
+
+@pytest.mark.asyncio
+async def test_run_scan_excludes_etfs_from_stock_universe():
+    """partition_watchlist returns stocks=["AAPL"], etfs=["SPY"] — analyze_ticker must not
+    be called for SPY (only AAPL enters the stock scan loop)."""
+    from contextlib import ExitStack
+
+    bot = _make_bot()
+    config = _make_config()
+
+    analysis = {"signal": "BUY", "reasoning": "Strong.", "provider_used": "gemini"}
+    fund_info = {"trailingPE": 20.0, "dividendYield": 0.03, "earningsGrowth": 0.10}
+    tech_data = {
+        "price": 150.0, "rsi": 55.0, "ma50": 140.0,
+        "volume": 1_200_000, "avg_volume": 1_000_000,
+    }
+
+    patches = [
+        patch("main.get_top_sp500_by_fundamentals", return_value=[]),
+        patch("main.get_universe", return_value=["AAPL", "SPY"]),
+        patch("main.partition_watchlist", return_value=(["AAPL"], ["SPY"])),
+        patch("main.queries.expire_stale_recommendations"),
+        patch("main.queries.ticker_recommended_today", return_value=False),
+        patch("main.queries.has_open_position", return_value=False),
+        patch("main.queries.get_open_positions", return_value=[]),
+        patch("main.yf.Ticker"),
+        patch("main.create_analyst_client", return_value=MagicMock()),
+        patch("main.create_fallback_client", return_value=None),
+        patch("main.fetch_fundamental_info", return_value=fund_info),
+        patch("main.passes_fundamental_filter", return_value=True),
+        patch("main.fetch_news_headlines", return_value=["headline A"]),
+        patch("main.queries.get_cached_analysis", return_value=None),
+        patch("main.queries.get_analyst_call_count_today", return_value=0),
+        patch("main.queries.increment_analyst_call_count"),
+        patch("main.analyze_ticker", return_value=analysis),
+        patch("main.queries.set_cached_analysis"),
+        patch("main.fetch_technical_data", return_value=tech_data),
+        patch("main.passes_technical_filter", return_value=True),
+        patch("main.queries.create_recommendation", return_value=1),
+        patch("main.queries.set_discord_message_id"),
+    ]
+
+    with ExitStack() as stack:
+        mocks = [stack.enter_context(p) for p in patches]
+        m_partition = mocks[2]
+        m_analyze = mocks[16]
+        await run_scan(bot, config)
+
+    # partition_watchlist was called (the ETF filtering step ran)
+    m_partition.assert_called_once()
+
+    # analyze_ticker was called exactly once — only for AAPL, not SPY
+    assert m_analyze.call_count == 1
+    called_ticker = m_analyze.call_args[0][0]
+    assert called_ticker == "AAPL", f"Expected analyze_ticker called for AAPL, got {called_ticker!r}"

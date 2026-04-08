@@ -251,3 +251,47 @@ def test_analyze_etf_ticker_calls_build_etf_prompt_not_build_prompt():
     assert len(captured_prompts) == 1
     assert "Trailing P/E" not in captured_prompts[0]
     assert "RSI" in captured_prompts[0]
+
+
+# --- G-4: analyze_etf_ticker fallback provider ---
+
+def test_analyze_etf_ticker_uses_fallback_on_primary_failure():
+    """When the primary _call_api raises, analyze_etf_ticker retries with fallback_client
+    and sets provider_used to the fallback provider name."""
+    config = _make_config()
+    config.analyst_fallback_provider = "openai"
+    config.analyst_fallback_model = "gpt-4o-mini"
+
+    tech_data = {
+        "rsi": 60.0,
+        "macd_line": 0.2,
+        "signal_line": 0.1,
+        "macd_histogram": 0.1,
+        "price": 480.0,
+        "ma50": 470.0,
+    }
+    primary_client = MagicMock()
+    fallback_client = MagicMock()
+
+    call_count = {"n": 0}
+
+    def api_side_effect(client, model, prompt):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise RuntimeError("quota exhausted")
+        return "SIGNAL: BUY\nREASONING: Fallback confirmed strong trend."
+
+    with patch("analyst.claude_analyst._call_api", side_effect=api_side_effect):
+        result = analyze_etf_ticker(
+            ticker="SPY",
+            headlines=["Markets rally"],
+            tech_data=tech_data,
+            expense_ratio=0.0009,
+            config=config,
+            client=primary_client,
+            fallback_client=fallback_client,
+        )
+
+    assert result["signal"] == "BUY"
+    assert result["provider_used"] == "openai"
+    assert call_count["n"] == 2, "Expected exactly two _call_api calls (primary fail + fallback)"
