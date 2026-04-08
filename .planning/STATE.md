@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: ETF + Async
 status: executing
-last_updated: "2026-04-06T23:56:21.084Z"
-last_activity: 2026-04-06 -- Phase 7 planning complete
+last_updated: "2026-04-09T00:00:00.000Z"
+last_activity: 2026-04-09 -- Phase 08 complete (asyncio event loop fix)
 progress:
   total_phases: 2
-  completed_phases: 0
-  total_plans: 3
-  completed_plans: 0
-  percent: 0
+  completed_phases: 1
+  total_plans: 4
+  completed_plans: 1
+  percent: 25
 ---
 
 # Project State
@@ -20,14 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-06)
 
 **Core value:** The bot must never place a real order without explicit human approval via Discord.
-**Current focus:** v1.1 ETF + Async — Phase 7: ETF Scan Separation
+**Current focus:** v1.1 ETF + Async — Phase 08 complete, Phase 07 pending
 
 ## Current Position
 
-Phase: 7 — ETF Scan Separation (not started)
-Plan: —
-Status: Ready to execute
-Last activity: 2026-04-06 -- Phase 7 planning complete
+Phase: 08 — asyncio-event-loop-fix (complete)
+Plan: 08-01 (complete)
+Status: Phase complete — all 9 yfinance calls wrapped in asyncio.to_thread
+Last activity: 2026-04-09 -- Phase 08 complete (asyncio event loop fix)
 
 ---
 
