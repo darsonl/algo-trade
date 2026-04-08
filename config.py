@@ -38,7 +38,7 @@ class Config:
     analyst_fallback_model: str = os.getenv("ANALYST_FALLBACK_MODEL", "")
 
     min_dividend_yield: float = float(os.getenv("MIN_DIVIDEND_YIELD", "0.02"))
-    max_pe_ratio: float = float(os.getenv("MAX_PE_RATIO", "25.0"))
+    max_pe_ratio: float = float(os.getenv("MAX_PE_RATIO", "35.0"))
     min_earnings_growth: float = float(os.getenv("MIN_EARNINGS_GROWTH", "0.05"))
     max_rsi: float = float(os.getenv("MAX_RSI", "70.0"))
     sell_rsi_threshold: float = float(os.getenv("SELL_RSI_THRESHOLD", "70.0"))

@@ -42,16 +42,18 @@ def test_fails_when_pe_is_none(cfg):
     assert passes_fundamental_filter(info, cfg) is False
 
 
-def test_fails_when_dividend_yield_is_none(cfg):
+def test_passes_when_dividend_yield_is_none(cfg):
+    # dividendYield=None skips the yield check — non-dividend payers are allowed
     info = make_info()
     info["dividendYield"] = None
-    assert passes_fundamental_filter(info, cfg) is False
+    assert passes_fundamental_filter(info, cfg) is True
 
 
-def test_fails_when_earnings_growth_is_none(cfg):
+def test_passes_when_earnings_growth_is_none(cfg):
+    # earningsGrowth=None skips the growth check — analyst decides instead
     info = make_info()
     info["earningsGrowth"] = None
-    assert passes_fundamental_filter(info, cfg) is False
+    assert passes_fundamental_filter(info, cfg) is True
 
 
 def test_passes_at_exact_boundary(cfg):

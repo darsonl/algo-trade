@@ -11,24 +11,29 @@ _retry = retry(
 
 def passes_fundamental_filter(info: dict, config: Config) -> bool:
     """
-    Return True only if all fundamental criteria are met.
+    Return True only if all available fundamental criteria are met.
 
     Expects keys: 'trailingPE', 'dividendYield', 'earningsGrowth'
     (matching yfinance Ticker.info keys).
     ETFs are handled by the separate ETF scan pipeline and should not reach this filter.
+
+    Missing-data policy:
+    - trailingPE: required — reject if absent (valuation is non-negotiable).
+    - dividendYield: optional — skip yield check if absent; non-dividend payers allowed.
+    - earningsGrowth: optional — skip growth check if absent; let the analyst judge.
     """
     pe = info.get("trailingPE")
     div_yield = info.get("dividendYield")
     earnings_growth = info.get("earningsGrowth")
 
-    if pe is None or div_yield is None or earnings_growth is None:
+    if pe is None:
         return False
 
     if pe > config.max_pe_ratio:
         return False
-    if div_yield < config.min_dividend_yield:
+    if div_yield is not None and div_yield < config.min_dividend_yield:
         return False
-    if earnings_growth < config.min_earnings_growth:
+    if earnings_growth is not None and earnings_growth < config.min_earnings_growth:
         return False
 
     return True

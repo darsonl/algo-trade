@@ -2,6 +2,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import sqlite3
 from datetime import date
 from pathlib import Path
 
@@ -385,6 +386,10 @@ async def run_scan_etf(bot: TradingBot, config: Config) -> None:
             logger.info("ETF recommended %s", ticker)
             recommendations_posted += 1
 
+        except sqlite3.OperationalError as exc:
+            logger.error("ETF scan aborted — DB schema error: %s", exc)
+            await bot.send_ops_alert(f"ETF scan aborted — DB schema error: {exc}")
+            return
         except Exception as exc:
             logger.error("Error processing ETF %s: %s", ticker, exc)
             continue
