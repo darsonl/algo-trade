@@ -69,11 +69,11 @@ Plans:
 - `fetch_technical_data` (buy pass, sell pass, and ETF pass — blocking price history download)
 - `partition_watchlist` (Phase 7 addition — calls `yfinance quoteType` per ticker)
 
-**Requirements:** TBD
-**Plans:** 0 plans
+**Requirements:** ASYNC-01, ASYNC-02, ASYNC-03, ASYNC-04
+**Plans:** 1 plan
 
 Plans:
-- [ ] TBD
+- [ ] 08-01-PLAN.md — Wrap all 9 unwrapped yfinance calls + add P8-audit comments to 3 already-wrapped sites
 
 **Depends on:** Phase 7
 
@@ -91,8 +91,8 @@ Plans:
 | 5. Position Monitoring | v1.0 | 3/3 | Complete | 2026-04-03 |
 | 6. Sell Signals & Sell Orders | v1.0 | 5/5 | Complete | 2026-04-06 |
 | 7. ETF Scan Separation | v1.1 | 0/3 | Planning | - |
-| 8. Asyncio Event Loop Fix | v1.1 | 0/TBD | Not started | - |
+| 8. Asyncio Event Loop Fix | v1.1 | 0/1 | Planning | - |
 
 ---
 *Roadmap defined: 2026-03-30*
-*Last updated: 2026-04-07 — Phase 7 planned (3 plans)*
+*Last updated: 2026-04-09 — Phase 8 planned (1 plan)*
