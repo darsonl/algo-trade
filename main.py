@@ -137,13 +137,16 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
             if not should_recommend(analysis["signal"], tech_data, config):
                 continue
 
+            raw_yield = info.get("dividendYield")
+            div_yield = raw_yield / 100 if raw_yield is not None and raw_yield > 1 else raw_yield
+
             rec_id = queries.create_recommendation(
                 db_path=config.db_path,
                 ticker=ticker,
                 signal=analysis["signal"],
                 reasoning=analysis["reasoning"],
                 price=tech_data["price"],
-                dividend_yield=info.get("dividendYield"),
+                dividend_yield=div_yield,
                 pe_ratio=info.get("trailingPE"),
                 earnings_growth=info.get("earningsGrowth"),
             )
@@ -154,7 +157,7 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
                 signal=analysis["signal"],
                 reasoning=analysis["reasoning"],
                 price=tech_data["price"],
-                dividend_yield=info.get("dividendYield"),
+                dividend_yield=div_yield,
                 pe_ratio=info.get("trailingPE"),
             )
             queries.set_discord_message_id(config.db_path, rec_id, message_id)

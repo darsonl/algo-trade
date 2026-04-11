@@ -24,6 +24,9 @@ def passes_fundamental_filter(info: dict, config: Config) -> bool:
     """
     pe = info.get("trailingPE")
     div_yield = info.get("dividendYield")
+    # yfinance occasionally returns dividendYield as a percentage (e.g. 2.5 instead of 0.025)
+    if div_yield is not None and div_yield > 1:
+        div_yield = div_yield / 100
     earnings_growth = info.get("earningsGrowth")
 
     if pe is None:

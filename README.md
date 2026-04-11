@@ -26,7 +26,7 @@ pytest tests/test_analyst_claude.py::test_parse_buy_signal -v
 
 ## Architecture
 
-**Algo Trade** is an automated stock screener that posts Claude AI-generated BUY recommendations to Discord for human approval before executing trades via the Schwab API.
+**Algo Trade** is an automated stock screener that posts [[Claude API]]-generated BUY recommendations to [[Discord]] for human approval before executing trades via the [[Schwab API]].
 
 ### Execution Flow
 
@@ -56,21 +56,21 @@ python main.py
 | `screener/universe.py` | Watchlist loading, S&P 500 fetch, deduplication |
 | `screener/fundamentals.py` | yfinance fundamental fetch + threshold filter |
 | `screener/technicals.py` | RSI (Wilder's, 14-period), MA50, volume filter |
-| `analyst/claude_analyst.py` | Prompt building, Claude API call, signal parsing |
+| `analyst/claude_analyst.py` | Prompt building, [[Claude API]] call, signal parsing |
 | `analyst/news.py` | Fetch 5 headlines per ticker from yfinance |
 | `discord_bot/bot.py` | `TradingBot` (discord.Client), slash commands, Approve/Reject buttons |
 | `discord_bot/embeds.py` | Recommendation embed formatting (green/yellow/red) |
-| `database/models.py` | SQLite schema: `recommendations` + `trades` tables |
+| `database/models.py` | [[SQLite]] schema: `recommendations` + `trades` tables |
 | `database/queries.py` | CRUD for recommendations/trades, expiration, dupe check |
-| `schwab_client/auth.py` | OAuth2 via `schwab-py`, token stored at `schwab_token.json` |
+| `schwab_client/auth.py` | [[OAuth2]] via `schwab-py`, token stored at `schwab_token.json` |
 | `schwab_client/orders.py` | Market buy order construction, position parsing |
 
 ### Key Design Decisions
 
-- **Two-stage filtering**: Fundamental filter runs before calling Claude (cheap check first), technical filter runs after Claude approves (avoids technical fetch on skipped tickers).
-- **Dry-run by default**: `DRY_RUN=true` and `PAPER_TRADING=true` are the defaults; no orders are placed unless explicitly disabled.
+- **Two-stage filtering**: Fundamental filter runs before calling [[Claude API]] (cheap check first), technical filter runs after Claude approves (avoids technical fetch on skipped tickers).
+- **[[Paper Trading]] by default**: `DRY_RUN=true` and `PAPER_TRADING=true` are the defaults; no orders are placed unless explicitly disabled.
 - **24-hour recommendation expiry**: Stale records are expired at the start of each scan. The `should_recommend()` function in `main.py` is the single source of truth for dupe prevention.
-- **Pure functions for testability**: `should_recommend()`, `configure_scheduler()`, prompt builders, and filter functions are all pure/stateless to enable unit testing without mocking the Discord client or Schwab API.
+- **Pure functions for testability**: `should_recommend()`, `configure_scheduler()`, prompt builders, and filter functions are all pure/stateless to enable unit testing without mocking the [[Discord]] client or [[Schwab API]].
 
 ### Configuration
 
@@ -90,4 +90,15 @@ MAX_POSITION_SIZE_USD=500
 
 ### Technical Indicator Notes
 
-`screener/technicals.py` calculates RSI using Wilder's smoothing (not simple EWM) and requires a minimum of 51 price data points (50-day MA + 1). Tests in `test_screener_technicals.py` use synthetic price series to validate RSI math directly.
+`screener/technicals.py` calculates [[RSI]] using Wilder's smoothing (not simple EWM) and requires a minimum of 51 price data points (50-day MA + 1). Tests in `test_screener_technicals.py` use synthetic price series to validate RSI math directly.
+
+---
+
+## Related notes
+- [[Claude API]] — AI signal generation for BUY/HOLD/SKIP
+- [[Schwab API]] — Brokerage execution layer
+- [[Discord]] — Approval UI and notification surface
+- [[Paper Trading]] — Safety defaults before live execution
+- [[SQLite]] — Local persistence for recommendations and trades
+- [[OAuth2]] — Auth mechanism for Schwab brokerage connection
+- [[RSI]] — Technical indicator used in screener/technicals.py
