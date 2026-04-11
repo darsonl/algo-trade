@@ -8,6 +8,17 @@ An automated stock and ETF screener that uses Claude AI to generate BUY and SELL
 
 The bot must never place a real order without explicit human approval via Discord.
 
+## Current Milestone: v1.2 Signal Quality & Portfolio Analytics
+
+**Goal:** Finish ETF polish, enrich Claude signals with sector/macro context and confidence scoring, add portfolio stats, and surface scan errors to Discord.
+
+**Target features:**
+- ETF scheduled scan at time offset + `[ETF]` ops alert prefix + expense ratio threshold filter (carry-overs)
+- Sector name, SPY trend + VIX level, and 52-week range position added to Claude BUY/SELL prompt
+- Claude confidence scoring (high/medium/low) displayed as badge in Discord embed
+- Total unrealized P&L aggregate in `/positions`; new `/stats` command (win rate, avg gain/loss on closed trades)
+- Scan exceptions posted to Discord ops channel (not silently swallowed)
+
 ## Requirements
 
 ### Validated
@@ -48,6 +59,13 @@ The bot must never place a real order without explicit human approval via Discor
 - [ ] Scheduled ETF scan at time offset (ETF-07) — avoids rate-limit contention with stock scan
 - [ ] `[ETF]` ops alert prefix to distinguish ETF scan silence from stock scan silence (ETF-08)
 - [ ] Expense ratio threshold filter in ETF embed (ETF-09)
+- [ ] Sector name added to Claude BUY/SELL/ETF prompt (SIG-01)
+- [ ] SPY trend + VIX level added to Claude BUY/SELL/ETF prompt (SIG-02)
+- [ ] 52-week range position added to Claude BUY/SELL prompt (SIG-03)
+- [ ] Claude outputs confidence level (high/medium/low); displayed as badge in Discord embed (SIG-04)
+- [ ] Total unrealized P&L aggregate added to `/positions` output (PORT-01)
+- [ ] `/stats` slash command: win rate, avg gain, avg loss on closed trades (PORT-02)
+- [ ] Scan exceptions posted to Discord ops channel (OPS-01)
 
 ### Out of Scope
 
@@ -118,4 +136,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-11 after v1.1 milestone*
+*Last updated: 2026-04-12 — v1.2 milestone started*

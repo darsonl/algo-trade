@@ -1,16 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.1
-milestone_name: ETF + Async
-status: completed
-last_updated: "2026-04-11T00:00:00.000Z"
-last_activity: 2026-04-11 -- v1.1 milestone complete (ETF scan + asyncio hardening)
+milestone: v1.2
+milestone_name: Signal Quality & Portfolio Analytics
+status: in_progress
+last_updated: "2026-04-12T00:00:00.000Z"
+last_activity: 2026-04-12 -- Milestone v1.2 started
 progress:
-  total_phases: 2
-  completed_phases: 2
-  total_plans: 4
-  completed_plans: 4
-  percent: 100
+  total_phases: 0
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
@@ -24,16 +24,18 @@ See: .planning/PROJECT.md (updated 2026-04-11)
 
 ## Current Position
 
-Milestone v1.1 complete — all phases shipped, ROADMAP archived.
-Last activity: 2026-04-11 — v1.1 milestone complete (ETF scan + asyncio hardening)
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-04-12 — Milestone v1.2 started
 
 ---
 
 ## Milestone
 
-**Milestone v1.1:** ETF + Async
-**Shipped:** 2026-04-11
-**Phases:** 7–8 (2 phases, 4 plans, 252 tests green)
+**Milestone v1.2:** Signal Quality & Portfolio Analytics
+**Started:** 2026-04-12
+**Phases:** TBD (roadmap pending)
 
 ---
 
@@ -78,4 +80,4 @@ Location: .planning/codebase/
 
 ## Next Action
 
-v1.1 complete. Run `/gsd-new-milestone` to start v1.2 planning.
+v1.2 started. Define REQUIREMENTS.md, then run `/gsd-plan-phase 9` to begin execution.
