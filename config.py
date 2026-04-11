@@ -46,6 +46,7 @@ class Config:
     min_volume_ratio: float = float(os.getenv("MIN_VOLUME_RATIO", "0.5"))
 
     max_position_size_usd: float = float(os.getenv("MAX_POSITION_SIZE_USD", "500.0"))
+    max_portfolio_usd: float = float(os.getenv("MAX_PORTFOLIO_USD", "20000.0"))
 
     scan_hour: int = int(os.getenv("SCAN_HOUR", "9"))
     scan_minute: int = int(os.getenv("SCAN_MINUTE", "0"))

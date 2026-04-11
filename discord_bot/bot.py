@@ -60,11 +60,11 @@ class ApproveRejectView(discord.ui.View):
             p["shares"] * (p["last_price"] if p["last_price"] is not None else p["avg_cost_usd"])
             for p in existing_positions
         )
-        if existing_total + new_exposure > self.config.max_position_size_usd:
+        if existing_total + new_exposure > self.config.max_portfolio_usd:
             await interaction.response.send_message(
                 f"Blocked: buying {shares} share(s) of {self.ticker} at ${self.price:.2f} "
-                f"(${new_exposure:.0f}) would exceed MAX_POSITION_SIZE_USD "
-                f"(${self.config.max_position_size_usd:.0f}, current exposure: ${existing_total:.0f}).",
+                f"(${new_exposure:.0f}) would exceed MAX_PORTFOLIO_USD "
+                f"(${self.config.max_portfolio_usd:.0f}, current exposure: ${existing_total:.0f}).",
                 ephemeral=True,
             )
             return

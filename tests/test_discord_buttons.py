@@ -6,16 +6,17 @@ from config import Config
 
 # --- helpers ---
 
-def _make_config(dry_run=True, max_usd=500.0, db_path=":memory:"):
+def _make_config(dry_run=True, max_usd=500.0, max_portfolio_usd=20000.0, db_path=":memory:"):
     c = Config()
     c.dry_run = dry_run
     c.max_position_size_usd = max_usd
+    c.max_portfolio_usd = max_portfolio_usd
     c.db_path = db_path
     return c
 
 
-def _make_view(ticker="AAPL", price=100.0, rec_id=1, dry_run=True, max_usd=500.0):
-    config = _make_config(dry_run=dry_run, max_usd=max_usd)
+def _make_view(ticker="AAPL", price=100.0, rec_id=1, dry_run=True, max_usd=500.0, max_portfolio_usd=20000.0):
+    config = _make_config(dry_run=dry_run, max_usd=max_usd, max_portfolio_usd=max_portfolio_usd)
     return ApproveRejectView(rec_id=rec_id, ticker=ticker, price=price, config=config)
 
 
@@ -171,9 +172,8 @@ async def test_approve_exposure_guard_blocks(mock_queries, mock_place_order):
     mock_queries.get_open_positions.return_value = [existing_pos]
     mock_queries.create_trade.return_value = 1
 
-    # price=100, shares=floor(500/100)=5, new_exposure=500. existing=480. total=980 > 500
-    # Actually: price=100, max=500 -> shares=5, new_exposure=5*100=500, existing=480, total=980 > 500
-    view = _make_view(ticker="TSLA", price=100.0, max_usd=500.0)
+    # price=100, max=500 -> shares=5, new_exposure=500, existing=480, total=980 > max_portfolio_usd=900
+    view = _make_view(ticker="TSLA", price=100.0, max_usd=500.0, max_portfolio_usd=900.0)
     interaction = _make_interaction()
     await _call_approve(view, interaction)
 
@@ -229,8 +229,8 @@ async def test_approve_exposure_uses_last_price_fallback(mock_queries, mock_plac
     mock_queries.get_open_positions.return_value = [existing_pos]
     mock_queries.create_trade.return_value = 1
 
-    # price=50, max=500 -> shares=10, new_exposure=500. existing=150. total=650 > 500 -> blocked
-    view = _make_view(ticker="NVDA", price=50.0, max_usd=500.0)
+    # price=50, max=500 -> shares=10, new_exposure=500. existing=150. total=650 > max_portfolio_usd=600
+    view = _make_view(ticker="NVDA", price=50.0, max_usd=500.0, max_portfolio_usd=600.0)
     interaction = _make_interaction()
     await _call_approve(view, interaction)
 
