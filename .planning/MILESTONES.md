@@ -1,5 +1,22 @@
 # Milestones
 
+## v1.1 ETF + Async (Shipped: 2026-04-11)
+
+**Phases completed:** 2 phases (7–8), 4 plans, 252 tests green
+**Timeline:** 5 days (2026-04-07 → 2026-04-11), 32 commits
+**Codebase:** 90 files changed, +5,116/−6,829 lines
+
+**Key accomplishments:**
+
+1. ETF scan foundation — `partition_watchlist()` splits watchlist by yfinance quoteType with allowlist fallback; `etf_watchlist.txt` separates ETF universe; `asset_type` column added to recommendations table
+2. ETF analyst path — `build_etf_prompt` focused on RSI/MACD/expense ratio (no P/E, no earnings growth); `analyze_etf_ticker` with same return shape + quota tracking as stock path
+3. ETF Discord integration — `build_etf_recommendation_embed` with `[ETF]` title tag, MA50 Trend, Expense Ratio fields; `/scan_etf` slash command + `run_scan_etf` coroutine; `_ETF_ALLOWLIST` removed from fundamentals.py
+4. Asyncio event loop hardened — all 9 blocking yfinance calls (fetch_fundamental_info ×2, fetch_news_headlines ×3, fetch_technical_data ×4) wrapped in `asyncio.to_thread` across buy, sell, and ETF passes; zero bare synchronous yfinance calls remain on the event loop
+
+**Archive:** `.planning/milestones/v1.1-ROADMAP.md`, `.planning/milestones/v1.1-REQUIREMENTS.md`
+
+---
+
 ## v1.0 MVP (Shipped: 2026-04-06)
 
 **Phases completed:** 7 phases (1, 2, 2.5, 3, 4, 5, 6), 17 plans, 222 tests green

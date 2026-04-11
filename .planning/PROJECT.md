@@ -2,7 +2,7 @@
 
 ## What This Is
 
-An automated stock screener that uses Claude AI to generate BUY and SELL recommendations, posts them to Discord with Approve/Reject buttons, and executes trades via the Schwab brokerage API. The bot runs daily scans, monitors open positions with live P&L, and enforces human-in-the-loop approval for every order. A full sell pipeline (RSI+MACD two-gate exit + Claude SELL analysis) closes the trading loop.
+An automated stock and ETF screener that uses Claude AI to generate BUY and SELL recommendations, posts them to Discord with Approve/Reject buttons, and executes trades via the Schwab brokerage API. The bot runs daily scans for stocks and a separate `/scan_etf` path for ETFs, monitors open positions with live P&L, and enforces human-in-the-loop approval for every order. A full sell pipeline (RSI+MACD two-gate exit + Claude SELL analysis) closes the trading loop.
 
 ## Core Value
 
@@ -39,11 +39,15 @@ The bot must never place a real order without explicit human approval via Discor
 - ✓ Positions table with weighted avg cost, exposure guard, skip-owned guard — v1.0 (POS-01..06)
 - ✓ /positions Discord slash command with live P&L — v1.0 (POS-04)
 - ✓ Full sell pipeline: RSI+MACD two-gate exit, Claude SELL analysis, Discord embed, Schwab sell order — v1.0 (SELL-01..09)
+- ✓ ETF scan separation: `partition_watchlist`, `etf_watchlist.txt`, `asset_type` column, `/scan_etf` command — v1.1 (ETF-01..06)
+- ✓ ETF analyst path: `build_etf_prompt` (RSI/MACD/expense ratio, no P/E), `analyze_etf_ticker` — v1.1 (ETF-03)
+- ✓ Asyncio event loop hardened: all 9 blocking yfinance calls wrapped in `asyncio.to_thread` — v1.1 (ASYNC-01..04)
 
 ### Active
 
-- [ ] ETF scan separation: `/scan_etf` Discord command, skip fundamental filter for ETFs (Phase 7)
-- [ ] Async event loop fix: wrap all blocking yfinance calls in asyncio.to_thread (Phase 8)
+- [ ] Scheduled ETF scan at time offset (ETF-07) — avoids rate-limit contention with stock scan
+- [ ] `[ETF]` ops alert prefix to distinguish ETF scan silence from stock scan silence (ETF-08)
+- [ ] Expense ratio threshold filter in ETF embed (ETF-09)
 
 ### Out of Scope
 
@@ -54,18 +58,21 @@ The bot must never place a real order without explicit human approval via Discor
 - HTTP health check endpoint — Discord heartbeat sufficient
 - Async parallelization of scan — sequential acceptable for current scale
 - Mobile app / web UI — Discord IS the UI
+- Parallel ticker scanning via asyncio.gather — explicitly out of scope
+- Dynamic ETF universe from external API — static etf_watchlist.txt sufficient
+- ETF_SCAN_TIMES config field — manual /scan_etf sufficient until scheduled ETF scan is validated
 
 ## Context
 
-Shipped v1.0 with 15,278 LOC Python across 9 days (2026-03-28 → 2026-04-06), 81 commits, 222 tests green.
+Shipped v1.1 with 252 tests green across 2 milestones, 9 phases, 21 plans, ~110 days of planning artifacts.
 
 Tech stack: Python 3.x, discord.py, yfinance, anthropic SDK, schwab-py, APScheduler, SQLite.
 
-Key fragility: yfinance is an unofficial scraper — silent empty returns are a known risk. Backlog 999.1 tracks remaining blocking yfinance calls on the Discord event loop (fetch_fundamental_info, fetch_news_headlines, fetch_technical_data — Phase 8 will wrap all of them).
+Key fragility: yfinance is an unofficial scraper — silent empty returns are a known risk. All blocking yfinance calls are now off the event loop (Phase 8 sweep), eliminating gateway disconnect risk.
 
-Key safety: DRY_RUN=true and PAPER_TRADING=true are defaults; live trading requires explicit opt-in. Production DB confirmed working with all tables present post-Phase 5 hotfix.
+Key safety: DRY_RUN=true and PAPER_TRADING=true are defaults; live trading requires explicit opt-in.
 
-ETF issue noted: SPY, QQQ etc. fail the stock-oriented fundamental filter (no earnings growth). Phase 7 separates ETF scan path.
+ETF scan is live: SPY, QQQ, GLD, BND etc. route through `/scan_etf` with ETF-aware analyst prompt. Stock fundamental filter is clean — no ETF bypass hacks.
 
 ## Constraints
 
@@ -88,14 +95,10 @@ ETF issue noted: SPY, QQQ etc. fail the stock-oriented fundamental filter (no ea
 | Gemma 4 31B fallback on same Gemini key | 15 RPM / 1.5K RPD vs 5 RPM / 20 RPD; free tier headroom | ✓ Good |
 | RSI+MACD two-gate exit signal | Single-indicator exits are noisy; conjunction reduces false positives | ✓ Good |
 | Human approval required for every order | Core value; operator trust requires full visibility | ✓ Good — never compromised |
-
-## Current Milestone: v1.1 ETF + Async
-
-**Goal:** Add ETF scan capability and eliminate all blocking yfinance calls from the Discord event loop.
-
-**Target features:**
-- ETF scan separation (`/scan_etf` command, `partition_watchlist`, ETF-aware analyst prompt)
-- Asyncio event loop fix (wrap all remaining yfinance calls in `asyncio.to_thread`)
+| ETF scan separated (not bypassed in stock flow) | Clean separation beats ETF-bypass hacks in fundamental filter | ✓ Good — v1.1 |
+| `partition_watchlist` wrapped at call site, not inside function | Keeps function pure/testable; caller owns async boundary | ✓ Good — v1.1 |
+| Phase 8 placed after Phase 7 for comprehensive sweep | Ensures sell pass + ETF pass blocking calls covered in one audit | ✓ Good — v1.1 |
+| asyncio.to_thread for all yfinance I/O (not asyncio.gather) | Unblocks event loop without concurrency; simpler + safer | ✓ Good — v1.1 |
 
 ## Evolution
 
@@ -115,4 +118,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-06 after v1.1 milestone started*
+*Last updated: 2026-04-11 after v1.1 milestone*
