@@ -1,278 +1,126 @@
-# Architecture Patterns
+# Architecture Research — v1.2
 
-**Project:** Algo Trade Bot — v1.1 ETF + Async
-**Researched:** 2026-04-06
-**Scope:** ETF scan separation + asyncio.to_thread hardening
+## Summary
 
----
-
-## Existing Architecture (v1.0 Baseline)
-
-```
-main.py
-  run_scan(bot, config)
-    ├─ get_top_sp500_by_fundamentals(config)       ← asyncio.to_thread ✓
-    ├─ get_universe(watchlist_path, sp500)
-    └─ for each ticker:
-         ├─ yf.Ticker(ticker)                      ← BLOCKING on event loop
-         ├─ fetch_fundamental_info(yf_ticker)       ← BLOCKING on event loop
-         ├─ passes_fundamental_filter(info, config)
-         ├─ fetch_news_headlines(ticker)            ← BLOCKING on event loop
-         ├─ analyze_ticker(...)                     ← asyncio.to_thread ✓
-         ├─ fetch_technical_data(yf_ticker)         ← BLOCKING on event loop
-         └─ bot.send_recommendation(...)
-    └─ sell pass:
-         ├─ yf.Ticker(ticker)                      ← BLOCKING on event loop
-         ├─ fetch_technical_data(yf_ticker)         ← BLOCKING on event loop
-         ├─ fetch_news_headlines(ticker)            ← BLOCKING on event loop
-         └─ analyze_sell_ticker(...)               ← asyncio.to_thread ✓
-```
-
-**Existing partial workaround in fundamentals.py:** `_ETF_ALLOWLIST` hardcodes 10 ETF symbols that bypass the fundamental filter (`passes_fundamental_filter` returns `True` for them). This is a silent bypass, not a proper scan separation — ETFs still receive the stock-oriented analyst prompt.
+v1.2 adds seven features to an existing, well-structured pipeline. Most changes are additive: new arguments flow through existing call chains, new prompt sections are injected into existing prompt builders, and one new scheduler job mirrors the existing stock scan job. The only structural addition is a new `screener/macro.py` module; everything else is changes to existing modules. The largest single-file change is `claude_analyst.py` (prompt format + response parser + three prompt builder signatures). No existing module needs a rewrite.
 
 ---
 
-## Recommended Architecture for v1.1
+## Integration Points
 
-### Component Changes Overview
+### Feature 1: Macro Context (SPY trend + VIX) — SIG-02
 
-| Component | Change Type | What Changes |
-|-----------|-------------|--------------|
-| `screener/universe.py` | New function | `partition_watchlist(watchlist) -> (stocks, etfs)` |
-| `screener/fundamentals.py` | No change | `_ETF_ALLOWLIST` can be removed once partition is live |
-| `analyst/claude_analyst.py` | New function | `build_etf_prompt(ticker, tech_data, headlines)` |
-| `analyst/claude_analyst.py` | New function | `analyze_etf_ticker(ticker, tech_data, headlines, config, client, fallback_client)` |
-| `main.py` | New function | `run_scan_etf(bot, config)` |
-| `main.py` | Modified | `main()` — schedule ETF scan + register `/scan_etf` command |
-| `discord_bot/bot.py` | New command | `/scan_etf` slash command in `setup_hook` + `_scan_etf_command` handler |
-| All call sites | Wrap | All remaining blocking yfinance calls → `asyncio.to_thread` |
+- **Modules changed**: `main.py` (call site + pass-through to analyze functions), `analyst/claude_analyst.py` (`build_prompt`, `build_sell_prompt`, `build_etf_prompt` — new "Market Context" section; `analyze_ticker`, `analyze_sell_ticker`, `analyze_etf_ticker` — new `macro_context` kwarg)
+- **New modules**: `screener/macro.py` — pure synchronous function `fetch_macro_context(config) -> dict` returning `{"spy_trend": str, "vix_level": float | None}`. SPY trend is derived from 5d vs 20d moving average of SPY close price using two `yf.download` or `yf.Ticker` calls. VIX level is the most recent close of `^VIX`. Both are standard yfinance calls.
+- **Data flow change**: `run_scan()` and `run_scan_etf()` each call `await asyncio.to_thread(fetch_macro_context, config)` once at the top of the function, before the ticker loop. The returned dict is passed into `analyze_ticker`, `analyze_sell_ticker`, and `analyze_etf_ticker` as `macro_context=macro_context`. The prompt builders add a new "Market Context" block: `SPY Trend: {spy_trend} / VIX: {vix_level}`. `fetch_macro_context` must be a sync function; the `asyncio.to_thread` boundary lives in `main.py`, consistent with the project's existing pattern.
+- **Build order position**: Early — pure function with no dependency on other v1.2 features. Every other feature touching prompts benefits from stable prompt builder signatures. Bundle with SIG-01/SIG-03 to touch `build_prompt` once.
 
 ---
 
-## Component Boundaries
+### Feature 2: Sector Fetch — SIG-01
 
-### Where `partition_watchlist` Lives
-
-**Decision: `screener/universe.py`**
-
-Rationale:
-- Universe construction is already `universe.py`'s responsibility. `get_watchlist`, `get_universe`, `get_top_sp500_by_fundamentals` all live there.
-- `partition_watchlist` is the natural next step after building the universe: you have a list of tickers and need to classify them by asset type.
-- Keeps `main.py` clean: `universe = get_universe(...); stocks, etfs = partition_watchlist(universe)`.
-- The function makes a yfinance `quoteType` fetch per ticker — it is inherently I/O-bound and blocking, so it must be called inside `asyncio.to_thread` at the `main.py` call site.
-
-Signature:
-```python
-def partition_watchlist(tickers: list[str]) -> tuple[list[str], list[str]]:
-    """
-    Classify each ticker as stock or ETF using yfinance quoteType.
-    Returns (stocks, etfs). Tickers where quoteType is missing default to stocks.
-    """
-```
-
-### `run_scan_etf` vs a flag on `run_scan`
-
-**Decision: Separate function `run_scan_etf`**
-
-A flag (`mode="etf"`) on `run_scan` would require branching at every decision point in the pipeline — fundamental filter skip, prompt selection, Discord command routing — making `run_scan` harder to test and reason about.
-
-`run_scan_etf` is a parallel pipeline that:
-1. Takes the `etfs` list from `partition_watchlist`.
-2. Skips `passes_fundamental_filter` entirely.
-3. Calls `analyze_etf_ticker` (trend/momentum/macro prompt) instead of `analyze_ticker`.
-4. Calls `fetch_technical_data` (reused unchanged — RSI/MA50/volume apply to ETFs).
-5. Calls `should_recommend` (reused unchanged).
-6. Posts via `bot.send_recommendation` (reused unchanged — same embed + Approve/Reject flow).
-
-The only shared infrastructure is the analyst quota guard, `should_recommend`, `fetch_technical_data`, `fetch_news_headlines`, and the Discord posting path. These are all pure enough to reuse without coupling the two scan flows together.
-
-**Scheduler integration:** `configure_scheduler` schedules one job function. After v1.1, `main.py` will schedule both `run_scan` and `run_scan_etf` — either on the same cron time, or with separate times configurable via `Config`. The simplest approach is a single combined wrapper:
-
-```python
-async def run_full_scan(bot: TradingBot, config: Config) -> None:
-    """Run stock scan + ETF scan in sequence."""
-    stocks, etfs = await asyncio.to_thread(partition_watchlist, universe)
-    await run_scan(bot, config, tickers=stocks)
-    await run_scan_etf(bot, config, tickers=etfs)
-```
-
-This avoids scheduling two separate jobs and keeps one daily "scan complete" ops alert.
-
-Alternatively, `run_scan` and `run_scan_etf` can each accept an optional `tickers` override for slash commands, while the scheduler always calls `run_full_scan`. Either way the core functions remain independently callable and testable.
+- **Modules changed**: `analyst/claude_analyst.py` (`build_prompt`, `build_sell_prompt` — new `sector` param; ETF prompt omits sector — funds have no single sector), `main.py` (extract `info.get("sector")` after `fetch_fundamental_info` in buy pass; in sell pass, `info` is not currently fetched — add one `fetch_fundamental_info` call or read from the `positions` row if sector is stored there)
+- **New modules**: None. `yfinance info["sector"]` is already returned by `fetch_fundamental_info` (which calls `yf_ticker.info`). Zero new I/O for the buy pass.
+- **Data flow change**: In `run_scan` buy pass, `sector = info.get("sector")` extracted after the existing `fetch_fundamental_info` call. Passed to `analyze_ticker(... sector=sector)`. In the sell pass, `info` is not currently fetched per position — a lightweight `fetch_fundamental_info` call is needed, wrapped in `asyncio.to_thread`. Alternatively, if the sector is stable (it is for stocks), fetch it once and store in `positions` table as an optional column; retrieve from DB instead of making a live yfinance call on the sell pass. The DB-storage approach eliminates a yfinance call per position per sell scan — recommended given the project's sensitivity to yfinance call count.
+- **Build order position**: Early — bundle with SIG-02 and SIG-03 to update prompt builder signatures in a single pass.
 
 ---
 
-## Asyncio Wrapping Strategy
+### Feature 3: 52-Week Range — SIG-03
 
-### Inline `asyncio.to_thread` vs Named Async Wrappers
-
-**Decision: Inline `asyncio.to_thread` at call site in `main.py`**
-
-Two options considered:
-
-**Option A — Inline:**
-```python
-info = await asyncio.to_thread(fetch_fundamental_info, yf_ticker)
-headlines = await asyncio.to_thread(fetch_news_headlines, ticker)
-tech_data = await asyncio.to_thread(fetch_technical_data, yf_ticker)
-```
-
-**Option B — Named async wrappers in each module:**
-```python
-# fundamentals.py
-async def fetch_fundamental_info_async(yf_ticker) -> dict:
-    return await asyncio.to_thread(fetch_fundamental_info, yf_ticker)
-```
-
-**Why inline wins here:**
-- The codebase already uses inline `asyncio.to_thread` for `get_top_sp500_by_fundamentals` and `analyze_ticker`. Consistency matters for readability.
-- The sync versions remain pure and directly testable without async fixtures — a property the project explicitly values (see CLAUDE.md "Pure functions for testability").
-- Named async wrappers add a new public API surface to each module, doubling the function count for things that are purely infrastructure concerns, not domain logic.
-- `main.py` is the only async consumer of these functions. There is no second async consumer that would benefit from a reusable async wrapper.
-
-**Exception — `yf.Ticker(ticker)` construction:** The `yf.Ticker(ticker)` constructor call in the scan loops (buy pass and sell pass) should also be wrapped:
-```python
-yf_ticker = await asyncio.to_thread(yf.Ticker, ticker)
-```
-The constructor does not perform network I/O itself (it is lazy), but wrapping it is low-cost and future-proof if yfinance's internal behavior changes.
-
-**Correction on `fetch_news_headlines`:** This function internally constructs `yf.Ticker(ticker)` and accesses `.news`. It is entirely I/O. Wrap at call site:
-```python
-headlines = await asyncio.to_thread(fetch_news_headlines, ticker)
-```
-
-### Complete Inventory of Blocking Calls to Wrap
-
-| Location | Call | Phase |
-|----------|------|-------|
-| `main.py` buy pass | `yf.Ticker(ticker)` | Phase 8 |
-| `main.py` buy pass | `fetch_fundamental_info(yf_ticker)` | Phase 8 |
-| `main.py` buy pass | `fetch_news_headlines(ticker)` | Phase 8 |
-| `main.py` buy pass | `fetch_technical_data(yf_ticker)` | Phase 8 |
-| `main.py` sell pass | `yf.Ticker(ticker)` (×2, sell-blocked check + main) | Phase 8 |
-| `main.py` sell pass | `fetch_technical_data(yf_ticker)` (×2) | Phase 8 |
-| `main.py` sell pass | `fetch_news_headlines(ticker)` | Phase 8 |
-| `universe.py` | `partition_watchlist` (new) | Phase 7 — must be async-safe from day one |
-| `main.py` | `partition_watchlist(universe)` call | Phase 7 |
-
-`get_top_sp500_by_fundamentals` is already wrapped — no change needed.
-`analyze_ticker` and `analyze_sell_ticker` are already wrapped — no change needed.
+- **Modules changed**: `analyst/claude_analyst.py` (`build_prompt`, `build_sell_prompt` — new `fifty_two_week_high` and `fifty_two_week_low` params), `main.py` (extract from `info` dict)
+- **New modules**: None. `info["fiftyTwoWeekHigh"]` and `info["fiftyTwoWeekLow"]` are already present in the `yf.Ticker.info` dict returned by `fetch_fundamental_info`. Zero new network calls.
+- **Data flow change**: In `run_scan` buy pass, `week52_high = info.get("fiftyTwoWeekHigh")` and `week52_low = info.get("fiftyTwoWeekLow")` extracted after the existing `fetch_fundamental_info` call. Passed to `analyze_ticker` as new kwargs. Formatted in `build_prompt` as `52-Week Range: ${week52_low:.2f} – ${week52_high:.2f}` under the Fundamentals section. For the sell pass, same extraction from the `info` dict (requires the sell pass `fetch_fundamental_info` call described in SIG-01).
+- **Build order position**: Early — zero new I/O, trivially bundled with SIG-01 and SIG-02.
 
 ---
 
-## Data Flow — New ETF Path
+### Feature 4: Confidence Scoring — SIG-04
 
+- **Modules changed**: `analyst/claude_analyst.py` (`build_prompt`, `build_sell_prompt`, `build_etf_prompt` — new third output line in prompt; `parse_claude_response` — extract CONFIDENCE line, add `"confidence"` to returned dict), `discord_bot/embeds.py` (`build_recommendation_embed`, `build_sell_embed`, `build_etf_recommendation_embed` — new `confidence` param, rendered as embed footer), `discord_bot/bot.py` (`send_recommendation`, `send_sell_recommendation`, `send_etf_recommendation` — new `confidence` param passed to embed builders), `main.py` (pass `analysis["confidence"]` through to `send_*` methods)
+- **New modules**: None.
+- **Data flow change**: Prompts gain a third required output line: `CONFIDENCE: <high|medium|low>`. `parse_claude_response` is extended to find a line starting with `CONFIDENCE:`, parse the value, and return it as `result["confidence"]`. If the line is absent (cache hit from pre-v1.2 prompt format), default to `"medium"`. The `analysis` dict returned by `analyze_ticker` now carries `{"signal", "reasoning", "confidence", "provider_used"}`. `run_scan` passes `confidence=analysis.get("confidence", "medium")` to `bot.send_recommendation`, which passes it to `build_recommendation_embed`, where it renders as `embed.set_footer(text=f"Confidence: {confidence.upper()}")`. The analyst cache currently stores only `signal` and `reasoning` — cache hits will not have a stored confidence value. Do not add a cache column for v1.2; defaulting cache hits to "medium" is acceptable. The prompt hash includes macro/sector/52-week content that changes with v1.2, so most pre-v1.2 cache entries will be cache misses on first run anyway (different prompt → different headlines hash key is unchanged, but prompt content changes do not affect the cache key — see Notes section).
+- **Build order position**: Mid — depends on prompt builder signatures being stable (SIG-01/02/03 merged first). Touching `parse_claude_response` and all three embed functions is the largest cross-module change in v1.2.
+
+---
+
+### Feature 5: ETF Scheduled Scan — ETF-07
+
+- **Modules changed**: `main.py` (`on_ready` — register second APScheduler job for `run_scan_etf`; or extend `configure_scheduler` to accept an optional etf job function), `config.py` (new `etf_scan_times: list` field parsed from `ETF_SCAN_TIMES` env var, defaulting to stock scan time + 30 minutes)
+- **New modules**: None.
+- **Data flow change**: Currently `configure_scheduler` registers only the stock scan. A second `configure_etf_scheduler(scheduler, config, etf_job_fn)` function (mirroring `configure_scheduler`) is the cleanest approach — it keeps both functions pure and independently testable. `on_ready` calls both. The 30-minute offset between stock scan and ETF scan prevents simultaneous yfinance + analyst API load. Note: the v1.1 ARCHITECTURE.md recommended a combined `run_full_scan` wrapper to avoid two independent scheduler jobs and quota contention. That recommendation still applies — a combined job is preferable to two independent jobs if the sequential ordering matters for quota accounting. However, if independent manual triggering via `/scan` and `/scan_etf` must also work, the current design (separate `_scan_callback` and `_scan_etf_callback`) already supports that correctly. The scheduled job can call both in sequence from a single lambda.
+- **Build order position**: Mid — standalone change with no dependency on signal enrichment features. Can be developed in parallel with SIG features on a separate branch.
+
+---
+
+### Feature 6: /stats Command — PORT-02
+
+- **Modules changed**: `discord_bot/bot.py` (new `_stats_command` registered in `setup_hook`), `discord_bot/embeds.py` (new `build_stats_embed` function), `database/queries.py` (new `get_trade_stats(db_path) -> dict` function)
+- **New modules**: None.
+- **Data flow change**: `get_trade_stats` queries existing `trades` and `positions` tables. The query joins sell-side trades (`trades WHERE side='sell'`) to their corresponding position rows (`positions WHERE status='closed' AND ticker=trades.ticker`) to recover `avg_cost_usd` as cost basis. It returns `{"total_closed": int, "win_count": int, "loss_count": int, "win_rate": float, "avg_gain_pct": float | None, "avg_loss_pct": float | None}`. Win is defined as `trade.price > position.avg_cost_usd`. The `positions` table retains closed rows with `status='closed'` and `avg_cost_usd` intact (verified: `close_position` in queries.py only sets `status='closed'`; the cost basis survives). No new DB tables or columns required — all data is already present.
+- **Build order position**: Late — fully independent of all signal enrichment features. Requires only existing DB schema. Can be built last without blocking anything.
+
+---
+
+### Feature 7: Error Surfacing to Ops Channel — OPS-01 + ETF-08
+
+- **Modules changed**: `main.py` (`run_scan` — wrap full scan body in outer `try/except Exception` that calls `await bot.send_ops_alert`; `run_scan_etf` — same outer guard), `discord_bot/bot.py` — `send_ops_alert` already exists but posts to `config.discord_channel_id`. No separate ops channel exists today. If a separate ops channel is desired, add `discord_ops_channel_id: int` to `Config` with a fallback to `discord_channel_id`. ETF-08: one-line change in `run_scan_etf` — change `"ETF scan complete: 0 recommendations posted."` to `"[ETF] ETF scan complete: 0 recommendations posted."`.
+- **New modules**: None.
+- **Data flow change**: Currently, per-ticker exceptions are caught with `continue` but scan-level exceptions (e.g., DB schema error, `partition_watchlist` hard failure) propagate through the APScheduler thread and are silently dropped by the scheduler. The outer `try/except` in `run_scan` wraps everything after `expire_stale_recommendations` and before the sell pass. The sell pass gets its own outer guard or is included in the same wrapper. `run_scan_etf` already handles `sqlite3.OperationalError` with an early return and ops alert — extend this to a general `except Exception` wrapper. `send_ops_alert` is already implemented and available on `bot`.
+- **Build order position**: First — lowest risk, highest dev-time value. Wrap both scan functions before any other work so errors during v1.2 development are surfaced to Discord rather than silently lost in scheduler threads.
+
+---
+
+## Suggested Build Order
+
+1. **OPS-01 + ETF-08** (first): Outer exception wrapper on `run_scan` and `run_scan_etf`. One-line `[ETF]` prefix fix. No dependencies, immediately improves error visibility for all subsequent feature work.
+
+2. **SIG-01 + SIG-02 + SIG-03** (together): Sector, macro context, and 52-week range all extend the same three prompt builder signatures in `claude_analyst.py` and the same `analyze_ticker` / `analyze_sell_ticker` / `analyze_etf_ticker` call sites in `main.py`. Touching these signatures three separate times creates unnecessary merge complexity. New `screener/macro.py` module is the only new file introduced here.
+
+3. **SIG-04** (after step 2): Confidence scoring requires the prompt builders to be in their final signature state before adding the third output line. Updates `parse_claude_response`, all three embed builders, and the three `send_*` methods in `bot.py`.
+
+4. **ETF-07** (after step 3, or parallel branch): Second APScheduler job. Independent of signal enrichment. Add `etf_scan_times` to `Config`. Extend `configure_scheduler` or add `configure_etf_scheduler`.
+
+5. **PORT-01** (total unrealized P&L in `/positions`): Aggregate sum across position summaries in `build_positions_embed`. Minor embed change, no new DB query needed — sum the per-position P&L values already computed by `get_position_summary`.
+
+6. **PORT-02** (`/stats` command): New query, new embed, new slash command. All data already in DB. No dependencies on steps 2–4.
+
+---
+
+## Schema Changes
+
+**No new tables required for v1.2.**
+
+**Optional additive columns:**
+
+`positions` table — if storing sector to avoid a live yfinance call on the sell pass (SIG-01):
+```sql
+ALTER TABLE positions ADD COLUMN sector TEXT DEFAULT NULL;
 ```
-/scan_etf command OR daily cron
-  → run_full_scan(bot, config)
-       ├─ build universe (watchlist + sp500)
-       ├─ asyncio.to_thread(partition_watchlist, universe)
-       │    └─ yfinance quoteType per ticker → (stocks, etfs)
-       │
-       ├─ run_scan(bot, config, tickers=stocks)        ← existing path, unchanged logic
-       │    └─ fundamental → analyst (stock prompt) → technical
-       │
-       └─ run_scan_etf(bot, config, tickers=etfs)      ← new path
-            └─ for each etf:
-                 ├─ asyncio.to_thread(fetch_news_headlines, ticker)
-                 ├─ asyncio.to_thread(analyze_etf_ticker, ...)
-                 ├─ asyncio.to_thread(fetch_technical_data, yf_ticker)
-                 ├─ should_recommend(signal, tech_data, config)   ← reused
-                 └─ bot.send_recommendation(...)                  ← reused
+Written at position open time from `info.get("sector")`. Eliminates one `fetch_fundamental_info` call per position per sell-pass scan run. Recommended if the sell pass sector fetch proves noisy on yfinance (common for yfinance silent-empty returns on small caps).
+
+`recommendations` table — if storing confidence for future analytics (SIG-04):
+```sql
+ALTER TABLE recommendations ADD COLUMN confidence TEXT DEFAULT 'medium';
 ```
+Not required for v1.2 embed display (confidence is embed-only). Useful for future `/stats` extensions (e.g., win rate by confidence tier). Mark as deferred unless the roadmap explicitly calls for it.
+
+`analyst_cache` table — do NOT add a confidence column for v1.2. Cache hits default to "medium" sentinel. The cost of a wrong confidence badge on a cache hit is low; the complexity of cache versioning is not worth it for this release.
+
+**Config additions** (`.env` fields, not DB):
+- `ETF_SCAN_TIMES` — comma-separated HH:MM list for ETF scheduled scan. Defaults to stock scan time + 30 minutes.
+- `DISCORD_OPS_CHANNEL_ID` — optional separate channel for ops alerts. Defaults to `DISCORD_CHANNEL_ID` if unset.
 
 ---
 
-## Patterns to Follow
+## Notes on Existing Patterns to Preserve
 
-### Pattern 1: Analyst Prompt Separation
+**asyncio.to_thread discipline**: `fetch_macro_context` must be synchronous; the thread boundary lives in `main.py`. This is consistent with all other screener functions (`fetch_fundamental_info`, `fetch_technical_data`, etc.). Do not add an async version to `macro.py`.
 
-`build_etf_prompt` should be in `analyst/claude_analyst.py` alongside `build_prompt` (stock) and `build_sell_prompt`. The ETF prompt omits P/E and earnings growth (not meaningful for ETFs) and instead emphasizes:
-- Trend direction (price vs MA50)
-- Momentum (RSI)
-- Macro context (from headlines)
-- Sector/asset class represented
+**analyst cache key**: The cache key is `(ticker, headline_hash)`. The prompt content (sector, macro, 52-week) does not factor into the key — a cache hit from a pre-v1.2 entry will be used even though the enriched prompt would have produced a different response. This is a known limitation. On v1.2 first deployment, truncating `analyst_cache` ensures all responses are generated with the new prompt. Document this as a deployment step.
 
-`analyze_etf_ticker` follows the exact structure of `analyze_ticker` — same `_call_api` + fallback pipeline, same `parse_claude_response` reuse, same quota guard pattern in `main.py`. No new parsing logic needed; the existing SIGNAL/REASONING format works.
+**configure_scheduler purity**: Keep `configure_scheduler` a pure function. Do not read `config` inside it beyond what is already passed. For the ETF scheduler, add a parallel `configure_etf_scheduler(scheduler, config, etf_job_fn)` rather than adding optional parameters to the existing function. Both functions remain independently testable.
 
-### Pattern 2: `_ETF_ALLOWLIST` Retirement
+**Quota guard duplication**: The quota guard block (check primary + fallback count, skip if exhausted) appears three times in `main.py` (buy pass, sell pass, ETF pass). v1.2 does not add a fourth. A `_quota_exhausted(config, db_path) -> bool` helper extraction is a worthwhile cleanup but not required for correctness.
 
-`fundamentals.py` currently has `_ETF_ALLOWLIST` as a hardcoded bypass. Once `partition_watchlist` correctly routes ETFs to `run_scan_etf`, ETFs will never reach `passes_fundamental_filter`. The allowlist can be removed in Phase 7. However, removal should happen only after `partition_watchlist` is tested and confirmed to correctly classify SPY, QQQ, VTI, IVV, VOO, VEA, BND, GLD, XLK, SCHD — the exact tickers currently in the allowlist.
-
-### Pattern 3: Quota Guard Reuse
-
-The analyst quota guard block (check primary count, check fallback count, skip if both exhausted) appears twice in `run_scan` — once for the buy analyst call, once for the sell analyst call. `run_scan_etf` will need a third copy. If deduplication is desired, extract a `_quota_exhausted(config, db_path) -> bool` helper in `main.py`. This is a moderate-priority cleanup; functional duplication is acceptable for v1.1 if time is constrained.
-
----
-
-## Anti-Patterns to Avoid
-
-### Anti-Pattern 1: ETF Flag on `run_scan`
-
-**What:** Adding `mode: str = "stock"` or `is_etf: bool = False` parameter to `run_scan`.
-
-**Why bad:** Creates branching inside an already 100+ line function. The two paths (stock vs ETF) differ at three points: fundamental filter, analyst prompt, and (eventually) exit signal thresholds. A flag turns a linear pipeline into a conditional tangle and makes the function harder to test — you must test every combination of flag states.
-
-**Instead:** `run_scan_etf` as a separate function. Share what's genuinely shared (quota guard helper, `should_recommend`, technical fetch, Discord posting) via extraction, not branching.
-
-### Anti-Pattern 2: Async Wrappers as New Module API
-
-**What:** Adding `fetch_fundamental_info_async`, `fetch_technical_data_async`, `fetch_news_headlines_async` as exported functions in their respective modules.
-
-**Why bad:** The sync versions are the tested, documented API. Adding async wrappers doubles the surface area and creates ambiguity about which version to call. Tests that currently mock `fetch_fundamental_info` would need to also mock the async wrapper. The wrapping is an orchestration concern, not a domain concern.
-
-**Instead:** Wrap inline at the `main.py` call site with `asyncio.to_thread`. One pattern, one place.
-
-### Anti-Pattern 3: Constructing `yf.Ticker` Inside Threaded Functions
-
-**What:** Having `fetch_fundamental_info` or `fetch_technical_data` internally call `yf.Ticker(ticker)` when passed a ticker string instead of a pre-built object.
-
-**Why bad:** The current design correctly passes a pre-built `yf.Ticker` object to these functions — this means one `yf.Ticker` construction per ticker per scan, not multiple. Changing to string-based arguments would hide the object construction inside the thread and make it harder to reason about where yfinance state is created.
-
-**Instead:** Keep passing pre-built `yf.Ticker` objects. Wrap `yf.Ticker(ticker)` construction itself in `asyncio.to_thread` at the scan loop level.
-
-### Anti-Pattern 4: Scheduling Two Independent Scan Jobs
-
-**What:** Adding a separate APScheduler job for ETF scan, running on a different trigger.
-
-**Why bad:** Two scan jobs run independently — they both fetch news, both consume analyst quota, and neither knows about the other's state. If the ETF scan fires while the stock scan is mid-execution, the quota guard counts will be in a partially-consumed state. With a sequential combined scan, quota consumption is deterministic.
-
-**Instead:** One `run_full_scan` coroutine scheduled by APScheduler, which internally runs stock scan then ETF scan in sequence.
-
----
-
-## Build Order Consideration: Phase 7 Before Phase 8
-
-Phase 7 (ETF path) introduces `partition_watchlist` and `run_scan_etf`. Both call the same blocking functions that Phase 8 wraps. The recommended build order is:
-
-**Phase 7 first:**
-- Implement `partition_watchlist` — wrap it with `asyncio.to_thread` from day one since it is new code.
-- Implement `run_scan_etf` — write its yfinance calls as `asyncio.to_thread` inline from the start (new code, no migration needed).
-- Leave existing `run_scan` blocking calls as-is — Phase 8 will fix them.
-- This means after Phase 7, `run_scan_etf` is async-clean, but `run_scan` still has blocking calls. Acceptable for a development milestone.
-
-**Phase 8 second:**
-- Wrap the remaining blocking calls in `run_scan` (buy pass and sell pass).
-- At this point the entire scan pipeline is event-loop safe.
-- Phase 8 is purely mechanical — no logic changes, only wrapping — so it can be validated purely by confirming the event loop does not block (no new test logic required beyond confirming existing tests still pass).
-
-**Why not Phase 8 first:** Wrapping existing calls first and then adding the ETF path saves nothing — the ETF path is new code and can be written async-clean regardless of Phase 8 status. Phase 7 produces a working feature; Phase 8 is a reliability hardening pass.
-
----
-
-## Scalability Considerations
-
-| Concern | Current (v1.1 scope) | If universe grows |
-|---------|---------------------|-------------------|
-| `partition_watchlist` latency | One `yfinance.info` call per ticker in watchlist; at ~20 tickers this is fast enough synchronously | If universe grows to 50+ tickers, consider caching quoteType results (24h TTL, same pattern as sp500_cache.json) |
-| ETF scan quota consumption | ETFs skip fundamental filter but still call analyst; at 5-10 ETFs this is minimal | Add ETF-specific quota config field if ETF analyst calls start competing with stock calls |
-| Sequential scan | run_scan then run_scan_etf sequential is fine for current scale | PROJECT.md explicitly lists "async parallelization of scan" as Out of Scope |
-
----
-
-## Sources
-
-- Code analysis: `main.py`, `screener/universe.py`, `screener/fundamentals.py`, `screener/technicals.py`, `analyst/claude_analyst.py`, `analyst/news.py`, `discord_bot/bot.py` — HIGH confidence (direct inspection)
-- `_ETF_ALLOWLIST` discovery: `screener/fundamentals.py` line 12 — HIGH confidence (direct inspection)
-- Async wrapping pattern: existing `asyncio.to_thread` usage at `main.py` lines 61, 112, 225 — HIGH confidence (direct inspection)
-- PROJECT.md constraints and Out of Scope decisions — HIGH confidence (direct inspection)
+**send_ops_alert channel routing**: `send_ops_alert` currently posts to `config.discord_channel_id`. If `DISCORD_OPS_CHANNEL_ID` is added to Config, update `send_ops_alert` to use `config.discord_ops_channel_id` with a fallback to `config.discord_channel_id`. Existing deployments without the new env var will see no behavior change.
