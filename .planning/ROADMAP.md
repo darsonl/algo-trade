@@ -4,6 +4,7 @@
 
 - ✅ **v1.0 MVP** — Phases 1-6 (shipped 2026-04-06)
 - ✅ **v1.1 ETF + Async** — Phases 7-8 (shipped 2026-04-11)
+- 🔄 **v1.2 Signal Quality & Portfolio Analytics** — Phases 9-13 (in progress)
 
 ---
 
@@ -34,6 +35,72 @@ See `.planning/milestones/v1.1-ROADMAP.md` for full phase details.
 
 </details>
 
+### v1.2 Signal Quality & Portfolio Analytics
+
+- [ ] **Phase 9: Ops Hardening** — Scan errors surface to Discord; ETF alert is distinguishable from stock alert
+- [ ] **Phase 10: Prompt Signal Enrichment** — Claude receives sector, macro, and price-range context in every analysis
+- [ ] **Phase 11: Confidence Scoring** — Every Claude signal carries a confidence badge visible in Discord
+- [ ] **Phase 12: ETF Polish** — ETF scan runs on its own schedule; high-cost ETFs are flagged in the embed
+- [ ] **Phase 13: Portfolio Analytics** — User can see aggregate P&L and closed-trade performance stats
+
+---
+
+## Phase Details
+
+### Phase 9: Ops Hardening
+**Goal:** Unhandled scan exceptions are posted to Discord so failures are never silently swallowed, and ETF scan zero-recommendation alerts are distinguishable from stock scan alerts.
+**Depends on:** Phase 8
+**Requirements:** OPS-01, ETF-08
+**Success criteria:**
+1. When an unhandled exception occurs during a stock or ETF scan, a message appears in the Discord ops channel within the same scan run — the bot does not log silently and continue.
+2. A single scan run with multiple exceptions posts at most 3 error messages to Discord, preventing alert spam.
+3. When the ETF scan completes with zero recommendations, the Discord ops alert message begins with `[ETF]`; the stock scan zero-recommendation alert does not carry this prefix.
+**Plans:** TBD
+
+### Phase 10: Prompt Signal Enrichment
+**Goal:** Claude's BUY, SELL, and ETF prompts include the ticker's sector, SPY trend direction, current VIX level, and 52-week price range position so Claude can factor sector and macro context into every recommendation.
+**Depends on:** Phase 9
+**Requirements:** SIG-01, SIG-02, SIG-03
+**Success criteria:**
+1. A BUY recommendation embed for any stock shows reasoning that references the ticker's sector (e.g. "Technology") — confirming sector context reached Claude.
+2. A BUY or SELL recommendation shows reasoning that references SPY trend direction or VIX level — confirming macro context reached Claude.
+3. A BUY or SELL recommendation shows reasoning that references whether the stock is near its 52-week high, low, or mid-range — confirming price-range context reached Claude.
+4. An ETF recommendation includes SPY trend and VIX context in Claude reasoning (ETF path receives macro enrichment; sector and 52-week range are stock-path only).
+**Plans:** TBD
+
+### Phase 11: Confidence Scoring
+**Goal:** Every Claude BUY/SELL/HOLD signal includes a confidence level (high/medium/low) that is displayed as a badge in the Discord embed; a missing confidence level does not break the embed or the scan.
+**Depends on:** Phase 10
+**Requirements:** SIG-04
+**Success criteria:**
+1. A Discord recommendation embed displays a confidence badge (e.g. "Confidence: High") when Claude returns a confidence level alongside the signal.
+2. When Claude omits a confidence level, the embed posts without a badge and no error is raised — the badge is optional, not required.
+3. The confidence level is persisted to the database so it is available for future queries without re-calling Claude.
+**Plans:** TBD
+
+### Phase 12: ETF Polish
+**Goal:** The ETF scan fires automatically at a configured time offset from the stock scan, and ETFs with an expense ratio above a configurable threshold are flagged in their Discord embed.
+**Depends on:** Phase 8 (ETF scan must be working; independent of Phases 10-11)
+**Requirements:** ETF-07, ETF-09
+**Success criteria:**
+1. At bot startup, APScheduler registers an ETF scan job that fires at a different clock time than the stock scan job (e.g. 9:30 AM vs 9:00 AM) — confirmed in scheduler startup logs without any manual `/scan_etf` invocation.
+2. An ETF with an expense ratio above the configured threshold is visibly marked in its Discord embed (e.g. a field noting "High expense ratio") so the operator can factor cost before approving.
+3. Adjusting the ETF scan schedule does not affect the stock scan schedule — both jobs fire independently at their respective configured times.
+**Plans:** TBD
+**UI hint**: yes
+
+### Phase 13: Portfolio Analytics
+**Goal:** The `/positions` command shows total aggregate unrealized P&L across all open positions, and a new `/stats` slash command reports win rate, average gain percentage, and average loss percentage on all closed trades.
+**Depends on:** Phase 8 (positions and trades tables must exist; independent of Phases 9-12)
+**Requirements:** PORT-01, PORT-02
+**Success criteria:**
+1. The `/positions` embed footer displays a total unrealized P&L figure (e.g. "+$142.30 total unrealized") that aggregates all open positions — not just the per-position rows already shown.
+2. Running `/stats` in Discord returns a message showing win rate percentage, average gain percentage on winning trades, and average loss percentage on losing trades.
+3. `/stats` returns a clear message (e.g. "No closed trades yet") when the trades table has no closed records — it does not error or post an empty embed.
+4. The `/stats` figures are computed from DB aggregation only — no external API call is made.
+**Plans:** TBD
+**UI hint**: yes
+
 ---
 
 ## Progress
@@ -49,7 +116,12 @@ See `.planning/milestones/v1.1-ROADMAP.md` for full phase details.
 | 6. Sell Signals & Sell Orders | v1.0 | 5/5 | Complete | 2026-04-06 |
 | 7. ETF Scan Separation | v1.1 | 3/3 | Complete | 2026-04-07 |
 | 8. Asyncio Event Loop Fix | v1.1 | 1/1 | Complete | 2026-04-09 |
+| 9. Ops Hardening | v1.2 | 0/? | Not started | - |
+| 10. Prompt Signal Enrichment | v1.2 | 0/? | Not started | - |
+| 11. Confidence Scoring | v1.2 | 0/? | Not started | - |
+| 12. ETF Polish | v1.2 | 0/? | Not started | - |
+| 13. Portfolio Analytics | v1.2 | 0/? | Not started | - |
 
 ---
 *Roadmap defined: 2026-03-30*
-*Last updated: 2026-04-11 — v1.1 shipped*
+*Last updated: 2026-04-12 — v1.2 roadmap added (Phases 9-13)*

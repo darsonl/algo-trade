@@ -4,9 +4,9 @@ milestone: v1.2
 milestone_name: Signal Quality & Portfolio Analytics
 status: in_progress
 last_updated: "2026-04-12T00:00:00.000Z"
-last_activity: 2026-04-12 -- Milestone v1.2 started
+last_activity: 2026-04-12 -- Roadmap defined (Phases 9-13)
 progress:
-  total_phases: 0
+  total_phases: 5
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -17,17 +17,17 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-04-11)
+See: .planning/PROJECT.md (updated 2026-04-12)
 
 **Core value:** The bot must never place a real order without explicit human approval via Discord.
-**Current focus:** v1.1 complete — planning next milestone
+**Current focus:** v1.2 roadmap defined — ready to plan Phase 9
 
 ## Current Position
 
-Phase: Not started (defining requirements)
+Phase: Phase 9 (not started)
 Plan: —
-Status: Defining requirements
-Last activity: 2026-04-12 — Milestone v1.2 started
+Status: Roadmap defined; awaiting first plan
+Last activity: 2026-04-12 — v1.2 roadmap written (Phases 9-13)
 
 ---
 
@@ -35,7 +35,7 @@ Last activity: 2026-04-12 — Milestone v1.2 started
 
 **Milestone v1.2:** Signal Quality & Portfolio Analytics
 **Started:** 2026-04-12
-**Phases:** TBD (roadmap pending)
+**Phases:** 9–13 (5 phases, 10 requirements)
 
 ---
 
@@ -52,6 +52,11 @@ Last activity: 2026-04-12 — Milestone v1.2 started
 | 6 | Sell Signals & Sell Orders | ✅ Complete |
 | 7 | ETF Scan Separation | ✅ Complete (3/3 plans) |
 | 8 | Asyncio Event Loop Fix | ✅ Complete (1/1 plan) |
+| 9 | Ops Hardening | 🔄 Not started |
+| 10 | Prompt Signal Enrichment | 🔄 Not started |
+| 11 | Confidence Scoring | 🔄 Not started |
+| 12 | ETF Polish | 🔄 Not started |
+| 13 | Portfolio Analytics | 🔄 Not started |
 
 ---
 
@@ -80,4 +85,4 @@ Location: .planning/codebase/
 
 ## Next Action
 
-v1.2 started. Define REQUIREMENTS.md, then run `/gsd-plan-phase 9` to begin execution.
+Run `/gsd-plan-phase 9` to begin Phase 9: Ops Hardening.

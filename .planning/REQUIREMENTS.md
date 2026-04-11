@@ -58,17 +58,18 @@ Finish ETF polish, enrich Claude signals with sector/macro context and confidenc
 
 | REQ-ID  | Phase | Status |
 |---------|-------|--------|
-| ETF-07  | —     | Pending |
-| ETF-08  | —     | Pending |
-| ETF-09  | —     | Pending |
-| SIG-01  | —     | Pending |
-| SIG-02  | —     | Pending |
-| SIG-03  | —     | Pending |
-| SIG-04  | —     | Pending |
-| PORT-01 | —     | Pending |
-| PORT-02 | —     | Pending |
-| OPS-01  | —     | Pending |
+| ETF-07  | Phase 12 | Pending |
+| ETF-08  | Phase 9  | Pending |
+| ETF-09  | Phase 12 | Pending |
+| SIG-01  | Phase 10 | Pending |
+| SIG-02  | Phase 10 | Pending |
+| SIG-03  | Phase 10 | Pending |
+| SIG-04  | Phase 11 | Pending |
+| PORT-01 | Phase 13 | Pending |
+| PORT-02 | Phase 13 | Pending |
+| OPS-01  | Phase 9  | Pending |
 
 ---
 
 *Created: 2026-04-12 — v1.2 milestone*
+*Updated: 2026-04-12 — traceability filled in after roadmap*
