@@ -25,7 +25,7 @@ def test_cache_hit_returns_dict(db_path):
         "Strong earnings growth.",
     )
     result = get_cached_analysis(db_path, "AAPL", "abc123")
-    assert result == {"signal": "BUY", "reasoning": "Strong earnings growth."}
+    assert result == {"signal": "BUY", "reasoning": "Strong earnings growth.", "confidence": None}
 
 
 def test_set_cached_analysis_upserts(db_path):
@@ -44,8 +44,8 @@ def test_same_hash_different_tickers_are_independent(db_path):
     aapl_result = get_cached_analysis(db_path, "AAPL", shared_hash)
     msft_result = get_cached_analysis(db_path, "MSFT", shared_hash)
 
-    assert aapl_result == {"signal": "BUY", "reasoning": "Apple looks strong."}
-    assert msft_result == {"signal": "HOLD", "reasoning": "Microsoft is neutral."}
+    assert aapl_result == {"signal": "BUY", "reasoning": "Apple looks strong.", "confidence": None}
+    assert msft_result == {"signal": "HOLD", "reasoning": "Microsoft is neutral.", "confidence": None}
 
 
 def test_get_cached_analysis_wrong_hash_returns_none(db_path):

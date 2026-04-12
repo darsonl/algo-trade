@@ -26,7 +26,8 @@ def initialize_db(db_path: str) -> None:
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             expires_at TEXT NOT NULL DEFAULT (datetime('now', '+24 hours')),
             discord_message_id TEXT,
-            asset_type TEXT NOT NULL DEFAULT 'stock'
+            asset_type TEXT NOT NULL DEFAULT 'stock',
+            confidence TEXT
         );
 
         CREATE TABLE IF NOT EXISTS trades (
@@ -47,6 +48,7 @@ def initialize_db(db_path: str) -> None:
             headline_hash TEXT NOT NULL,
             signal        TEXT NOT NULL,
             reasoning     TEXT NOT NULL,
+            confidence    TEXT,
             created_at    TEXT NOT NULL DEFAULT (datetime('now')),
             UNIQUE(ticker, headline_hash)
         );
@@ -96,6 +98,16 @@ def initialize_db(db_path: str) -> None:
         conn.execute(
             "ALTER TABLE recommendations ADD COLUMN asset_type TEXT DEFAULT 'stock'"
         )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    try:
+        conn.execute("ALTER TABLE recommendations ADD COLUMN confidence TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    try:
+        conn.execute("ALTER TABLE analyst_cache ADD COLUMN confidence TEXT")
         conn.commit()
     except sqlite3.OperationalError:
         pass  # Column already exists

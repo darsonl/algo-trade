@@ -327,3 +327,62 @@ def test_create_recommendation_default_asset_type():
     )
     rec = get_recommendation(DB_PATH, rec_id)
     assert rec["asset_type"] == "stock"
+
+
+# --- Confidence column tests (Phase 11) ---
+
+def test_create_recommendation_with_confidence():
+    """create_recommendation with confidence='high' stores the value in the DB."""
+    rec_id = create_recommendation(
+        db_path=DB_PATH,
+        ticker="AAPL",
+        signal="BUY",
+        reasoning="Strong trend.",
+        price=175.0,
+        dividend_yield=0.005,
+        pe_ratio=28.0,
+        confidence="high",
+    )
+    rec = get_recommendation(DB_PATH, rec_id)
+    assert rec["confidence"] == "high"
+
+
+def test_create_recommendation_without_confidence():
+    """create_recommendation without confidence stores NULL."""
+    rec_id = create_recommendation(
+        db_path=DB_PATH,
+        ticker="MSFT",
+        signal="BUY",
+        reasoning="Good growth.",
+        price=400.0,
+        dividend_yield=0.007,
+        pe_ratio=32.0,
+    )
+    rec = get_recommendation(DB_PATH, rec_id)
+    assert rec["confidence"] is None
+
+
+def test_cache_round_trip_with_confidence():
+    """set_cached_analysis with confidence='medium' round-trips through get_cached_analysis."""
+    from database.queries import set_cached_analysis, get_cached_analysis
+    set_cached_analysis(DB_PATH, "GOOG", "hash123", "BUY", "Strong cloud growth.", confidence="medium")
+    result = get_cached_analysis(DB_PATH, "GOOG", "hash123")
+    assert result is not None
+    assert result["signal"] == "BUY"
+    assert result["reasoning"] == "Strong cloud growth."
+    assert result["confidence"] == "medium"
+
+
+def test_cache_round_trip_without_confidence():
+    """set_cached_analysis without confidence stores NULL; get_cached_analysis returns confidence=None."""
+    from database.queries import set_cached_analysis, get_cached_analysis
+    set_cached_analysis(DB_PATH, "AMZN", "hash456", "HOLD", "Wait for earnings.")
+    result = get_cached_analysis(DB_PATH, "AMZN", "hash456")
+    assert result is not None
+    assert result["confidence"] is None
+
+
+def test_initialize_db_idempotent_confidence_migration():
+    """Calling initialize_db twice does not raise (ALTER TABLE is idempotent via try/except)."""
+    # First call is from the autouse fixture; call it again here
+    initialize_db(DB_PATH)  # Should not raise

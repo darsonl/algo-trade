@@ -12,14 +12,15 @@ def create_recommendation(
     pe_ratio: float | None,
     earnings_growth: float | None = None,
     asset_type: str = "stock",
+    confidence: str | None = None,
 ) -> int:
     """Insert a new recommendation row and return its auto-assigned id."""
     conn = get_connection(db_path)
     cursor = conn.execute(
         """INSERT INTO recommendations
-               (ticker, signal, reasoning, price, dividend_yield, pe_ratio, earnings_growth, asset_type)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (ticker, signal, reasoning, price, dividend_yield, pe_ratio, earnings_growth, asset_type),
+               (ticker, signal, reasoning, price, dividend_yield, pe_ratio, earnings_growth, asset_type, confidence)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (ticker, signal, reasoning, price, dividend_yield, pe_ratio, earnings_growth, asset_type, confidence),
     )
     conn.commit()
     rec_id = cursor.lastrowid
@@ -116,27 +117,28 @@ def expire_stale_recommendations(db_path: str) -> None:
 
 
 def get_cached_analysis(db_path: str, ticker: str, headline_hash: str) -> dict | None:
-    """Return {signal, reasoning} if a cached result exists for (ticker, headline_hash), else None."""
+    """Return {signal, reasoning, confidence} if a cached result exists for (ticker, headline_hash), else None."""
     conn = get_connection(db_path)
     row = conn.execute(
-        "SELECT signal, reasoning FROM analyst_cache WHERE ticker = ? AND headline_hash = ?",
+        "SELECT signal, reasoning, confidence FROM analyst_cache WHERE ticker = ? AND headline_hash = ?",
         (ticker, headline_hash),
     ).fetchone()
     conn.close()
     if row is None:
         return None
-    return {"signal": row["signal"], "reasoning": row["reasoning"]}
+    return {"signal": row["signal"], "reasoning": row["reasoning"], "confidence": row["confidence"]}
 
 
 def set_cached_analysis(
-    db_path: str, ticker: str, headline_hash: str, signal: str, reasoning: str
+    db_path: str, ticker: str, headline_hash: str, signal: str, reasoning: str,
+    confidence: str | None = None,
 ) -> None:
     """Upsert an analyst result keyed by (ticker, headline_hash)."""
     conn = get_connection(db_path)
     conn.execute(
-        """INSERT OR REPLACE INTO analyst_cache (ticker, headline_hash, signal, reasoning)
-           VALUES (?, ?, ?, ?)""",
-        (ticker, headline_hash, signal, reasoning),
+        """INSERT OR REPLACE INTO analyst_cache (ticker, headline_hash, signal, reasoning, confidence)
+           VALUES (?, ?, ?, ?, ?)""",
+        (ticker, headline_hash, signal, reasoning, confidence),
     )
     conn.commit()
     conn.close()
