@@ -19,7 +19,7 @@ Finish ETF polish, enrich Claude signals with sector/macro context and confidenc
 - [ ] **SIG-01**: Claude BUY/SELL prompt includes the ticker's sector (e.g. "Technology") so Claude can factor sector context into its reasoning
 - [ ] **SIG-02**: Claude BUY/SELL/ETF prompt includes SPY 1-month trend direction and current VIX level so Claude can factor macro conditions into its reasoning
 - [ ] **SIG-03**: Claude BUY/SELL prompt includes the ticker's current price position within its 52-week range (e.g. "near 52-week high") so Claude can assess momentum context
-- [ ] **SIG-04**: Claude outputs a confidence level (high/medium/low) alongside the BUY/SELL/HOLD signal; confidence is displayed as a badge in the Discord embed (no behavioral change; badge omitted if confidence is absent)
+- [x] **SIG-04**: Claude outputs a confidence level (high/medium/low) alongside the BUY/SELL/HOLD signal; confidence is displayed as a badge in the Discord embed (no behavioral change; badge omitted if confidence is absent)
 
 ### Portfolio Analytics
 
@@ -64,7 +64,7 @@ Finish ETF polish, enrich Claude signals with sector/macro context and confidenc
 | SIG-01  | Phase 10 | Pending |
 | SIG-02  | Phase 10 | Pending |
 | SIG-03  | Phase 10 | Pending |
-| SIG-04  | Phase 11 | Pending |
+| SIG-04  | Phase 11 | Complete |
 | PORT-01 | Phase 13 | Pending |
 | PORT-02 | Phase 13 | Pending |
 | OPS-01  | Phase 9  | Pending |

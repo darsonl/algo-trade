@@ -81,7 +81,7 @@ Plans:
 1. A Discord recommendation embed displays a confidence badge (e.g. "Confidence: High") when Claude returns a confidence level alongside the signal.
 2. When Claude omits a confidence level, the embed posts without a badge and no error is raised — the badge is optional, not required.
 3. The confidence level is persisted to the database so it is available for future queries without re-calling Claude.
-**Plans:** 1 plan
+**Plans:** 1/2 plans executed
 Plans:
 - [ ] 09-01-PLAN.md — Error posting + ETF prefix + tests
 
@@ -129,7 +129,7 @@ Plans:
 | 8. Asyncio Event Loop Fix | v1.1 | 1/1 | Complete | 2026-04-09 |
 | 9. Ops Hardening | v1.2 | 0/1 | In progress | - |
 | 10. Prompt Signal Enrichment | v1.2 | 2/2 | Complete   | 2026-04-12 |
-| 11. Confidence Scoring | v1.2 | 0/? | Not started | - |
+| 11. Confidence Scoring | v1.2 | 1/2 | In Progress|  |
 | 12. ETF Polish | v1.2 | 0/? | Not started | - |
 | 13. Portfolio Analytics | v1.2 | 0/? | Not started | - |
 
