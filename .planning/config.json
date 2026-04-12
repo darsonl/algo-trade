@@ -6,5 +6,8 @@
   "tdd_enabled": true,
   "git_integration": true,
   "atomic_commits": true,
-  "verification_required": true
+  "verification_required": true,
+  "workflow": {
+    "_auto_chain_active": false
+  }
 }
