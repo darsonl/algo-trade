@@ -403,3 +403,58 @@ def test_build_etf_prompt_backward_compat_no_macro_context_arg():
     prompt = build_etf_prompt("SPY", [], rsi=60.0)
     assert "SPY" in prompt
     assert "SIGNAL:" in prompt
+
+
+# --- Confidence scoring tests (Phase 11) ---
+
+def test_parse_confidence_high():
+    text = "SIGNAL: BUY\nREASONING: Strong fundamentals.\nCONFIDENCE: high"
+    result = parse_claude_response(text)
+    assert result["confidence"] == "high"
+
+
+def test_parse_confidence_medium():
+    text = "SIGNAL: BUY\nREASONING: Mixed signals.\nCONFIDENCE: medium"
+    result = parse_claude_response(text)
+    assert result["confidence"] == "medium"
+
+
+def test_parse_confidence_low():
+    text = "SIGNAL: HOLD\nREASONING: Uncertain outlook.\nCONFIDENCE: low"
+    result = parse_claude_response(text)
+    assert result["confidence"] == "low"
+
+
+def test_parse_confidence_missing():
+    text = "SIGNAL: BUY\nREASONING: Good stock."
+    result = parse_claude_response(text)
+    assert result["confidence"] is None
+
+
+def test_parse_confidence_invalid_value():
+    text = "SIGNAL: BUY\nREASONING: Good stock.\nCONFIDENCE: maybe"
+    result = parse_claude_response(text)
+    assert result["confidence"] is None
+
+
+def test_parse_confidence_case_insensitive():
+    text = "SIGNAL: BUY\nREASONING: Good stock.\nCONFIDENCE:  High "
+    result = parse_claude_response(text)
+    assert result["confidence"] == "high"
+
+
+def test_parse_confidence_does_not_leak_into_reasoning():
+    text = "SIGNAL: BUY\nREASONING: Good stock.\nCONFIDENCE: high"
+    result = parse_claude_response(text)
+    assert result["reasoning"] == "Good stock."
+    assert "high" not in result["reasoning"]
+
+
+def test_build_prompt_includes_confidence_format():
+    prompt = build_prompt("AAPL", {}, [])
+    assert "CONFIDENCE: <high|medium|low>" in prompt
+
+
+def test_build_etf_prompt_includes_confidence_format():
+    prompt = build_etf_prompt("SPY", [], rsi=60.0)
+    assert "CONFIDENCE: <high|medium|low>" in prompt

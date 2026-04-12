@@ -106,3 +106,13 @@ def test_build_sell_prompt_macro_context_with_none_info_uses_na():
     )
     assert "Market Context:" in prompt
     assert "Sector: N/A" in prompt
+
+
+# --- Confidence scoring tests (Phase 11) ---
+
+def test_build_sell_prompt_includes_confidence_format():
+    """build_sell_prompt output contains CONFIDENCE: <high|medium|low> in format instruction."""
+    prompt = build_sell_prompt(
+        "AAPL", 150.0, 170.0, 0.133, 30, 72.5, ["Headline"],
+    )
+    assert "CONFIDENCE: <high|medium|low>" in prompt

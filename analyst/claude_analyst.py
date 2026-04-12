@@ -51,6 +51,7 @@ _retry = retry(
 )
 
 _VALID_SIGNALS = {"BUY", "HOLD", "SKIP", "SELL"}
+_VALID_CONFIDENCE = {"high", "medium", "low"}
 
 _OPENAI_BASE_URLS: dict[str, str] = {
     "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/",
@@ -113,7 +114,7 @@ def build_prompt(ticker: str, info: dict, headlines: list[str], macro_context: d
 
     market_block = "Market Context:\n" + "\n".join(market_lines)
 
-    return f"""You are a stock analyst. Analyze the following stock and return exactly two lines.
+    return f"""You are a stock analyst. Analyze the following stock and return exactly three lines.
 
 Ticker: {ticker}
 
@@ -129,7 +130,8 @@ Recent news headlines:
 
 Respond with exactly this format (no extra text):
 SIGNAL: <BUY|HOLD|SKIP>
-REASONING: <2-3 sentences explaining your decision>"""
+REASONING: <2-3 sentences explaining your decision>
+CONFIDENCE: <high|medium|low>"""
 
 
 def build_etf_prompt(
@@ -171,7 +173,7 @@ def build_etf_prompt(
         if etf_market_lines:
             etf_market_block = "\nMarket Context:\n" + "\n".join(etf_market_lines) + "\n"
 
-    return f"""You are an ETF analyst. Analyze the following ETF and return exactly two lines.
+    return f"""You are an ETF analyst. Analyze the following ETF and return exactly three lines.
 
 Ticker: {ticker}
 
@@ -189,7 +191,8 @@ Recent news headlines:
 
 Respond with exactly this format (no extra text):
 SIGNAL: <BUY|HOLD|SKIP>
-REASONING: <2-3 sentences explaining your decision>"""
+REASONING: <2-3 sentences explaining your decision>
+CONFIDENCE: <high|medium|low>"""
 
 
 def parse_claude_response(text: str) -> dict:
@@ -213,11 +216,22 @@ def parse_claude_response(text: str) -> dict:
     if signal not in _VALID_SIGNALS:
         raise ValueError(f"Invalid signal '{signal}': must be one of {_VALID_SIGNALS}")
 
+    confidence_idx = next(
+        (i for i, l in enumerate(lines) if l.strip().startswith("CONFIDENCE:")), None
+    )
+    end_idx = confidence_idx if confidence_idx is not None else len(lines)
+
     first_reasoning_line = lines[reasoning_start].split(":", 1)[1].strip()
-    extra_lines = [l.strip() for l in lines[reasoning_start + 1:] if l.strip()]
+    extra_lines = [l.strip() for l in lines[reasoning_start + 1:end_idx] if l.strip()]
     reasoning = " ".join([first_reasoning_line] + extra_lines).strip()
 
-    return {"signal": signal, "reasoning": reasoning}
+    confidence = None
+    if confidence_idx is not None:
+        raw_confidence = lines[confidence_idx].split(":", 1)[1].strip().lower()
+        if raw_confidence in _VALID_CONFIDENCE:
+            confidence = raw_confidence
+
+    return {"signal": signal, "reasoning": reasoning, "confidence": confidence}
 
 
 @_retry
@@ -378,7 +392,7 @@ def build_sell_prompt(
 
         sell_market_block = "\nMarket Context:\n" + "\n".join(market_lines) + "\n"
 
-    return f"""You are a stock analyst. Evaluate whether to SELL or HOLD the following position. Return exactly two lines.
+    return f"""You are a stock analyst. Evaluate whether to SELL or HOLD the following position. Return exactly three lines.
 
 Ticker: {ticker}
 
@@ -396,7 +410,8 @@ Recent news headlines:
 
 Respond with exactly this format (no extra text):
 SIGNAL: <SELL|HOLD>
-REASONING: <2-3 sentences explaining your decision>"""
+REASONING: <2-3 sentences explaining your decision>
+CONFIDENCE: <high|medium|low>"""
 
 
 def analyze_sell_ticker(
