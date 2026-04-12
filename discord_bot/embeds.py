@@ -15,6 +15,7 @@ def build_recommendation_embed(
     price: float,
     dividend_yield: float | None,
     pe_ratio: float | None,
+    confidence: str | None = None,
 ) -> discord.Embed:
     """Build a Discord embed for a BUY/HOLD/SKIP recommendation with price and fundamental fields."""
     if signal not in _SIGNAL_COLORS:
@@ -36,6 +37,8 @@ def build_recommendation_embed(
         value=f"{pe_ratio:.1f}" if pe_ratio is not None else "N/A",
         inline=True,
     )
+    if confidence is not None:
+        embed.add_field(name="Confidence", value=confidence.capitalize(), inline=True)
     return embed
 
 
@@ -47,6 +50,7 @@ def build_etf_recommendation_embed(
     rsi: float | None,
     ma50: float | None,
     expense_ratio: float | None,
+    confidence: str | None = None,
 ) -> discord.Embed:
     """Build a Discord embed for an ETF BUY/HOLD/SKIP recommendation with technical and expense ratio fields (per ETF-04)."""
     if signal not in _SIGNAL_COLORS:
@@ -77,6 +81,8 @@ def build_etf_recommendation_embed(
         value=f"{expense_ratio:.4f}" if expense_ratio is not None else "N/A",
         inline=True,
     )
+    if confidence is not None:
+        embed.add_field(name="Confidence", value=confidence.capitalize(), inline=True)
     return embed
 
 
@@ -88,6 +94,7 @@ def build_sell_embed(
     pnl_pct: float,
     shares: float,
     rsi: float,
+    confidence: str | None = None,
 ) -> discord.Embed:
     """Build a Discord embed for a SELL recommendation with position P&L context."""
     embed = discord.Embed(
@@ -100,6 +107,8 @@ def build_sell_embed(
     embed.add_field(name="P&L", value=f"{pnl_pct:+.1%}", inline=True)
     embed.add_field(name="Shares", value=f"{shares}", inline=True)
     embed.add_field(name="RSI", value=f"{rsi:.1f}", inline=True)
+    if confidence is not None:
+        embed.add_field(name="Confidence", value=confidence.capitalize(), inline=True)
     return embed
 
 

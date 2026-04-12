@@ -214,10 +214,11 @@ class TradingBot(discord.Client):
         price: float,
         dividend_yield: float | None,
         pe_ratio: float | None,
+        confidence: str | None = None,
     ) -> str:
         """Fetch the configured channel, post a recommendation embed with Approve/Reject buttons, and return the message id as a string."""
         channel = await self.fetch_channel(self.config.discord_channel_id)
-        embed = build_recommendation_embed(ticker, signal, reasoning, price, dividend_yield, pe_ratio)
+        embed = build_recommendation_embed(ticker, signal, reasoning, price, dividend_yield, pe_ratio, confidence=confidence)
         view = ApproveRejectView(rec_id, ticker, price, self.config)
         msg = await _send_message(channel, embed, view)
         return str(msg.id)
@@ -232,10 +233,11 @@ class TradingBot(discord.Client):
         pnl_pct: float,
         shares: float,
         rsi: float,
+        confidence: str | None = None,
     ) -> str:
         """Post a sell recommendation embed with Approve/Reject buttons and return the message id."""
         channel = await self.fetch_channel(self.config.discord_channel_id)
-        embed = build_sell_embed(ticker, reasoning, entry_price, current_price, pnl_pct, shares, rsi)
+        embed = build_sell_embed(ticker, reasoning, entry_price, current_price, pnl_pct, shares, rsi, confidence=confidence)
         view = SellApproveRejectView(rec_id, ticker, shares, current_price, self.config)
         msg = await _send_message(channel, embed, view)
         return str(msg.id)
@@ -250,10 +252,11 @@ class TradingBot(discord.Client):
         rsi: float | None,
         ma50: float | None,
         expense_ratio: float | None,
+        confidence: str | None = None,
     ) -> str:
         """Post an ETF recommendation embed with Approve/Reject buttons and return the message id."""
         channel = await self.fetch_channel(self.config.discord_channel_id)
-        embed = build_etf_recommendation_embed(ticker, signal, reasoning, price, rsi, ma50, expense_ratio)
+        embed = build_etf_recommendation_embed(ticker, signal, reasoning, price, rsi, ma50, expense_ratio, confidence=confidence)
         view = ApproveRejectView(rec_id, ticker, price or 0.0, self.config)
         msg = await _send_message(channel, embed, view)
         return str(msg.id)
