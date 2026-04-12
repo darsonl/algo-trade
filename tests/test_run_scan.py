@@ -1,5 +1,5 @@
 import pytest
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 from unittest.mock import AsyncMock, MagicMock, patch
 from config import Config
 from main import run_scan, run_scan_etf
@@ -35,33 +35,39 @@ def _full_patch(
         "volume": 1_200_000, "avg_volume": 1_000_000,
     }
 
-    with patch("main.get_top_sp500_by_fundamentals", return_value=[]), \
-         patch("main.get_universe", return_value=list(universe)), \
-         patch("main.queries.expire_stale_recommendations"), \
-         patch("main.queries.ticker_recommended_today", return_value=recommended_today) as m_today, \
-         patch("main.queries.has_open_position", return_value=False) as m_open_pos, \
-         patch("main.queries.get_open_positions", return_value=[]), \
-         patch("main.yf.Ticker"), \
-         patch("main.create_analyst_client", return_value=MagicMock()), \
-         patch("main.fetch_fundamental_info", return_value=fund_info) as m_fund, \
-         patch("main.passes_fundamental_filter", return_value=fundamental_pass), \
-         patch("main.fetch_news_headlines", return_value=["headline A"]), \
-         patch("main.queries.get_cached_analysis", return_value=None), \
-         patch("main.queries.get_analyst_call_count_today", return_value=0), \
-         patch("main.queries.increment_analyst_call_count"), \
-         patch("main.analyze_ticker", return_value=analysis) as m_analyze, \
-         patch("main.queries.set_cached_analysis"), \
-         patch("main.fetch_technical_data", return_value=tech_data), \
-         patch("main.passes_technical_filter", return_value=technical_pass), \
-         patch("main.queries.create_recommendation", return_value=rec_id) as m_create_rec, \
-         patch("main.queries.set_discord_message_id") as m_set_msg:
+    patches = [
+        patch("main.get_top_sp500_by_fundamentals", return_value=[]),
+        patch("main.get_universe", return_value=list(universe)),
+        patch("main.queries.expire_stale_recommendations"),
+        patch("main.queries.ticker_recommended_today", return_value=recommended_today),
+        patch("main.queries.has_open_position", return_value=False),
+        patch("main.queries.get_open_positions", return_value=[]),
+        patch("main.yf.Ticker"),
+        patch("main.create_analyst_client", return_value=MagicMock()),
+        patch("main.fetch_macro_context", return_value={"spy_trend": "Bullish (+1.0%)", "vix_level": "18.0 (Low volatility)"}),
+        patch("main.fetch_fundamental_info", return_value=fund_info),
+        patch("main.passes_fundamental_filter", return_value=fundamental_pass),
+        patch("main.fetch_news_headlines", return_value=["headline A"]),
+        patch("main.queries.get_cached_analysis", return_value=None),
+        patch("main.queries.get_analyst_call_count_today", return_value=0),
+        patch("main.queries.increment_analyst_call_count"),
+        patch("main.analyze_ticker", return_value=analysis),
+        patch("main.queries.set_cached_analysis"),
+        patch("main.fetch_technical_data", return_value=tech_data),
+        patch("main.passes_technical_filter", return_value=technical_pass),
+        patch("main.queries.create_recommendation", return_value=rec_id),
+        patch("main.queries.set_discord_message_id"),
+    ]
+
+    with ExitStack() as stack:
+        mocks = [stack.enter_context(p) for p in patches]
         yield {
-            "fetch_fundamental_info": m_fund,
-            "analyze_ticker": m_analyze,
-            "create_recommendation": m_create_rec,
-            "set_discord_message_id": m_set_msg,
-            "ticker_recommended_today": m_today,
-            "has_open_position": m_open_pos,
+            "fetch_fundamental_info": mocks[9],
+            "analyze_ticker": mocks[15],
+            "create_recommendation": mocks[19],
+            "set_discord_message_id": mocks[20],
+            "ticker_recommended_today": mocks[3],
+            "has_open_position": mocks[4],
         }
 
 
@@ -212,6 +218,7 @@ async def test_run_scan_excludes_etfs_from_stock_universe():
         patch("main.yf.Ticker"),
         patch("main.create_analyst_client", return_value=MagicMock()),
         patch("main.create_fallback_client", return_value=None),
+        patch("main.fetch_macro_context", return_value={"spy_trend": "Bullish (+1.0%)", "vix_level": "18.0 (Low volatility)"}),
         patch("main.fetch_fundamental_info", return_value=fund_info),
         patch("main.passes_fundamental_filter", return_value=True),
         patch("main.fetch_news_headlines", return_value=["headline A"]),
@@ -229,7 +236,7 @@ async def test_run_scan_excludes_etfs_from_stock_universe():
     with ExitStack() as stack:
         mocks = [stack.enter_context(p) for p in patches]
         m_partition = mocks[2]
-        m_analyze = mocks[16]
+        m_analyze = mocks[17]
         await run_scan(bot, config)
 
     # partition_watchlist was called (the ETF filtering step ran)
@@ -239,3 +246,42 @@ async def test_run_scan_excludes_etfs_from_stock_universe():
     assert m_analyze.call_count == 1
     called_ticker = m_analyze.call_args[0][0]
     assert called_ticker == "AAPL", f"Expected analyze_ticker called for AAPL, got {called_ticker!r}"
+
+
+# --- Macro context wiring tests ---
+
+@pytest.mark.asyncio
+async def test_run_scan_macro_fetch_failure_scan_continues():
+    """fetch_macro_context raises Exception — scan completes without macro (D-06)."""
+    bot = _make_bot()
+    config = _make_config()
+    with _full_patch() as mocks:
+        with patch("main.fetch_macro_context", side_effect=Exception("network error")):
+            await run_scan(bot, config)
+    # Scan still posts recommendation despite macro failure
+    bot.send_recommendation.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_run_scan_passes_macro_to_analyze_ticker():
+    """analyze_ticker is called with macro_context kwarg containing the fetched macro data."""
+    bot = _make_bot()
+    config = _make_config()
+    expected_macro = {"spy_trend": "Bullish (+1.0%)", "vix_level": "18.0 (Low volatility)"}
+    with _full_patch() as mocks:
+        await run_scan(bot, config)
+    call_kwargs = mocks["analyze_ticker"].call_args[1]
+    assert call_kwargs.get("macro_context") == expected_macro
+
+
+@pytest.mark.asyncio
+async def test_run_scan_passes_none_macro_to_analyze_ticker_on_fetch_failure():
+    """When macro fetch fails, analyze_ticker receives macro_context with None values."""
+    bot = _make_bot()
+    config = _make_config()
+    with _full_patch() as mocks:
+        with patch("main.fetch_macro_context", side_effect=Exception("timeout")):
+            await run_scan(bot, config)
+    call_kwargs = mocks["analyze_ticker"].call_args[1]
+    macro = call_kwargs.get("macro_context")
+    assert macro == {"spy_trend": None, "vix_level": None}

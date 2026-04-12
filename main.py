@@ -19,6 +19,7 @@ from screener.fundamentals import passes_fundamental_filter, fetch_fundamental_i
 from screener.technicals import passes_technical_filter, fetch_technical_data
 from analyst.news import fetch_news_headlines
 from analyst.claude_analyst import analyze_ticker, create_analyst_client, create_fallback_client, analyze_sell_ticker, analyze_etf_ticker
+from screener.macro import fetch_macro_context
 from screener.exit_signals import check_exit_signals
 from discord_bot.bot import TradingBot
 
@@ -73,6 +74,13 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
         logger.warning("partition_watchlist failed: %s — using full universe", exc)
     logger.info("Universe: %d tickers", len(universe))
 
+    # Fetch macro context once for all tickers (D-02)
+    try:
+        macro_context = await asyncio.to_thread(fetch_macro_context)
+    except Exception as exc:
+        logger.warning("Macro context fetch failed: %s — continuing without macro", exc)
+        macro_context = {"spy_trend": None, "vix_level": None}
+
     client = create_analyst_client(config)
     fallback_client = create_fallback_client(config)
     recommendations_posted = 0
@@ -122,7 +130,7 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
                     continue
                 analysis = await asyncio.to_thread(
                     analyze_ticker, ticker, info, headlines, config,
-                    client, fallback_client
+                    client, fallback_client, macro_context=macro_context
                 )
                 queries.increment_analyst_call_count(
                     config.db_path, analysis["provider_used"]
@@ -208,6 +216,7 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
         try:
             yf_ticker = yf.Ticker(ticker)
             tech_data = await asyncio.to_thread(fetch_technical_data, yf_ticker)
+            sell_info = await asyncio.to_thread(fetch_fundamental_info, yf_ticker)
 
             # D-01 stage 1: RSI exit signal check
             if not check_exit_signals(tech_data, config):
@@ -252,6 +261,8 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
                 tech_data["rsi"], headlines, config, client, fallback_client,
                 macd_line=tech_data.get("macd_line"),
                 signal_line=tech_data.get("signal_line"),
+                macro_context=macro_context,
+                info=sell_info,
             )
             queries.increment_analyst_call_count(
                 config.db_path, analysis["provider_used"]
@@ -305,6 +316,13 @@ async def run_scan_etf(bot: TradingBot, config: Config) -> None:
     # D-08 / ASYNC-03: wrap partition_watchlist in asyncio.to_thread
     _stocks, etfs = await asyncio.to_thread(partition_watchlist, etf_tickers)  # P8-audit: already wrapped (Phase 7)
     logger.info("ETF universe: %d tickers", len(etfs))
+
+    # Fetch macro context once for all ETFs (D-02)
+    try:
+        macro_context = await asyncio.to_thread(fetch_macro_context)
+    except Exception as exc:
+        logger.warning("Macro context fetch failed: %s — continuing without macro", exc)
+        macro_context = {"spy_trend": None, "vix_level": None}
 
     client = create_analyst_client(config)
     fallback_client = create_fallback_client(config)
@@ -365,7 +383,8 @@ async def run_scan_etf(bot: TradingBot, config: Config) -> None:
 
                 analysis = await asyncio.to_thread(
                     analyze_etf_ticker, ticker, headlines, tech_data,
-                    expense_ratio, config, client, fallback_client
+                    expense_ratio, config, client, fallback_client,
+                    macro_context=macro_context
                 )
                 queries.increment_analyst_call_count(
                     config.db_path, analysis["provider_used"]

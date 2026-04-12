@@ -245,6 +245,7 @@ def analyze_ticker(
     config: Config,
     client=None,
     fallback_client=None,
+    macro_context: dict | None = None,
 ) -> dict:
     """
     Call the configured analyst provider to get a BUY/HOLD/SKIP signal.
@@ -255,7 +256,7 @@ def analyze_ticker(
         client = create_analyst_client(config)
 
     model = config.analyst_model or _DEFAULT_MODELS.get(config.analyst_provider, "")
-    prompt = build_prompt(ticker, info, headlines)
+    prompt = build_prompt(ticker, info, headlines, macro_context=macro_context)
 
     if config.analyst_call_delay_s > 0:
         time.sleep(config.analyst_call_delay_s)
@@ -289,6 +290,7 @@ def analyze_etf_ticker(
     config: Config,
     client=None,
     fallback_client=None,
+    macro_context: dict | None = None,
 ) -> dict:
     """Call the analyst for an ETF BUY/HOLD/SKIP signal (per D-01, D-03).
     Returns {"signal": str, "reasoning": str, "provider_used": str}.
@@ -307,6 +309,7 @@ def analyze_etf_ticker(
         expense_ratio=expense_ratio,
         price=tech_data.get("price"),
         ma50=tech_data.get("ma50"),
+        macro_context=macro_context,
     )
 
     if config.analyst_call_delay_s > 0:
@@ -409,6 +412,8 @@ def analyze_sell_ticker(
     fallback_client=None,
     macd_line: float | None = None,
     signal_line: float | None = None,
+    macro_context: dict | None = None,
+    info: dict | None = None,
 ) -> dict:
     """Call the analyst to get a SELL/HOLD signal for an open position.
 
@@ -422,6 +427,7 @@ def analyze_sell_ticker(
     prompt = build_sell_prompt(
         ticker, entry_price, current_price, pnl_pct, hold_days, rsi, headlines,
         macd_line=macd_line, signal_line=signal_line,
+        macro_context=macro_context, info=info,
     )
 
     if config.analyst_call_delay_s > 0:
