@@ -138,9 +138,9 @@ async def test_send_etf_recommendation_posts_embed_and_returns_message_id():
     # Channel fetched using the configured channel id
     bot.fetch_channel.assert_awaited_once_with(bot.config.discord_channel_id)
 
-    # Embed built with correct arguments
+    # Embed built with correct arguments (confidence=None when not provided)
     mock_build_embed.assert_called_once_with(
-        "SPY", "BUY", "Strong momentum.", 450.0, 65.0, 440.0, 0.0009
+        "SPY", "BUY", "Strong momentum.", 450.0, 65.0, 440.0, 0.0009, confidence=None
     )
 
     # _send_message called with the channel and embed

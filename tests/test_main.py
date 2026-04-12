@@ -299,3 +299,148 @@ async def test_run_scan_etf_zero_recs_sends_ops_alert():
                                                             bot.send_ops_alert.assert_called_once()
                                                             alert_msg = bot.send_ops_alert.call_args[0][0]
                                                             assert "ETF scan complete: 0" in alert_msg
+
+
+# ---------------------------------------------------------------------------
+# Confidence wiring tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_run_scan_passes_confidence_to_recommendation():
+    """run_scan passes confidence from analyze_ticker result to create_recommendation."""
+    from unittest.mock import AsyncMock, MagicMock, patch, call
+    from main import run_scan
+
+    bot = MagicMock()
+    bot.send_recommendation = AsyncMock(return_value="msg_1")
+    bot.send_ops_alert = AsyncMock()
+
+    config = Config()
+    config.db_path = ":memory:"
+
+    analysis_result = {
+        "signal": "BUY",
+        "reasoning": "Strong fundamentals.",
+        "provider_used": "gemini",
+        "confidence": "high",
+    }
+
+    with patch("main.get_top_sp500_by_fundamentals", return_value=[]):
+        with patch("main.get_universe", return_value=["AAPL"]):
+            with patch("main.partition_watchlist", return_value=(["AAPL"], [])):
+                with patch("main.queries.ticker_recommended_today", return_value=False):
+                    with patch("main.queries.has_open_position", return_value=False):
+                        with patch("main.queries.expire_stale_recommendations"):
+                            with patch("main.queries.get_open_positions", return_value=[]):
+                                with patch("main.yf.Ticker"):
+                                    with patch("main.fetch_fundamental_info", return_value={"trailingPE": 20.0, "dividendYield": 0.03, "earningsGrowth": 0.1}):
+                                        with patch("main.passes_fundamental_filter", return_value=True):
+                                            with patch("main.fetch_news_headlines", return_value=["headline A"]):
+                                                with patch("main.queries.get_cached_analysis", return_value=None):
+                                                    with patch("main.queries.get_analyst_call_count_today", return_value=0):
+                                                        with patch("main.queries.increment_analyst_call_count"):
+                                                            with patch("main.analyze_ticker", return_value=analysis_result):
+                                                                with patch("main.queries.set_cached_analysis") as mock_set_cache:
+                                                                    with patch("main.fetch_technical_data", return_value={"price": 150.0, "rsi": 60.0, "ma50": 140.0, "volume_ratio": 1.2}):
+                                                                        with patch("main.passes_technical_filter", return_value=True):
+                                                                            with patch("main.queries.create_recommendation", return_value=1) as mock_create_rec:
+                                                                                with patch("main.queries.set_discord_message_id"):
+                                                                                    await run_scan(bot, config)
+                                                                                    # create_recommendation called with confidence="high"
+                                                                                    assert mock_create_rec.called
+                                                                                    kwargs = mock_create_rec.call_args.kwargs
+                                                                                    assert kwargs.get("confidence") == "high"
+                                                                                    # send_recommendation called with confidence="high"
+                                                                                    assert bot.send_recommendation.called
+                                                                                    send_kwargs = bot.send_recommendation.call_args.kwargs
+                                                                                    assert send_kwargs.get("confidence") == "high"
+                                                                                    # set_cached_analysis called with confidence="high"
+                                                                                    assert mock_set_cache.called
+                                                                                    cache_kwargs = mock_set_cache.call_args.kwargs
+                                                                                    assert cache_kwargs.get("confidence") == "high"
+
+
+@pytest.mark.asyncio
+async def test_run_scan_passes_none_confidence_when_missing():
+    """run_scan passes confidence=None when analyze_ticker result has no confidence key."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from main import run_scan
+
+    bot = MagicMock()
+    bot.send_recommendation = AsyncMock(return_value="msg_1")
+    bot.send_ops_alert = AsyncMock()
+
+    config = Config()
+    config.db_path = ":memory:"
+
+    # analysis_result without confidence key (older path)
+    analysis_result = {
+        "signal": "BUY",
+        "reasoning": "Strong.",
+        "provider_used": "gemini",
+    }
+
+    with patch("main.get_top_sp500_by_fundamentals", return_value=[]):
+        with patch("main.get_universe", return_value=["MSFT"]):
+            with patch("main.partition_watchlist", return_value=(["MSFT"], [])):
+                with patch("main.queries.ticker_recommended_today", return_value=False):
+                    with patch("main.queries.has_open_position", return_value=False):
+                        with patch("main.queries.expire_stale_recommendations"):
+                            with patch("main.queries.get_open_positions", return_value=[]):
+                                with patch("main.yf.Ticker"):
+                                    with patch("main.fetch_fundamental_info", return_value={"trailingPE": 25.0, "dividendYield": 0.01, "earningsGrowth": 0.05}):
+                                        with patch("main.passes_fundamental_filter", return_value=True):
+                                            with patch("main.fetch_news_headlines", return_value=["headline X"]):
+                                                with patch("main.queries.get_cached_analysis", return_value=None):
+                                                    with patch("main.queries.get_analyst_call_count_today", return_value=0):
+                                                        with patch("main.queries.increment_analyst_call_count"):
+                                                            with patch("main.analyze_ticker", return_value=analysis_result):
+                                                                with patch("main.queries.set_cached_analysis"):
+                                                                    with patch("main.fetch_technical_data", return_value={"price": 300.0, "rsi": 58.0, "ma50": 290.0, "volume_ratio": 1.1}):
+                                                                        with patch("main.passes_technical_filter", return_value=True):
+                                                                            with patch("main.queries.create_recommendation", return_value=2) as mock_create_rec:
+                                                                                with patch("main.queries.set_discord_message_id"):
+                                                                                    await run_scan(bot, config)
+                                                                                    kwargs = mock_create_rec.call_args.kwargs
+                                                                                    assert kwargs.get("confidence") is None
+
+
+@pytest.mark.asyncio
+async def test_run_scan_etf_passes_confidence_to_recommendation():
+    """run_scan_etf passes confidence from analyze_etf_ticker result to create_recommendation."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from main import run_scan_etf
+
+    bot = _make_etf_bot()
+    config = _make_etf_config()
+
+    analysis_with_confidence = {
+        "signal": "BUY",
+        "reasoning": "Strong ETF trend.",
+        "provider_used": "gemini",
+        "confidence": "medium",
+    }
+
+    with patch("main.get_watchlist", return_value=["SPY"]):
+        with patch("main.partition_watchlist", return_value=([], ["SPY"])):
+            with patch("main.queries.expire_stale_recommendations"):
+                with patch("main.queries.ticker_recommended_today", return_value=False):
+                    with patch("main.queries.has_open_position", return_value=False):
+                        with patch("main.yf.Ticker", return_value=MagicMock()):
+                            with patch("main.fetch_technical_data", return_value=_ETF_TECH_DATA):
+                                with patch("main.fetch_fundamental_info", return_value={"netExpenseRatio": 0.0003}):
+                                    with patch("main.fetch_news_headlines", return_value=["headline1"]):
+                                        with patch("main.queries.get_cached_analysis", return_value=None):
+                                            with patch("main.queries.get_analyst_call_count_today", return_value=0):
+                                                with patch("main.queries.increment_analyst_call_count"):
+                                                    with patch("main.analyze_etf_ticker", return_value=analysis_with_confidence):
+                                                        with patch("main.queries.set_cached_analysis") as mock_set_cache:
+                                                            with patch("main.queries.create_recommendation", return_value=1) as mock_create_rec:
+                                                                with patch("main.queries.set_discord_message_id"):
+                                                                    await run_scan_etf(bot, config)
+                                                                    kwargs = mock_create_rec.call_args.kwargs
+                                                                    assert kwargs.get("confidence") == "medium"
+                                                                    send_kwargs = bot.send_etf_recommendation.call_args.kwargs
+                                                                    assert send_kwargs.get("confidence") == "medium"
+                                                                    cache_kwargs = mock_set_cache.call_args.kwargs
+                                                                    assert cache_kwargs.get("confidence") == "medium"

@@ -138,7 +138,8 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
                 try:
                     queries.set_cached_analysis(
                         config.db_path, ticker, headline_hash,
-                        analysis["signal"], analysis["reasoning"]
+                        analysis["signal"], analysis["reasoning"],
+                        confidence=analysis.get("confidence"),
                     )
                 except Exception as cache_exc:
                     logger.warning("Failed to write analyst cache for %s: %s", ticker, cache_exc)
@@ -159,6 +160,7 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
                 dividend_yield=div_yield,
                 pe_ratio=info.get("trailingPE"),
                 earnings_growth=info.get("earningsGrowth"),
+                confidence=analysis.get("confidence"),
             )
 
             message_id = await bot.send_recommendation(
@@ -169,6 +171,7 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
                 price=tech_data["price"],
                 dividend_yield=div_yield,
                 pe_ratio=info.get("trailingPE"),
+                confidence=analysis.get("confidence"),
             )
             queries.set_discord_message_id(config.db_path, rec_id, message_id)
             logger.info("Recommended %s", ticker)
@@ -281,6 +284,7 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
                 price=current_price,
                 dividend_yield=None,
                 pe_ratio=None,
+                confidence=analysis.get("confidence"),
             )
 
             message_id = await bot.send_sell_recommendation(
@@ -292,6 +296,7 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
                 pnl_pct=pnl_pct,
                 shares=pos["shares"],
                 rsi=tech_data["rsi"],
+                confidence=analysis.get("confidence"),
             )
             queries.set_discord_message_id(config.db_path, rec_id, message_id)
             logger.info("Sell recommendation posted for %s", ticker)
@@ -392,7 +397,8 @@ async def run_scan_etf(bot: TradingBot, config: Config) -> None:
                 try:
                     queries.set_cached_analysis(
                         config.db_path, ticker, headline_hash,
-                        analysis["signal"], analysis["reasoning"]
+                        analysis["signal"], analysis["reasoning"],
+                        confidence=analysis.get("confidence"),
                     )
                 except Exception as cache_exc:
                     logger.warning("Failed to write analyst cache for %s: %s", ticker, cache_exc)
@@ -410,6 +416,7 @@ async def run_scan_etf(bot: TradingBot, config: Config) -> None:
                 dividend_yield=None,
                 pe_ratio=None,
                 asset_type="etf",
+                confidence=analysis.get("confidence"),
             )
 
             message_id = await bot.send_etf_recommendation(
@@ -421,6 +428,7 @@ async def run_scan_etf(bot: TradingBot, config: Config) -> None:
                 rsi=tech_data.get("rsi"),
                 ma50=tech_data.get("ma50"),
                 expense_ratio=expense_ratio,
+                confidence=analysis.get("confidence"),
             )
             queries.set_discord_message_id(config.db_path, rec_id, message_id)
             logger.info("ETF recommended %s", ticker)
