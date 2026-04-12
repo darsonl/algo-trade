@@ -68,9 +68,10 @@ Plans:
 2. A BUY or SELL recommendation shows reasoning that references SPY trend direction or VIX level — confirming macro context reached Claude.
 3. A BUY or SELL recommendation shows reasoning that references whether the stock is near its 52-week high, low, or mid-range — confirming price-range context reached Claude.
 4. An ETF recommendation includes SPY trend and VIX context in Claude reasoning (ETF path receives macro enrichment; sector and 52-week range are stock-path only).
-**Plans:** 1 plan
+**Plans:** 2 plans
 Plans:
-- [ ] 09-01-PLAN.md — Error posting + ETF prefix + tests
+- [ ] 10-01-PLAN.md — Macro fetcher + prompt builder enrichment
+- [ ] 10-02-PLAN.md — Wire macro through scan pipeline
 
 ### Phase 11: Confidence Scoring
 **Goal:** Every Claude BUY/SELL/HOLD signal includes a confidence level (high/medium/low) that is displayed as a badge in the Discord embed; a missing confidence level does not break the embed or the scan.
@@ -127,7 +128,7 @@ Plans:
 | 7. ETF Scan Separation | v1.1 | 3/3 | Complete | 2026-04-07 |
 | 8. Asyncio Event Loop Fix | v1.1 | 1/1 | Complete | 2026-04-09 |
 | 9. Ops Hardening | v1.2 | 0/1 | In progress | - |
-| 10. Prompt Signal Enrichment | v1.2 | 0/? | Not started | - |
+| 10. Prompt Signal Enrichment | v1.2 | 0/2 | Planned | - |
 | 11. Confidence Scoring | v1.2 | 0/? | Not started | - |
 | 12. ETF Polish | v1.2 | 0/? | Not started | - |
 | 13. Portfolio Analytics | v1.2 | 0/? | Not started | - |
