@@ -39,7 +39,7 @@ See `.planning/milestones/v1.1-ROADMAP.md` for full phase details.
 
 - [ ] **Phase 9: Ops Hardening** — Scan errors surface to Discord; ETF alert is distinguishable from stock alert
 - [x] **Phase 10: Prompt Signal Enrichment** — Claude receives sector, macro, and price-range context in every analysis (completed 2026-04-12)
-- [ ] **Phase 11: Confidence Scoring** — Every Claude signal carries a confidence badge visible in Discord
+- [x] **Phase 11: Confidence Scoring** — Every Claude signal carries a confidence badge visible in Discord (completed 2026-04-12)
 - [ ] **Phase 12: ETF Polish** — ETF scan runs on its own schedule; high-cost ETFs are flagged in the embed
 - [ ] **Phase 13: Portfolio Analytics** — User can see aggregate P&L and closed-trade performance stats
 
@@ -81,7 +81,7 @@ Plans:
 1. A Discord recommendation embed displays a confidence badge (e.g. "Confidence: High") when Claude returns a confidence level alongside the signal.
 2. When Claude omits a confidence level, the embed posts without a badge and no error is raised — the badge is optional, not required.
 3. The confidence level is persisted to the database so it is available for future queries without re-calling Claude.
-**Plans:** 1/2 plans executed
+**Plans:** 2/2 plans complete
 Plans:
 - [ ] 09-01-PLAN.md — Error posting + ETF prefix + tests
 
@@ -129,7 +129,7 @@ Plans:
 | 8. Asyncio Event Loop Fix | v1.1 | 1/1 | Complete | 2026-04-09 |
 | 9. Ops Hardening | v1.2 | 0/1 | In progress | - |
 | 10. Prompt Signal Enrichment | v1.2 | 2/2 | Complete   | 2026-04-12 |
-| 11. Confidence Scoring | v1.2 | 1/2 | In Progress|  |
+| 11. Confidence Scoring | v1.2 | 2/2 | Complete   | 2026-04-12 |
 | 12. ETF Polish | v1.2 | 0/? | Not started | - |
 | 13. Portfolio Analytics | v1.2 | 0/? | Not started | - |
 

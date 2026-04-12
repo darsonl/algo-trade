@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Signal Quality & Portfolio Analytics
-status: executing
-last_updated: "2026-04-12T14:25:57.758Z"
+status: verifying
+last_updated: "2026-04-12T14:32:46.953Z"
 last_activity: 2026-04-12
 progress:
   total_phases: 5
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 5
-  completed_plans: 4
-  percent: 80
+  completed_plans: 5
+  percent: 100
 ---
 
 # Project State
@@ -24,9 +24,9 @@ See: .planning/PROJECT.md (updated 2026-04-12)
 
 ## Current Position
 
-Phase: 11 (confidence-scoring) — EXECUTING
-Plan: 2 of 2
-Status: Ready to execute
+Phase: 11 (confidence-scoring) — COMPLETE
+Plan: 2 of 2 (all plans complete)
+Status: Phase complete — confidence scoring fully wired through embeds and scan pipelines
 Last activity: 2026-04-12
 
 ---
@@ -54,7 +54,7 @@ Last activity: 2026-04-12
 | 8 | Asyncio Event Loop Fix | ✅ Complete (1/1 plan) |
 | 9 | Ops Hardening | ✅ Complete (1/1 plan) |
 | 10 | Prompt Signal Enrichment | ✅ Complete (2/2 plans) |
-| 11 | Confidence Scoring | 🔄 Not started |
+| 11 | Confidence Scoring | ✅ Complete (2/2 plans) |
 | 12 | ETF Polish | 🔄 Not started |
 | 13 | Portfolio Analytics | 🔄 Not started |
 
@@ -84,6 +84,14 @@ Location: .planning/codebase/
 - All 9 blocking yfinance calls wrapped in asyncio.to_thread — gateway heartbeat safe
 - Phase 10 complete: sector, SPY trend, VIX, 52-week range injected into all BUY/SELL/ETF prompts via screener/macro.py
 
+## Key Decisions (Phase 11)
+
+- `parse_claude_response` returns `confidence=None` for missing/invalid values, never raises — scan continues unaffected
+- `confidence_idx` used as `end_idx` in extra_lines slice to prevent confidence value leaking into reasoning text
+- `confidence` stored as lowercase string ('high'/'medium'/'low') or NULL — no default value in schema
+- `confidence.capitalize()` converts lowercase DB values to title-case at Discord render time
+- `analysis.get('confidence')` is the canonical safe access pattern throughout main.py — None propagates safely when key absent
+
 ## Next Action
 
-Run `/gsd-plan-phase 11` to plan Phase 11: Confidence Scoring.
+Run `/gsd-plan-phase 12` to plan Phase 12: ETF Polish.
