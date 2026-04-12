@@ -61,3 +61,48 @@ def test_parse_hold_signal_from_sell_analysis():
     result = parse_claude_response(text)
     assert result["signal"] == "HOLD"
     assert "momentum" in result["reasoning"]
+
+
+# --- build_sell_prompt macro_context enrichment ---
+
+def test_build_sell_prompt_with_macro_context_includes_market_context_block():
+    """build_sell_prompt with macro_context dict includes Market Context block."""
+    macro = {"spy_trend": "Bullish (+3.2%)", "vix_level": "18.4 (Low volatility)"}
+    info = {"sector": "Technology", "fiftyTwoWeekHigh": 200.0, "fiftyTwoWeekLow": 100.0}
+    prompt = build_sell_prompt(
+        "AAPL", 150.0, 180.0, 0.20, 30, 72.5, ["Headline"],
+        macro_context=macro, info=info,
+    )
+    assert "Market Context:" in prompt
+    assert "Sector: Technology" in prompt
+    assert "SPY trend: Bullish (+3.2%)" in prompt
+    assert "VIX: 18.4 (Low volatility)" in prompt
+    assert "52-week range:" in prompt
+
+
+def test_build_sell_prompt_without_macro_context_omits_spy_vix():
+    """build_sell_prompt with macro_context=None does NOT contain SPY trend or VIX."""
+    prompt = build_sell_prompt(
+        "AAPL", 150.0, 170.0, 0.133, 30, 72.5, [],
+        macro_context=None,
+    )
+    assert "SPY trend:" not in prompt
+    assert "VIX:" not in prompt
+
+
+def test_build_sell_prompt_backward_compat_no_macro_context_arg():
+    """build_sell_prompt without macro_context arg still works (backward compat)."""
+    prompt = build_sell_prompt("MSFT", 300.0, 350.0, 0.167, 15, 78.0, ["Headline"])
+    assert "MSFT" in prompt
+    assert "SIGNAL:" in prompt
+
+
+def test_build_sell_prompt_macro_context_with_none_info_uses_na():
+    """build_sell_prompt with macro_context but info=None shows Sector: N/A."""
+    macro = {"spy_trend": "Bullish (+3.2%)", "vix_level": "18.4 (Low volatility)"}
+    prompt = build_sell_prompt(
+        "AAPL", 150.0, 170.0, 0.133, 30, 72.5, [],
+        macro_context=macro, info=None,
+    )
+    assert "Market Context:" in prompt
+    assert "Sector: N/A" in prompt

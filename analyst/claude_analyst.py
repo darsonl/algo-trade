@@ -5,6 +5,7 @@ import anthropic
 import openai
 from config import Config
 from tenacity import retry, retry_if_exception, stop_after_attempt
+from screener.macro import compute_52w_position
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +88,7 @@ def create_fallback_client(config: Config):
     return openai.OpenAI(api_key=config.analyst_fallback_api_key, base_url=base_url)
 
 
-def build_prompt(ticker: str, info: dict, headlines: list[str]) -> str:
+def build_prompt(ticker: str, info: dict, headlines: list[str], macro_context: dict | None = None) -> str:
     """Build the analysis prompt for a single ticker."""
     pe = info.get("trailingPE", "N/A")
     div_yield = info.get("dividendYield", "N/A")
@@ -97,6 +98,21 @@ def build_prompt(ticker: str, info: dict, headlines: list[str]) -> str:
         "\n".join(f"- {h}" for h in headlines) if headlines else "- No recent headlines available."
     )
 
+    # Market Context block: Sector and 52w always present, SPY/VIX only when macro available
+    sector = info.get("sector") or "N/A"
+    price_for_52w = info.get("regularMarketPrice") or info.get("currentPrice") or info.get("previousClose")
+    pos_52w = compute_52w_position(price_for_52w, info.get("fiftyTwoWeekLow"), info.get("fiftyTwoWeekHigh"))
+
+    market_lines = [f"- Sector: {sector}"]
+    if macro_context is not None:
+        if macro_context.get("spy_trend"):
+            market_lines.append(f"- SPY trend: {macro_context['spy_trend']}")
+        if macro_context.get("vix_level"):
+            market_lines.append(f"- VIX: {macro_context['vix_level']}")
+    market_lines.append(f"- 52-week range: {pos_52w}")
+
+    market_block = "Market Context:\n" + "\n".join(market_lines)
+
     return f"""You are a stock analyst. Analyze the following stock and return exactly two lines.
 
 Ticker: {ticker}
@@ -105,6 +121,8 @@ Fundamentals:
 - Trailing P/E: {pe}
 - Dividend Yield: {div_yield}
 - Earnings Growth: {earnings_growth}
+
+{market_block}
 
 Recent news headlines:
 {headlines_block}
@@ -124,6 +142,7 @@ def build_etf_prompt(
     expense_ratio: float | None = None,
     price: float | None = None,
     ma50: float | None = None,
+    macro_context: dict | None = None,
 ) -> str:
     """Build the analysis prompt for an ETF ticker (per D-01, D-02, D-07)."""
     if expense_ratio is None:
@@ -141,6 +160,17 @@ def build_etf_prompt(
         "\n".join(f"- {h}" for h in headlines) if headlines else "- No recent headlines available."
     )
 
+    # Market Context block for ETF: SPY trend and VIX only (no Sector, no 52w range per D-10)
+    etf_market_block = ""
+    if macro_context is not None:
+        etf_market_lines = []
+        if macro_context.get("spy_trend"):
+            etf_market_lines.append(f"- SPY trend: {macro_context['spy_trend']}")
+        if macro_context.get("vix_level"):
+            etf_market_lines.append(f"- VIX: {macro_context['vix_level']}")
+        if etf_market_lines:
+            etf_market_block = "\nMarket Context:\n" + "\n".join(etf_market_lines) + "\n"
+
     return f"""You are an ETF analyst. Analyze the following ETF and return exactly two lines.
 
 Ticker: {ticker}
@@ -153,7 +183,7 @@ Technical Indicators:
 - Signal Line: {signal_line_str}
 - Histogram: {macd_histogram_str}
 - Expense Ratio: {expense_ratio_str}
-
+{etf_market_block}
 Recent news headlines:
 {headlines_block}
 
@@ -313,6 +343,8 @@ def build_sell_prompt(
     headlines: list[str],
     macd_line: float | None = None,
     signal_line: float | None = None,
+    macro_context: dict | None = None,
+    info: dict | None = None,
 ) -> str:
     """Build the sell analysis prompt for an open position (per D-07/D-10)."""
     headlines_block = (
@@ -326,6 +358,23 @@ def build_sell_prompt(
     else:
         macd_block = "- MACD: N/A (insufficient data)"
 
+    # Market Context block for sell prompt
+    sell_market_block = ""
+    if info is not None or macro_context is not None:
+        _info = info or {}
+        sector = _info.get("sector") or "N/A"
+        pos_52w = compute_52w_position(current_price, _info.get("fiftyTwoWeekLow"), _info.get("fiftyTwoWeekHigh"))
+
+        market_lines = [f"- Sector: {sector}"]
+        if macro_context is not None:
+            if macro_context.get("spy_trend"):
+                market_lines.append(f"- SPY trend: {macro_context['spy_trend']}")
+            if macro_context.get("vix_level"):
+                market_lines.append(f"- VIX: {macro_context['vix_level']}")
+        market_lines.append(f"- 52-week range: {pos_52w}")
+
+        sell_market_block = "\nMarket Context:\n" + "\n".join(market_lines) + "\n"
+
     return f"""You are a stock analyst. Evaluate whether to SELL or HOLD the following position. Return exactly two lines.
 
 Ticker: {ticker}
@@ -338,7 +387,7 @@ Position:
 - RSI: {rsi:.1f}
 - MACD Trend:
 {macd_block}
-
+{sell_market_block}
 Recent news headlines:
 {headlines_block}
 

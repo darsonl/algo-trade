@@ -295,3 +295,111 @@ def test_analyze_etf_ticker_uses_fallback_on_primary_failure():
     assert result["signal"] == "BUY"
     assert result["provider_used"] == "openai"
     assert call_count["n"] == 2, "Expected exactly two _call_api calls (primary fail + fallback)"
+
+
+# --- build_prompt macro_context enrichment ---
+
+def test_build_prompt_with_macro_context_includes_market_context_block():
+    """build_prompt with macro_context dict includes Market Context block with all 4 lines."""
+    info = {
+        "trailingPE": 28.5,
+        "dividendYield": 0.005,
+        "earningsGrowth": 0.12,
+        "sector": "Technology",
+        "fiftyTwoWeekHigh": 200.0,
+        "fiftyTwoWeekLow": 100.0,
+        "regularMarketPrice": 180.0,
+    }
+    macro = {"spy_trend": "Bullish (+3.2%)", "vix_level": "18.4 (Low volatility)"}
+    prompt = build_prompt("AAPL", info, ["Apple beats estimates"], macro_context=macro)
+    assert "Market Context:" in prompt
+    assert "Sector: Technology" in prompt
+    assert "SPY trend: Bullish (+3.2%)" in prompt
+    assert "VIX: 18.4 (Low volatility)" in prompt
+    assert "52-week range:" in prompt
+
+
+def test_build_prompt_without_macro_context_omits_spy_vix():
+    """build_prompt with macro_context=None does NOT contain SPY trend or VIX lines,
+    but DOES contain Sector and 52-week range (per D-11)."""
+    info = {
+        "sector": "Technology",
+        "fiftyTwoWeekHigh": 200.0,
+        "fiftyTwoWeekLow": 100.0,
+        "regularMarketPrice": 180.0,
+    }
+    prompt = build_prompt("AAPL", info, [], macro_context=None)
+    assert "SPY trend:" not in prompt
+    assert "VIX:" not in prompt
+    assert "Sector: Technology" in prompt
+    assert "52-week range:" in prompt
+
+
+def test_build_prompt_missing_sector_shows_na():
+    """build_prompt with info missing 'sector' key shows 'Sector: N/A'."""
+    info = {}
+    prompt = build_prompt("AAPL", info, [], macro_context=None)
+    assert "Sector: N/A" in prompt
+
+
+def test_build_prompt_missing_52w_shows_na():
+    """build_prompt with info missing fiftyTwoWeekHigh shows '52-week range: N/A'."""
+    info = {}
+    prompt = build_prompt("AAPL", info, [], macro_context=None)
+    assert "52-week range: N/A" in prompt
+
+
+def test_build_prompt_market_context_position():
+    """Market Context block appears AFTER Fundamentals: and BEFORE Recent news headlines:."""
+    info = {
+        "trailingPE": 24.5,
+        "sector": "Technology",
+        "regularMarketPrice": 150.0,
+        "fiftyTwoWeekHigh": 200.0,
+        "fiftyTwoWeekLow": 100.0,
+    }
+    macro = {"spy_trend": "Bullish (+3.2%)", "vix_level": "18.4 (Low volatility)"}
+    prompt = build_prompt("AAPL", info, ["Headline"], macro_context=macro)
+    fundamentals_pos = prompt.index("Fundamentals:")
+    market_pos = prompt.index("Market Context:")
+    news_pos = prompt.index("Recent news headlines:")
+    assert fundamentals_pos < market_pos < news_pos
+
+
+def test_build_prompt_backward_compat_no_macro_context_arg():
+    """build_prompt called without macro_context argument still works (backward compat)."""
+    prompt = build_prompt("AAPL", {}, ["headline"])
+    assert "AAPL" in prompt
+    assert "SIGNAL:" in prompt
+
+
+# --- build_etf_prompt macro_context enrichment ---
+
+def test_build_etf_prompt_with_macro_context_includes_spy_and_vix():
+    """build_etf_prompt with macro_context includes SPY trend and VIX in Market Context block."""
+    macro = {"spy_trend": "Bearish (-1.4%)", "vix_level": "25.0 (Elevated volatility)"}
+    prompt = build_etf_prompt("SPY", ["ETF news"], rsi=65.0, macro_context=macro)
+    assert "Market Context:" in prompt
+    assert "SPY trend: Bearish (-1.4%)" in prompt
+    assert "VIX: 25.0 (Elevated volatility)" in prompt
+
+
+def test_build_etf_prompt_with_macro_context_excludes_sector_and_52w():
+    """build_etf_prompt Market Context block does NOT include Sector or 52-week range (per D-10)."""
+    macro = {"spy_trend": "Bullish (+3.2%)", "vix_level": "18.4 (Low volatility)"}
+    prompt = build_etf_prompt("QQQ", [], macro_context=macro)
+    assert "Sector:" not in prompt
+    assert "52-week range:" not in prompt
+
+
+def test_build_etf_prompt_without_macro_context_omits_market_context():
+    """build_etf_prompt with macro_context=None does NOT include Market Context block."""
+    prompt = build_etf_prompt("QQQ", [], macro_context=None)
+    assert "Market Context:" not in prompt
+
+
+def test_build_etf_prompt_backward_compat_no_macro_context_arg():
+    """build_etf_prompt called without macro_context argument still works (backward compat)."""
+    prompt = build_etf_prompt("SPY", [], rsi=60.0)
+    assert "SPY" in prompt
+    assert "SIGNAL:" in prompt
