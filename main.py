@@ -76,6 +76,8 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
     client = create_analyst_client(config)
     fallback_client = create_fallback_client(config)
     recommendations_posted = 0
+    error_count = 0
+    errors_posted = 0
 
     for ticker in universe:
         if queries.ticker_recommended_today(config.db_path, ticker):
@@ -166,7 +168,15 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
 
         except Exception as exc:
             logger.error("Error processing %s: %s", ticker, exc)
+            error_count += 1
+            if errors_posted < 3:
+                await bot.send_ops_alert(f"[ERROR] {ticker}: {type(exc).__name__}")
+                errors_posted += 1
             continue
+
+    if error_count > 3:
+        overflow = error_count - 3
+        await bot.send_ops_alert(f"[{overflow} more errors not shown \u2014 check logs]")
 
     if recommendations_posted == 0:
         logger.warning("Scan complete: 0 recommendations posted.")
@@ -299,6 +309,8 @@ async def run_scan_etf(bot: TradingBot, config: Config) -> None:
     client = create_analyst_client(config)
     fallback_client = create_fallback_client(config)
     recommendations_posted = 0
+    error_count = 0
+    errors_posted = 0
 
     for ticker in etfs:
         if queries.ticker_recommended_today(config.db_path, ticker):
@@ -401,11 +413,19 @@ async def run_scan_etf(bot: TradingBot, config: Config) -> None:
             return
         except Exception as exc:
             logger.error("Error processing ETF %s: %s", ticker, exc)
+            error_count += 1
+            if errors_posted < 3:
+                await bot.send_ops_alert(f"[ERROR] {ticker}: {type(exc).__name__}")
+                errors_posted += 1
             continue
+
+    if error_count > 3:
+        overflow = error_count - 3
+        await bot.send_ops_alert(f"[{overflow} more errors not shown \u2014 check logs]")
 
     if recommendations_posted == 0:
         logger.warning("ETF scan complete: 0 recommendations posted.")
-        await bot.send_ops_alert("ETF scan complete: 0 recommendations posted.")
+        await bot.send_ops_alert("[ETF] ETF scan complete: 0 recommendations posted.")
     else:
         logger.info("ETF scan complete. %d recommendation(s) posted.", recommendations_posted)
 
