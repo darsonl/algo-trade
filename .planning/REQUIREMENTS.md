@@ -12,7 +12,7 @@ Finish ETF polish, enrich Claude signals with sector/macro context and confidenc
 
 - [x] **ETF-07**: User can configure a scheduled ETF scan that runs at a time offset from the stock scan (e.g. 9:30 AM) to avoid rate-limit contention
 - [ ] **ETF-08**: Ops zero-recommendation alert for ETF scan is prefixed with `[ETF]` to distinguish it from stock scan silence
-- [ ] **ETF-09**: ETFs with an expense ratio above a configurable threshold are flagged or skipped in the ETF embed
+- [x] **ETF-09**: ETFs with an expense ratio above a configurable threshold are flagged or skipped in the ETF embed
 
 ### Signal Enrichment
 
@@ -60,7 +60,7 @@ Finish ETF polish, enrich Claude signals with sector/macro context and confidenc
 |---------|-------|--------|
 | ETF-07  | Phase 12 | Complete |
 | ETF-08  | Phase 9  | Pending |
-| ETF-09  | Phase 12 | Pending |
+| ETF-09  | Phase 12 | Complete |
 | SIG-01  | Phase 10 | Pending |
 | SIG-02  | Phase 10 | Pending |
 | SIG-03  | Phase 10 | Pending |

@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Signal Quality & Portfolio Analytics
-status: executing
-last_updated: "2026-04-13T10:35:39.208Z"
+status: verifying
+last_updated: "2026-04-13T10:41:55.533Z"
 last_activity: 2026-04-13
 progress:
   total_phases: 5
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 7
-  completed_plans: 6
-  percent: 86
+  completed_plans: 7
+  percent: 100
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-12)
 
 Phase: 12 (etf-polish) — EXECUTING
 Plan: 2 of 2
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-04-13
 
 ---
@@ -55,7 +55,7 @@ Last activity: 2026-04-13
 | 9 | Ops Hardening | ✅ Complete (1/1 plan) |
 | 10 | Prompt Signal Enrichment | ✅ Complete (2/2 plans) |
 | 11 | Confidence Scoring | ✅ Complete (2/2 plans) |
-| 12 | ETF Polish | 🔄 In Progress (1/2 plans) |
+| 12 | ETF Polish | ✅ Complete (2/2 plans) |
 | 13 | Portfolio Analytics | 🔄 Not started |
 
 ---
@@ -99,6 +99,13 @@ Location: .planning/codebase/
 - ETF default 09:30 (30-min offset from stock 09:00) to avoid yfinance rate-limit contention
 - `ETF_SCAN_TIMES` multi-time support explicitly deferred (D-02)
 
+## Key Decisions (Phase 12 Plan 02)
+
+- Strict `>` comparison (not `>=`): at-threshold ETFs are acceptable cost, no flag per D-07
+- `etf_max_expense_ratio=None` default preserves backward-compat for all existing call sites
+- Display-only flag per D-05: no scan filtering or trade gating on expense ratio value
+- Warning emoji is hardcoded UTF-8 literal U+26A0 U+FE0F per D-06 — no user input reaches this field
+
 ## Next Action
 
-Execute Plan 02: ETF expense ratio flagging (ETF-09) — `/gsd-execute-phase 12`
+Phase 12 complete — verify with `/gsd-verify-work 12`, then plan Phase 13 (Portfolio Analytics) with `/gsd-plan-phase 13`

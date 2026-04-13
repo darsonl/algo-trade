@@ -40,7 +40,7 @@ See `.planning/milestones/v1.1-ROADMAP.md` for full phase details.
 - [ ] **Phase 9: Ops Hardening** — Scan errors surface to Discord; ETF alert is distinguishable from stock alert
 - [x] **Phase 10: Prompt Signal Enrichment** — Claude receives sector, macro, and price-range context in every analysis (completed 2026-04-12)
 - [x] **Phase 11: Confidence Scoring** — Every Claude signal carries a confidence badge visible in Discord (completed 2026-04-12)
-- [ ] **Phase 12: ETF Polish** — ETF scan runs on its own schedule; high-cost ETFs are flagged in the embed
+- [x] **Phase 12: ETF Polish** — ETF scan runs on its own schedule; high-cost ETFs are flagged in the embed (completed 2026-04-13)
 - [ ] **Phase 13: Portfolio Analytics** — User can see aggregate P&L and closed-trade performance stats
 
 ---
@@ -93,10 +93,10 @@ Plans:
 1. At bot startup, APScheduler registers an ETF scan job that fires at a different clock time than the stock scan job (e.g. 9:30 AM vs 9:00 AM) — confirmed in scheduler startup logs without any manual `/scan_etf` invocation.
 2. An ETF with an expense ratio above the configured threshold is visibly marked in its Discord embed (e.g. a field noting "High expense ratio") so the operator can factor cost before approving.
 3. Adjusting the ETF scan schedule does not affect the stock scan schedule — both jobs fire independently at their respective configured times.
-**Plans:** 1/2 plans executed
+**Plans:** 2/2 plans complete
 Plans:
 - [x] 12-01-PLAN.md — ETF scheduler config + second configure_scheduler call + tests
-- [ ] 12-02-PLAN.md — Expense ratio flag in ETF embed + config threshold + wiring
+- [x] 12-02-PLAN.md — Expense ratio flag in ETF embed + config threshold + wiring
 **UI hint**: yes
 
 ### Phase 13: Portfolio Analytics
@@ -131,7 +131,7 @@ Plans:
 | 9. Ops Hardening | v1.2 | 0/1 | In progress | - |
 | 10. Prompt Signal Enrichment | v1.2 | 2/2 | Complete   | 2026-04-12 |
 | 11. Confidence Scoring | v1.2 | 2/2 | Complete   | 2026-04-12 |
-| 12. ETF Polish | v1.2 | 1/2 | In Progress|  |
+| 12. ETF Polish | v1.2 | 2/2 | Complete   | 2026-04-13 |
 | 13. Portfolio Analytics | v1.2 | 0/? | Not started | - |
 
 ---
