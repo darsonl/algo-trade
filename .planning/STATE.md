@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Signal Quality & Portfolio Analytics
-status: verifying
-last_updated: "2026-04-12T14:32:46.953Z"
-last_activity: 2026-04-12
+status: executing
+last_updated: "2026-04-13T10:35:39.208Z"
+last_activity: 2026-04-13
 progress:
   total_phases: 5
   completed_phases: 3
-  total_plans: 5
-  completed_plans: 5
-  percent: 100
+  total_plans: 7
+  completed_plans: 6
+  percent: 86
 ---
 
 # Project State
@@ -20,14 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-12)
 
 **Core value:** The bot must never place a real order without explicit human approval via Discord.
-**Current focus:** Phase 11 — confidence-scoring
+**Current focus:** Phase 12 — etf-polish
 
 ## Current Position
 
-Phase: 11 (confidence-scoring) — COMPLETE
-Plan: 2 of 2 (all plans complete)
-Status: Phase complete — confidence scoring fully wired through embeds and scan pipelines
-Last activity: 2026-04-12
+Phase: 12 (etf-polish) — EXECUTING
+Plan: 2 of 2
+Status: Ready to execute
+Last activity: 2026-04-13
 
 ---
 
@@ -55,7 +55,7 @@ Last activity: 2026-04-12
 | 9 | Ops Hardening | ✅ Complete (1/1 plan) |
 | 10 | Prompt Signal Enrichment | ✅ Complete (2/2 plans) |
 | 11 | Confidence Scoring | ✅ Complete (2/2 plans) |
-| 12 | ETF Polish | 🔄 Not started |
+| 12 | ETF Polish | 🔄 In Progress (1/2 plans) |
 | 13 | Portfolio Analytics | 🔄 Not started |
 
 ---
@@ -92,6 +92,13 @@ Location: .planning/codebase/
 - `confidence.capitalize()` converts lowercase DB values to title-case at Discord render time
 - `analysis.get('confidence')` is the canonical safe access pattern throughout main.py — None propagates safely when key absent
 
+## Key Decisions (Phase 12 Plan 01)
+
+- `configure_scheduler` reused for ETF job via `times` + `job_id_prefix` kwargs (D-03) — keeps scheduling logic in one place
+- ETF job IDs use `etf_scan_` prefix to avoid collision with stock `scan_` IDs
+- ETF default 09:30 (30-min offset from stock 09:00) to avoid yfinance rate-limit contention
+- `ETF_SCAN_TIMES` multi-time support explicitly deferred (D-02)
+
 ## Next Action
 
-Run `/gsd-plan-phase 12` to plan Phase 12: ETF Polish.
+Execute Plan 02: ETF expense ratio flagging (ETF-09) — `/gsd-execute-phase 12`
