@@ -252,11 +252,22 @@ class TradingBot(discord.Client):
         rsi: float | None,
         ma50: float | None,
         expense_ratio: float | None,
+        etf_max_expense_ratio: float | None = None,
         confidence: str | None = None,
     ) -> str:
         """Post an ETF recommendation embed with Approve/Reject buttons and return the message id."""
         channel = await self.fetch_channel(self.config.discord_channel_id)
-        embed = build_etf_recommendation_embed(ticker, signal, reasoning, price, rsi, ma50, expense_ratio, confidence=confidence)
+        embed = build_etf_recommendation_embed(
+            ticker,
+            signal,
+            reasoning,
+            price,
+            rsi,
+            ma50,
+            expense_ratio,
+            etf_max_expense_ratio=etf_max_expense_ratio,
+            confidence=confidence,
+        )
         view = ApproveRejectView(rec_id, ticker, price or 0.0, self.config)
         msg = await _send_message(channel, embed, view)
         return str(msg.id)

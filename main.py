@@ -439,6 +439,7 @@ async def run_scan_etf(bot: TradingBot, config: Config) -> None:
                 rsi=tech_data.get("rsi"),
                 ma50=tech_data.get("ma50"),
                 expense_ratio=expense_ratio,
+                etf_max_expense_ratio=config.etf_max_expense_ratio,
                 confidence=analysis.get("confidence"),
             )
             queries.set_discord_message_id(config.db_path, rec_id, message_id)
