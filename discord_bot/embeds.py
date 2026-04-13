@@ -50,9 +50,10 @@ def build_etf_recommendation_embed(
     rsi: float | None,
     ma50: float | None,
     expense_ratio: float | None,
+    etf_max_expense_ratio: float | None = None,
     confidence: str | None = None,
 ) -> discord.Embed:
-    """Build a Discord embed for an ETF BUY/HOLD/SKIP recommendation with technical and expense ratio fields (per ETF-04)."""
+    """Build a Discord embed for an ETF BUY/HOLD/SKIP recommendation with technical and expense ratio fields (per ETF-04), with optional expense ratio flag per Phase 12 D-06/D-07."""
     if signal not in _SIGNAL_COLORS:
         raise ValueError(f"Invalid signal '{signal}': must be BUY, HOLD, or SKIP")
 
@@ -76,11 +77,13 @@ def build_etf_recommendation_embed(
     else:
         trend = "N/A"
     embed.add_field(name="MA50 Trend", value=trend, inline=True)
-    embed.add_field(
-        name="Expense Ratio",
-        value=f"{expense_ratio:.4f}" if expense_ratio is not None else "N/A",
-        inline=True,
-    )
+    if expense_ratio is None:
+        expense_value = "N/A"
+    elif etf_max_expense_ratio is not None and expense_ratio > etf_max_expense_ratio:
+        expense_value = f"⚠️ {expense_ratio:.4f} (High)"
+    else:
+        expense_value = f"{expense_ratio:.4f}"
+    embed.add_field(name="Expense Ratio", value=expense_value, inline=True)
     if confidence is not None:
         embed.add_field(name="Confidence", value=confidence.capitalize(), inline=True)
     return embed

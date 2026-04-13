@@ -55,6 +55,7 @@ class Config:
     sell_rsi_threshold: float = float(os.getenv("SELL_RSI_THRESHOLD", "70.0"))
     analyst_daily_limit: int = int(os.getenv("ANALYST_DAILY_LIMIT", "18"))
     min_volume_ratio: float = float(os.getenv("MIN_VOLUME_RATIO", "0.5"))
+    etf_max_expense_ratio: float = float(os.getenv("ETF_MAX_EXPENSE_RATIO", "0.005"))
 
     max_position_size_usd: float = float(os.getenv("MAX_POSITION_SIZE_USD", "500.0"))
     max_portfolio_usd: float = float(os.getenv("MAX_PORTFOLIO_USD", "20000.0"))
