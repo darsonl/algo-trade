@@ -40,7 +40,7 @@ See `.planning/milestones/v1.1-ROADMAP.md` for full phase details.
 - [ ] **Phase 9: Ops Hardening** — Scan errors surface to Discord; ETF alert is distinguishable from stock alert
 - [x] **Phase 10: Prompt Signal Enrichment** — Claude receives sector, macro, and price-range context in every analysis (completed 2026-04-12)
 - [x] **Phase 11: Confidence Scoring** — Every Claude signal carries a confidence badge visible in Discord (completed 2026-04-12)
-- [x] **Phase 12: ETF Polish** — ETF scan runs on its own schedule; high-cost ETFs are flagged in the embed (completed 2026-04-13)
+- [x] **Phase 12: ETF Polish** — ETF scan runs on its own schedule; high-cost ETFs are flagged in the embed (completed 2026-04-13)
 - [ ] **Phase 13: Portfolio Analytics** — User can see aggregate P&L and closed-trade performance stats
 
 ---
@@ -83,7 +83,8 @@ Plans:
 3. The confidence level is persisted to the database so it is available for future queries without re-calling Claude.
 **Plans:** 2/2 plans complete
 Plans:
-- [ ] 09-01-PLAN.md — Error posting + ETF prefix + tests
+- [x] 11-01-PLAN.md — Prompt format + parse_claude_response + DB migration + tests
+- [x] 11-02-PLAN.md — Embed badge + analyst return value + wiring
 
 ### Phase 12: ETF Polish
 **Goal:** The ETF scan fires automatically at a configured time offset from the stock scan, and ETFs with an expense ratio above a configurable threshold are flagged in their Discord embed.
@@ -110,7 +111,7 @@ Plans:
 4. The `/stats` figures are computed from DB aggregation only — no external API call is made.
 **Plans:** 1 plan
 Plans:
-- [ ] 09-01-PLAN.md — Error posting + ETF prefix + tests
+- [ ] 13-01-PLAN.md — pnl_usd extension + positions footer + /stats command + DB migration + tests
 **UI hint**: yes
 
 ---
@@ -132,8 +133,8 @@ Plans:
 | 10. Prompt Signal Enrichment | v1.2 | 2/2 | Complete   | 2026-04-12 |
 | 11. Confidence Scoring | v1.2 | 2/2 | Complete   | 2026-04-12 |
 | 12. ETF Polish | v1.2 | 2/2 | Complete   | 2026-04-13 |
-| 13. Portfolio Analytics | v1.2 | 0/? | Not started | - |
+| 13. Portfolio Analytics | v1.2 | 0/1 | Not started | - |
 
 ---
 *Roadmap defined: 2026-03-30*
-*Last updated: 2026-04-12 — v1.2 roadmap added (Phases 9-13)*
+*Last updated: 2026-04-13 — Phase 13 plan list updated*
