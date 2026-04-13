@@ -300,6 +300,53 @@ async def test_positions_command_sends_embed(mock_queries):
     assert "embed" in call_kwargs.kwargs
 
 
+# ---------------------------------------------------------------------------
+# Phase 13 Task 1: pnl_usd tests for get_position_summary
+# ---------------------------------------------------------------------------
+
+@patch("screener.positions.get_open_positions")
+@patch("screener.positions.yf")
+def test_get_position_summary_pnl_usd_correct(mock_yf, mock_get_open):
+    """get_position_summary returns pnl_usd = (current - avg_cost) * shares."""
+    row = _make_row("AAPL", 5, 100.0)
+    mock_get_open.return_value = [row]
+    ticker_mock = MagicMock()
+    ticker_mock.fast_info.last_price = 110.0
+    mock_yf.Ticker.return_value = ticker_mock
+
+    from screener.positions import get_position_summary
+    results = get_position_summary("any.db")
+
+    assert len(results) == 1
+    assert results[0]["pnl_usd"] == pytest.approx(50.0)  # (110 - 100) * 5
+
+
+@patch("screener.positions.get_open_positions")
+@patch("screener.positions.yf")
+def test_get_position_summary_pnl_usd_none_when_no_price(mock_yf, mock_get_open):
+    """get_position_summary returns pnl_usd=None when current_price is None."""
+    row = _make_row("NVDA", 3, 200.0, last_price=None)
+    mock_get_open.return_value = [row]
+    mock_yf.Ticker.side_effect = Exception("timeout")
+
+    from screener.positions import get_position_summary
+    results = get_position_summary("any.db")
+
+    assert len(results) == 1
+    assert results[0]["pnl_usd"] is None
+
+
+@patch("screener.positions.get_open_positions")
+def test_get_position_summary_pnl_usd_empty_list(mock_get_open):
+    """get_position_summary returns empty list when no positions exist — no crash."""
+    mock_get_open.return_value = []
+
+    from screener.positions import get_position_summary
+    results = get_position_summary("any.db")
+
+    assert results == []
+
+
 @pytest.mark.asyncio
 @patch("discord_bot.bot.queries")
 async def test_positions_command_empty(mock_queries):

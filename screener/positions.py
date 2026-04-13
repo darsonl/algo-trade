@@ -19,13 +19,16 @@ def get_position_summary(db_path: str) -> list[dict]:
         except Exception:
             current_price = pos["last_price"]  # may be None
         pnl_pct = None
+        pnl_usd = None
         if current_price and pos["avg_cost_usd"]:
             pnl_pct = (current_price - pos["avg_cost_usd"]) / pos["avg_cost_usd"]
+            pnl_usd = (current_price - pos["avg_cost_usd"]) * pos["shares"]
         results.append({
             "ticker": ticker,
             "shares": pos["shares"],
             "avg_cost_usd": pos["avg_cost_usd"],
             "current_price": current_price,
             "pnl_pct": pnl_pct,
+            "pnl_usd": pnl_usd,
         })
     return results
