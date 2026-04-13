@@ -110,3 +110,54 @@ def test_etf_embed_confidence_none():
         "QQQ", "BUY", "Tech momentum.", 380.0, 52.0, 370.0, 0.0020, confidence=None
     )
     assert "Confidence" not in _field_names(embed)
+
+
+# ---------------------------------------------------------------------------
+# Phase 13 Task 2: build_stats_embed tests
+# ---------------------------------------------------------------------------
+
+def _make_stats(total=12, wins=7, losses=5, win_rate=None, avg_gain_pct=0.042, avg_loss_pct=-0.021):
+    if win_rate is None:
+        win_rate = wins / total
+    return {
+        "total": total,
+        "wins": wins,
+        "losses": losses,
+        "win_rate": win_rate,
+        "avg_gain_pct": avg_gain_pct,
+        "avg_loss_pct": avg_loss_pct,
+    }
+
+
+def test_build_stats_embed_fields():
+    """build_stats_embed produces Win Rate, Avg Gain, Avg Loss fields and description with 'Closed Trades: 12'."""
+    from discord_bot.embeds import build_stats_embed
+    stats = _make_stats()
+    embed = build_stats_embed(stats)
+    assert "Win Rate" in _field_names(embed)
+    assert "Avg Gain" in _field_names(embed)
+    assert "Avg Loss" in _field_names(embed)
+    assert "Closed Trades: 12" in embed.description
+
+
+def test_build_stats_embed_title_and_color():
+    """build_stats_embed title is 'Trade Statistics'."""
+    import discord
+    from discord_bot.embeds import build_stats_embed
+    embed = build_stats_embed(_make_stats())
+    assert embed.title == "Trade Statistics"
+    assert embed.color == discord.Color.blurple()
+
+
+def test_build_stats_embed_avg_gain_prefix():
+    """Avg Gain field value starts with '+'."""
+    from discord_bot.embeds import build_stats_embed
+    embed = build_stats_embed(_make_stats(avg_gain_pct=0.042))
+    assert _field_value(embed, "Avg Gain").startswith("+")
+
+
+def test_build_stats_embed_avg_gain_none():
+    """avg_gain_pct=None → Avg Gain field value is 'N/A'."""
+    from discord_bot.embeds import build_stats_embed
+    embed = build_stats_embed(_make_stats(wins=0, losses=3, avg_gain_pct=None))
+    assert _field_value(embed, "Avg Gain") == "N/A"

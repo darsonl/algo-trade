@@ -9,7 +9,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from config import Config
 from database import queries
-from discord_bot.embeds import build_recommendation_embed, build_positions_embed, build_sell_embed, build_etf_recommendation_embed
+from discord_bot.embeds import build_recommendation_embed, build_positions_embed, build_sell_embed, build_etf_recommendation_embed, build_stats_embed
 from schwab_client.orders import place_order, place_sell_order
 
 logger = logging.getLogger(__name__)
@@ -177,6 +177,13 @@ class TradingBot(discord.Client):
                 callback=self._scan_etf_command,
             )
         )
+        self.tree.add_command(
+            app_commands.Command(
+                name="stats",
+                description="Show win rate and P&L stats for closed trades",
+                callback=self._stats_command,
+            )
+        )
         await self.tree.sync()
 
     async def _scan_command(self, interaction: discord.Interaction):
@@ -203,6 +210,18 @@ class TradingBot(discord.Client):
             await interaction.response.send_message("No open positions.")
             return
         embed = build_positions_embed(summaries)
+        await interaction.response.send_message(embed=embed)
+
+    async def _stats_command(self, interaction: discord.Interaction):
+        """Handle /stats slash command: show win rate and P&L stats for closed trades."""
+        from database.queries import get_trade_stats
+        stats = await asyncio.to_thread(get_trade_stats, self.config.db_path)
+        if stats is None:
+            await interaction.response.send_message(
+                "No closed trades yet — nothing to analyze."
+            )
+            return
+        embed = build_stats_embed(stats)
         await interaction.response.send_message(embed=embed)
 
     async def send_recommendation(

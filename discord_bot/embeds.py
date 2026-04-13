@@ -120,6 +120,7 @@ def build_positions_embed(summaries: list[dict]) -> discord.Embed:
 
     Each position gets an inline field with ticker, shares, avg cost, current price, and P&L%.
     Shows 'No open positions.' if summaries is empty. Truncates at 25 fields (Discord limit).
+    Footer aggregates total unrealized P&L when pnl_usd values are available (PORT-01).
     """
     embed = discord.Embed(title="Open Positions", color=discord.Color.blurple())
     for s in summaries[:25]:
@@ -137,4 +138,45 @@ def build_positions_embed(summaries: list[dict]) -> discord.Embed:
         )
     if not summaries:
         embed.description = "No open positions."
+    else:
+        # Footer: aggregate P&L from positions that have pnl_usd
+        valid = [s for s in summaries if s.get("pnl_usd") is not None]
+        if valid:
+            total_pnl_usd = sum(s["pnl_usd"] for s in valid)
+            total_cost = sum(s["avg_cost_usd"] * s["shares"] for s in valid)
+            agg_pct = total_pnl_usd / total_cost if total_cost else 0.0
+            sign = "+" if total_pnl_usd >= 0 else ""
+            footer_text = f"Total unrealized: {sign}${total_pnl_usd:.2f} ({agg_pct:+.1%})"
+            if len(valid) < len(summaries):
+                footer_text += " (partial)"
+            embed.set_footer(text=footer_text)
+        # If no valid positions, omit footer entirely
+    return embed
+
+
+def build_stats_embed(stats: dict) -> discord.Embed:
+    """Build a Trade Statistics embed from get_trade_stats() result dict (PORT-02).
+
+    Args:
+        stats: dict with keys total, wins, losses, win_rate, avg_gain_pct, avg_loss_pct
+    """
+    embed = discord.Embed(title="Trade Statistics", color=discord.Color.blurple())
+    embed.description = (
+        f"Closed Trades: {stats['total']}   "
+        f"Wins: {stats['wins']}   "
+        f"Losses: {stats['losses']}"
+    )
+    embed.add_field(name="Win Rate", value=f"{stats['win_rate']:.1%}", inline=True)
+    gain_pct = stats["avg_gain_pct"]
+    loss_pct = stats["avg_loss_pct"]
+    embed.add_field(
+        name="Avg Gain",
+        value=f"+{gain_pct:.1%}" if gain_pct is not None else "N/A",
+        inline=True,
+    )
+    embed.add_field(
+        name="Avg Loss",
+        value=f"{loss_pct:.1%}" if loss_pct is not None else "N/A",
+        inline=True,
+    )
     return embed

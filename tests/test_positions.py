@@ -264,6 +264,55 @@ def test_build_positions_embed_empty():
 # Plan 03 Task 2: /positions slash command tests
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Phase 13 Task 2: build_positions_embed footer tests
+# ---------------------------------------------------------------------------
+
+def test_build_positions_embed_footer_all_valid():
+    """Footer shows total unrealized P&L when all positions have pnl_usd."""
+    from discord_bot.embeds import build_positions_embed
+    summaries = [
+        {"ticker": "AAPL", "shares": 5, "avg_cost_usd": 100.0, "current_price": 110.0, "pnl_pct": 0.1, "pnl_usd": 50.0},
+        {"ticker": "MSFT", "shares": 2, "avg_cost_usd": 200.0, "current_price": 210.0, "pnl_pct": 0.05, "pnl_usd": 20.0},
+    ]
+    embed = build_positions_embed(summaries)
+    assert embed.footer.text is not None
+    assert "Total unrealized:" in embed.footer.text
+    assert "(partial)" not in embed.footer.text
+
+
+def test_build_positions_embed_footer_partial():
+    """Footer appends '(partial)' when some pnl_usd are None."""
+    from discord_bot.embeds import build_positions_embed
+    summaries = [
+        {"ticker": "AAPL", "shares": 5, "avg_cost_usd": 100.0, "current_price": 110.0, "pnl_pct": 0.1, "pnl_usd": 50.0},
+        {"ticker": "MSFT", "shares": 2, "avg_cost_usd": 200.0, "current_price": None, "pnl_pct": None, "pnl_usd": None},
+    ]
+    embed = build_positions_embed(summaries)
+    assert embed.footer.text is not None
+    assert "(partial)" in embed.footer.text
+
+
+def test_build_positions_embed_footer_all_none():
+    """No footer set when all pnl_usd are None."""
+    from discord_bot.embeds import build_positions_embed
+    summaries = [
+        {"ticker": "AAPL", "shares": 5, "avg_cost_usd": 100.0, "current_price": None, "pnl_pct": None, "pnl_usd": None},
+        {"ticker": "MSFT", "shares": 2, "avg_cost_usd": 200.0, "current_price": None, "pnl_pct": None, "pnl_usd": None},
+    ]
+    embed = build_positions_embed(summaries)
+    # Footer text should be empty string (discord.py default) or None
+    assert not embed.footer.text
+
+
+def test_build_positions_embed_empty_no_footer():
+    """Empty summaries: description = 'No open positions.', no footer."""
+    from discord_bot.embeds import build_positions_embed
+    embed = build_positions_embed([])
+    assert embed.description == "No open positions."
+    assert not embed.footer.text
+
+
 @pytest.mark.asyncio
 @patch("discord_bot.bot.queries")
 async def test_positions_command_sends_embed(mock_queries):
