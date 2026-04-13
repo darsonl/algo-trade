@@ -37,14 +37,25 @@ def should_recommend(signal: str, tech_data: dict, config: Config) -> bool:
     return passes_technical_filter(tech_data, config)
 
 
-def configure_scheduler(scheduler: BackgroundScheduler, config: Config, job_fn) -> None:
-    """Register one scan job per time in config.scan_times."""
-    for i, time_str in enumerate(config.scan_times):
+def configure_scheduler(
+    scheduler: BackgroundScheduler,
+    config: Config,
+    job_fn,
+    times: list[str] | None = None,
+    job_id_prefix: str = "scan",
+) -> None:
+    """Register one scan job per time.
+
+    Defaults to stock scan (config.scan_times, prefix 'scan'); pass times +
+    job_id_prefix for ETF scheduling (per Phase 12 D-03).
+    """
+    scan_times = times if times is not None else config.scan_times
+    for i, time_str in enumerate(scan_times):
         hour, minute = map(int, time_str.split(":"))
         scheduler.add_job(
             job_fn,
             trigger=CronTrigger(hour=hour, minute=minute),
-            id=f"scan_{i}",
+            id=f"{job_id_prefix}_{i}",
             replace_existing=True,
         )
 
@@ -529,10 +540,23 @@ def main() -> None:
                 run_scan(bot, config), bot.loop
             ).result(),
         )
+        configure_scheduler(
+            scheduler,
+            config,
+            lambda: asyncio.run_coroutine_threadsafe(
+                run_scan_etf(bot, config), bot.loop
+            ).result(),
+            times=config.etf_scan_times,
+            job_id_prefix="etf_scan",
+        )
         scheduler.start()
         logger.info(
             "Scheduler started — daily scan at %02d:%02d",
             config.scan_hour, config.scan_minute,
+        )
+        logger.info(
+            "ETF scheduler started — daily ETF scan at %02d:%02d",
+            config.etf_scan_hour, config.etf_scan_minute,
         )
 
     bot.run(config.discord_token)
