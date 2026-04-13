@@ -131,6 +131,18 @@ None - no external service configuration required.
 - Config default of 0.005 (0.5%) is operator-adjustable via `ETF_MAX_EXPENSE_RATIO` env var
 - 351 tests passing, no regressions
 
+## Self-Check: PASSED
+
+- config.py: FOUND
+- discord_bot/embeds.py: FOUND
+- discord_bot/bot.py: FOUND
+- main.py: FOUND
+- tests/test_etf_expense_flag.py: FOUND
+- 12-02-SUMMARY.md: FOUND
+- Commit 83d2eb9: FOUND
+- Commit 35e8633: FOUND
+- 351 tests passing
+
 ---
 *Phase: 12-etf-polish*
 *Completed: 2026-04-13*
