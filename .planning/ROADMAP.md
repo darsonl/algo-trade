@@ -41,7 +41,7 @@ See `.planning/milestones/v1.1-ROADMAP.md` for full phase details.
 - [x] **Phase 10: Prompt Signal Enrichment** — Claude receives sector, macro, and price-range context in every analysis (completed 2026-04-12)
 - [x] **Phase 11: Confidence Scoring** — Every Claude signal carries a confidence badge visible in Discord (completed 2026-04-12)
 - [x] **Phase 12: ETF Polish** — ETF scan runs on its own schedule; high-cost ETFs are flagged in the embed (completed 2026-04-13)
-- [ ] **Phase 13: Portfolio Analytics** — User can see aggregate P&L and closed-trade performance stats
+- [x] **Phase 13: Portfolio Analytics** — User can see aggregate P&L and closed-trade performance stats (completed 2026-04-13)
 
 ---
 
@@ -109,9 +109,9 @@ Plans:
 2. Running `/stats` in Discord returns a message showing win rate percentage, average gain percentage on winning trades, and average loss percentage on losing trades.
 3. `/stats` returns a clear message (e.g. "No closed trades yet") when the trades table has no closed records — it does not error or post an empty embed.
 4. The `/stats` figures are computed from DB aggregation only — no external API call is made.
-**Plans:** 1 plan
+**Plans:** 1/1 plans complete
 Plans:
-- [ ] 13-01-PLAN.md — pnl_usd extension + positions footer + /stats command + DB migration + tests
+- [x] 13-01-PLAN.md — pnl_usd extension + positions footer + /stats command + DB migration + tests
 **UI hint**: yes
 
 ---
@@ -133,7 +133,7 @@ Plans:
 | 10. Prompt Signal Enrichment | v1.2 | 2/2 | Complete   | 2026-04-12 |
 | 11. Confidence Scoring | v1.2 | 2/2 | Complete   | 2026-04-12 |
 | 12. ETF Polish | v1.2 | 2/2 | Complete   | 2026-04-13 |
-| 13. Portfolio Analytics | v1.2 | 0/1 | Not started | - |
+| 13. Portfolio Analytics | v1.2 | 1/1 | Complete   | 2026-04-13 |
 
 ---
 *Roadmap defined: 2026-03-30*
