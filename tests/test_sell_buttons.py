@@ -170,3 +170,27 @@ async def test_sell_approve_dry_run_does_not_call_place_sell_order(
     with patch("discord_bot.bot.place_sell_order") as mock_place:
         await _get_approve_callback(view)(view, mock_interaction, MagicMock())
         mock_place.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Phase 13 Task 3: cost_basis population test
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_sell_approve_populates_cost_basis(config, mock_interaction, db_path):
+    """SellApproveRejectView.approve fetches avg_cost_usd from open position and passes it as cost_basis."""
+    from database.models import get_connection
+    rec_id = create_recommendation(db_path, "AAPL", "SELL", "Overbought", 170.0, None, None)
+    create_position(db_path, "AAPL", 10, 120.0)
+    view = SellApproveRejectView(rec_id, "AAPL", 10.0, 170.0, config)
+
+    await _get_approve_callback(view)(view, mock_interaction, MagicMock())
+
+    conn = get_connection(db_path)
+    trade = conn.execute(
+        "SELECT cost_basis FROM trades WHERE recommendation_id = ? AND side = 'sell'",
+        (rec_id,),
+    ).fetchone()
+    conn.close()
+    assert trade is not None
+    assert trade["cost_basis"] == pytest.approx(120.0)

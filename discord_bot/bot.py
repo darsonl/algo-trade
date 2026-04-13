@@ -115,6 +115,14 @@ class SellApproveRejectView(discord.ui.View):
         if not self.config.dry_run:
             order_id = place_sell_order(self.ticker, self.shares, self.config)
 
+        # Fetch cost_basis from open position before recording trade (PORT-02 / T-13-02)
+        cost_basis = None
+        open_positions = queries.get_open_positions(self.config.db_path)
+        for pos in open_positions:
+            if pos["ticker"] == self.ticker:
+                cost_basis = pos["avg_cost_usd"]
+                break
+
         queries.create_trade(
             db_path=self.config.db_path,
             recommendation_id=self.rec_id,
@@ -123,6 +131,7 @@ class SellApproveRejectView(discord.ui.View):
             price=self.current_price,
             order_id=order_id,
             side="sell",
+            cost_basis=cost_basis,
         )
         queries.close_position(self.config.db_path, self.ticker)
         queries.update_recommendation_status(self.config.db_path, self.rec_id, "approved")

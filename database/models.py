@@ -111,4 +111,9 @@ def initialize_db(db_path: str) -> None:
         conn.commit()
     except sqlite3.OperationalError:
         pass  # Column already exists
+    try:
+        conn.execute("ALTER TABLE trades ADD COLUMN cost_basis REAL")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # Column already exists
     conn.close()

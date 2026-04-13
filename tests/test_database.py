@@ -386,3 +386,140 @@ def test_initialize_db_idempotent_confidence_migration():
     """Calling initialize_db twice does not raise (ALTER TABLE is idempotent via try/except)."""
     # First call is from the autouse fixture; call it again here
     initialize_db(DB_PATH)  # Should not raise
+
+
+# ---------------------------------------------------------------------------
+# Phase 13 Task 3: cost_basis migration + get_trade_stats tests
+# ---------------------------------------------------------------------------
+
+def test_initialize_db_adds_cost_basis_column():
+    """After initialize_db, trades table has a cost_basis column."""
+    conn = sqlite3.connect(DB_PATH)
+    pragma_rows = conn.execute("PRAGMA table_info(trades)").fetchall()
+    conn.close()
+    col_names = [row[1] for row in pragma_rows]
+    assert "cost_basis" in col_names
+
+
+def test_create_trade_stores_cost_basis():
+    """create_trade with cost_basis=100.0 stores that value in the row."""
+    rec_id = create_recommendation(
+        db_path=DB_PATH, ticker="AAPL", signal="BUY",
+        reasoning="Test.", price=100.0, dividend_yield=None, pe_ratio=None,
+    )
+    trade_id = create_trade(
+        db_path=DB_PATH, recommendation_id=rec_id, ticker="AAPL",
+        shares=5, price=110.0, order_id=None, side="sell", cost_basis=100.0,
+    )
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT cost_basis FROM trades WHERE id = ?", (trade_id,)).fetchone()
+    conn.close()
+    assert row["cost_basis"] == pytest.approx(100.0)
+
+
+def test_create_trade_cost_basis_defaults_none():
+    """create_trade without cost_basis kwarg stores NULL in DB."""
+    rec_id = create_recommendation(
+        db_path=DB_PATH, ticker="MSFT", signal="BUY",
+        reasoning="Test.", price=200.0, dividend_yield=None, pe_ratio=None,
+    )
+    trade_id = create_trade(
+        db_path=DB_PATH, recommendation_id=rec_id, ticker="MSFT",
+        shares=2, price=210.0, order_id=None,
+    )
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute("SELECT cost_basis FROM trades WHERE id = ?", (trade_id,)).fetchone()
+    conn.close()
+    assert row["cost_basis"] is None
+
+
+def test_get_trade_stats_no_qualifying_rows():
+    """Empty trades table returns None from get_trade_stats."""
+    from database.queries import get_trade_stats
+    assert get_trade_stats(DB_PATH) is None
+
+
+def test_get_trade_stats_no_sells_with_cost_basis():
+    """Only buy-side trades → get_trade_stats returns None."""
+    from database.queries import get_trade_stats
+    rec_id = create_recommendation(
+        db_path=DB_PATH, ticker="AAPL", signal="BUY",
+        reasoning="Test.", price=100.0, dividend_yield=None, pe_ratio=None,
+    )
+    create_trade(
+        db_path=DB_PATH, recommendation_id=rec_id, ticker="AAPL",
+        shares=5, price=110.0, order_id=None, side="buy", cost_basis=100.0,
+    )
+    assert get_trade_stats(DB_PATH) is None
+
+
+def test_get_trade_stats_all_wins():
+    """2 sell trades with sell_price > cost_basis → wins=2, losses=0, win_rate=1.0."""
+    from database.queries import get_trade_stats
+    rec_id = create_recommendation(
+        db_path=DB_PATH, ticker="AAPL", signal="BUY",
+        reasoning=".", price=100.0, dividend_yield=None, pe_ratio=None,
+    )
+    create_trade(db_path=DB_PATH, recommendation_id=rec_id, ticker="AAPL",
+                 shares=5, price=110.0, order_id=None, side="sell", cost_basis=100.0)
+    create_trade(db_path=DB_PATH, recommendation_id=rec_id, ticker="AAPL",
+                 shares=3, price=120.0, order_id=None, side="sell", cost_basis=100.0)
+    stats = get_trade_stats(DB_PATH)
+    assert stats is not None
+    assert stats["wins"] == 2
+    assert stats["losses"] == 0
+    assert stats["win_rate"] == pytest.approx(1.0)
+
+
+def test_get_trade_stats_mixed():
+    """2 wins + 1 loss → total=3, wins=2, losses=1, win_rate approx 0.667."""
+    from database.queries import get_trade_stats
+    rec_id = create_recommendation(
+        db_path=DB_PATH, ticker="AAPL", signal="BUY",
+        reasoning=".", price=100.0, dividend_yield=None, pe_ratio=None,
+    )
+    create_trade(db_path=DB_PATH, recommendation_id=rec_id, ticker="AAPL",
+                 shares=5, price=110.0, order_id=None, side="sell", cost_basis=100.0)
+    create_trade(db_path=DB_PATH, recommendation_id=rec_id, ticker="AAPL",
+                 shares=3, price=120.0, order_id=None, side="sell", cost_basis=100.0)
+    create_trade(db_path=DB_PATH, recommendation_id=rec_id, ticker="AAPL",
+                 shares=2, price=90.0, order_id=None, side="sell", cost_basis=100.0)
+    stats = get_trade_stats(DB_PATH)
+    assert stats["total"] == 3
+    assert stats["wins"] == 2
+    assert stats["losses"] == 1
+    assert stats["win_rate"] == pytest.approx(2 / 3)
+
+
+def test_get_trade_stats_breakeven_counts_as_win():
+    """sell_price == cost_basis → wins=1, losses=0."""
+    from database.queries import get_trade_stats
+    rec_id = create_recommendation(
+        db_path=DB_PATH, ticker="AAPL", signal="BUY",
+        reasoning=".", price=100.0, dividend_yield=None, pe_ratio=None,
+    )
+    create_trade(db_path=DB_PATH, recommendation_id=rec_id, ticker="AAPL",
+                 shares=5, price=100.0, order_id=None, side="sell", cost_basis=100.0)
+    stats = get_trade_stats(DB_PATH)
+    assert stats["wins"] == 1
+    assert stats["losses"] == 0
+
+
+def test_get_trade_stats_null_cost_basis_excluded():
+    """Sell trade with cost_basis=NULL is excluded; only the one with cost_basis set is counted."""
+    from database.queries import get_trade_stats
+    rec_id = create_recommendation(
+        db_path=DB_PATH, ticker="AAPL", signal="BUY",
+        reasoning=".", price=100.0, dividend_yield=None, pe_ratio=None,
+    )
+    # Sell with cost_basis (counted)
+    create_trade(db_path=DB_PATH, recommendation_id=rec_id, ticker="AAPL",
+                 shares=5, price=110.0, order_id=None, side="sell", cost_basis=100.0)
+    # Sell without cost_basis (excluded)
+    create_trade(db_path=DB_PATH, recommendation_id=rec_id, ticker="AAPL",
+                 shares=3, price=90.0, order_id=None, side="sell")
+    stats = get_trade_stats(DB_PATH)
+    assert stats["total"] == 1
+    assert stats["wins"] == 1

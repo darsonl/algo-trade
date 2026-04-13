@@ -67,18 +67,58 @@ def create_trade(
     price: float,
     order_id: str | None,
     side: str = "buy",
+    cost_basis: float | None = None,
 ) -> int:
     """Record an executed trade linked to recommendation_id and return the trade id."""
     conn = get_connection(db_path)
     cursor = conn.execute(
-        """INSERT INTO trades (recommendation_id, ticker, shares, price, order_id, side)
-           VALUES (?, ?, ?, ?, ?, ?)""",
-        (recommendation_id, ticker, shares, price, order_id, side),
+        """INSERT INTO trades (recommendation_id, ticker, shares, price, order_id, side, cost_basis)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (recommendation_id, ticker, shares, price, order_id, side, cost_basis),
     )
     conn.commit()
     trade_id = cursor.lastrowid
     conn.close()
     return trade_id
+
+
+def get_trade_stats(db_path: str) -> dict | None:
+    """Compute win rate, avg gain %, and avg loss % from closed sell trades with cost_basis set.
+
+    Returns dict {total, wins, losses, win_rate, avg_gain_pct, avg_loss_pct}
+    or None when no qualifying rows exist (side='sell' AND cost_basis IS NOT NULL).
+    Pre-migration rows with cost_basis IS NULL are silently excluded per D-10.
+    """
+    conn = get_connection(db_path)
+    rows = conn.execute(
+        """SELECT price, cost_basis FROM trades
+           WHERE side = 'sell' AND cost_basis IS NOT NULL""",
+    ).fetchall()
+    conn.close()
+    if not rows:
+        return None
+    total = len(rows)
+    gains = []
+    losses = []
+    for row in rows:
+        pct = (row["price"] - row["cost_basis"]) / row["cost_basis"]
+        if row["price"] >= row["cost_basis"]:  # break-even counts as win
+            gains.append(pct)
+        else:
+            losses.append(pct)
+    wins = len(gains)
+    loss_count = len(losses)
+    win_rate = wins / total
+    avg_gain_pct = sum(gains) / wins if wins else None
+    avg_loss_pct = sum(losses) / loss_count if loss_count else None
+    return {
+        "total": total,
+        "wins": wins,
+        "losses": loss_count,
+        "win_rate": win_rate,
+        "avg_gain_pct": avg_gain_pct,
+        "avg_loss_pct": avg_loss_pct,
+    }
 
 
 def get_pending_recommendations(db_path: str) -> list[sqlite3.Row]:
