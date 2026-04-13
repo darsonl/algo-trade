@@ -16,6 +16,17 @@ def _parse_scan_times() -> list[str]:
     return [f"{hour:02d}:{minute:02d}"]
 
 
+def _parse_etf_scan_times() -> list[str]:
+    """Parse ETF scan schedule from ETF_SCAN_HOUR:ETF_SCAN_MINUTE.
+
+    Mirrors _parse_scan_times but does not support a multi-time env var yet
+    (per Phase 12 D-02). Defaults to 09:30 (30-minute offset from stock scan).
+    """
+    hour = int(os.getenv("ETF_SCAN_HOUR", "9"))
+    minute = int(os.getenv("ETF_SCAN_MINUTE", "30"))
+    return [f"{hour:02d}:{minute:02d}"]
+
+
 @dataclass
 class Config:
     schwab_app_key: str = os.getenv("SCHWAB_APP_KEY", "")
@@ -51,6 +62,9 @@ class Config:
     scan_hour: int = int(os.getenv("SCAN_HOUR", "9"))
     scan_minute: int = int(os.getenv("SCAN_MINUTE", "0"))
     scan_times: list = field(default_factory=_parse_scan_times)
+    etf_scan_hour: int = int(os.getenv("ETF_SCAN_HOUR", "9"))
+    etf_scan_minute: int = int(os.getenv("ETF_SCAN_MINUTE", "30"))
+    etf_scan_times: list = field(default_factory=_parse_etf_scan_times)
     top_sp500_count: int = int(os.getenv("TOP_SP500_COUNT", "10"))
     analyst_call_delay_s: float = float(os.getenv("ANALYST_CALL_DELAY_S", "12.0"))
 
