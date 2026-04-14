@@ -161,3 +161,11 @@ def test_build_stats_embed_avg_gain_none():
     from discord_bot.embeds import build_stats_embed
     embed = build_stats_embed(_make_stats(wins=0, losses=3, avg_gain_pct=None))
     assert _field_value(embed, "Avg Gain") == "N/A"
+
+
+def test_build_stats_embed_avg_loss_negative():
+    """avg_loss_pct is negative — Avg Loss field value starts with '-'."""
+    from discord_bot.embeds import build_stats_embed
+    embed = build_stats_embed(_make_stats(avg_loss_pct=-0.021))
+    val = _field_value(embed, "Avg Loss")
+    assert val.startswith("-"), f"Expected negative loss, got: {val}"

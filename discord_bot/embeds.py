@@ -176,7 +176,7 @@ def build_stats_embed(stats: dict) -> discord.Embed:
     )
     embed.add_field(
         name="Avg Loss",
-        value=f"{loss_pct:.1%}" if loss_pct is not None else "N/A",
+        value=f"{loss_pct:.1%}" if loss_pct is not None else "N/A",  # loss_pct is always <= 0
         inline=True,
     )
     return embed
