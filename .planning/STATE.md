@@ -2,14 +2,14 @@
 gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Signal Quality & Portfolio Analytics
-status: verifying
-last_updated: "2026-04-13T10:41:55.533Z"
-last_activity: 2026-04-13
+status: complete
+last_updated: "2026-04-14T00:00:00.000Z"
+last_activity: 2026-04-14
 progress:
   total_phases: 5
-  completed_phases: 4
-  total_plans: 7
-  completed_plans: 7
+  completed_phases: 5
+  total_plans: 8
+  completed_plans: 8
   percent: 100
 ---
 
@@ -20,14 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-12)
 
 **Core value:** The bot must never place a real order without explicit human approval via Discord.
-**Current focus:** Phase 12 — etf-polish
+**Current focus:** Phase 13 — portfolio-analytics (complete)
 
 ## Current Position
 
-Phase: 12 (etf-polish) — EXECUTING
-Plan: 2 of 2
-Status: Phase complete — ready for verification
-Last activity: 2026-04-13
+Phase: 13 (portfolio-analytics) — COMPLETE
+Plan: 1 of 1
+Status: Phase verified — milestone v1.2 complete
+Last activity: 2026-04-14
 
 ---
 
@@ -56,7 +56,7 @@ Last activity: 2026-04-13
 | 10 | Prompt Signal Enrichment | ✅ Complete (2/2 plans) |
 | 11 | Confidence Scoring | ✅ Complete (2/2 plans) |
 | 12 | ETF Polish | ✅ Complete (2/2 plans) |
-| 13 | Portfolio Analytics | 🔄 Not started |
+| 13 | Portfolio Analytics | ✅ Complete (1/1 plan) |
 
 ---
 
@@ -106,6 +106,14 @@ Location: .planning/codebase/
 - Display-only flag per D-05: no scan filtering or trade gating on expense ratio value
 - Warning emoji is hardcoded UTF-8 literal U+26A0 U+FE0F per D-06 — no user input reaches this field
 
+## Key Decisions (Phase 13)
+
+- `pnl_usd` computed at `get_position_summary()` layer, not embed layer — separation of concerns
+- Footer omitted entirely when all positions lack price data; `(partial)` suffix when some are missing
+- `get_trade_stats()` returns `None` (not `{}`) for no-data case — callers send plain text, not empty embed
+- `cost_basis` fetched from DB (`avg_cost_usd`), never from Discord interaction payload (T-13-02 mitigated)
+- Break-even (sell_price >= cost_basis) counts as win per plan spec
+
 ## Next Action
 
-Phase 12 complete — verify with `/gsd-verify-work 12`, then plan Phase 13 (Portfolio Analytics) with `/gsd-plan-phase 13`
+Milestone v1.2 (Signal Quality & Portfolio Analytics) complete — all 5 phases done. Run `/gsd-complete-milestone` or start next milestone with `/gsd-new-milestone`.
