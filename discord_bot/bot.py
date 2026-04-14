@@ -111,6 +111,13 @@ class SellApproveRejectView(discord.ui.View):
 
     @discord.ui.button(label="Approve Sell", style=discord.ButtonStyle.danger, emoji="✅")
     async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Idempotency guard: reject duplicate/concurrent presses if position already closed (WR-01)
+        if not queries.has_open_position(self.config.db_path, self.ticker):
+            await interaction.response.send_message(
+                f"Position for {self.ticker} is already closed.", ephemeral=True
+            )
+            return
+
         order_id = None
         if not self.config.dry_run:
             order_id = place_sell_order(self.ticker, self.shares, self.config)
