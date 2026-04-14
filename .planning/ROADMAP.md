@@ -4,7 +4,7 @@
 
 - ✅ **v1.0 MVP** — Phases 1-6 (shipped 2026-04-06)
 - ✅ **v1.1 ETF + Async** — Phases 7-8 (shipped 2026-04-11)
-- 🔄 **v1.2 Signal Quality & Portfolio Analytics** — Phases 9-13 (in progress)
+- ✅ **v1.2 Signal Quality & Portfolio Analytics** — Phases 9-13 (shipped 2026-04-14)
 
 ---
 
@@ -35,13 +35,13 @@ See `.planning/milestones/v1.1-ROADMAP.md` for full phase details.
 
 </details>
 
-### v1.2 Signal Quality & Portfolio Analytics
+### ✅ v1.2 Signal Quality & Portfolio Analytics — SHIPPED 2026-04-14
 
-- [ ] **Phase 9: Ops Hardening** — Scan errors surface to Discord; ETF alert is distinguishable from stock alert
+- [x] **Phase 9: Ops Hardening** — Scan errors surface to Discord; ETF alert is distinguishable from stock alert (completed 2026-04-13)
 - [x] **Phase 10: Prompt Signal Enrichment** — Claude receives sector, macro, and price-range context in every analysis (completed 2026-04-12)
 - [x] **Phase 11: Confidence Scoring** — Every Claude signal carries a confidence badge visible in Discord (completed 2026-04-12)
 - [x] **Phase 12: ETF Polish** — ETF scan runs on its own schedule; high-cost ETFs are flagged in the embed (completed 2026-04-13)
-- [x] **Phase 13: Portfolio Analytics** — User can see aggregate P&L and closed-trade performance stats (completed 2026-04-13)
+- [x] **Phase 13: Portfolio Analytics** — User can see aggregate P&L and closed-trade performance stats (completed 2026-04-14)
 
 ---
 
@@ -129,12 +129,12 @@ Plans:
 | 6. Sell Signals & Sell Orders | v1.0 | 5/5 | Complete | 2026-04-06 |
 | 7. ETF Scan Separation | v1.1 | 3/3 | Complete | 2026-04-07 |
 | 8. Asyncio Event Loop Fix | v1.1 | 1/1 | Complete | 2026-04-09 |
-| 9. Ops Hardening | v1.2 | 0/1 | In progress | - |
+| 9. Ops Hardening | v1.2 | 1/1 | Complete | 2026-04-13 |
 | 10. Prompt Signal Enrichment | v1.2 | 2/2 | Complete   | 2026-04-12 |
 | 11. Confidence Scoring | v1.2 | 2/2 | Complete   | 2026-04-12 |
 | 12. ETF Polish | v1.2 | 2/2 | Complete   | 2026-04-13 |
-| 13. Portfolio Analytics | v1.2 | 1/1 | Complete   | 2026-04-13 |
+| 13. Portfolio Analytics | v1.2 | 1/1 | Complete   | 2026-04-14 |
 
 ---
 *Roadmap defined: 2026-03-30*
-*Last updated: 2026-04-13 — Phase 13 plan list updated*
+*Last updated: 2026-04-14 — Phase 13 complete; milestone v1.2 shipped*
