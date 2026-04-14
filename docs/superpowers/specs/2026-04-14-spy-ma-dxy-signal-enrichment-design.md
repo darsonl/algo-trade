@@ -136,7 +136,7 @@ macro_context dict
 | Failure | Behaviour |
 |---------|-----------|
 | SPY history fetch fails | Outer except → all 4 keys `None` |
-| Fewer than 200 SPY rows | `rolling(200).mean().iloc[-1]` returns `NaN` → `spy_200ma=None` |
+| Fewer than 200 SPY rows | `rolling(200).mean().iloc[-1]` returns `NaN` → guard with `pd.isna(ma200)` → `spy_200ma=None` |
 | VIX fetch fails | Outer except → all 4 keys `None` |
 | DXY fetch fails | Inner except → `dxy=None`; SPY + VIX keys unaffected |
 | Any key is `None` | Prompt builder skips that line silently (existing guard pattern) |
