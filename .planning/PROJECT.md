@@ -2,22 +2,15 @@
 
 ## What This Is
 
-An automated stock and ETF screener that uses Claude AI to generate BUY and SELL recommendations, posts them to Discord with Approve/Reject buttons, and executes trades via the Schwab brokerage API. The bot runs daily scans for stocks and a separate `/scan_etf` path for ETFs, monitors open positions with live P&L, and enforces human-in-the-loop approval for every order. A full sell pipeline (RSI+MACD two-gate exit + Claude SELL analysis) closes the trading loop.
+An automated stock and ETF screener that uses Claude AI to generate BUY and SELL recommendations, posts them to Discord with Approve/Reject buttons, and executes trades via the Schwab brokerage API. The bot runs daily scans for stocks and a separate `/scan_etf` path for ETFs, monitors open positions with live P&L and portfolio stats, and enforces human-in-the-loop approval for every order. A full sell pipeline (RSI+MACD two-gate exit + Claude SELL analysis) closes the trading loop. Claude signals are enriched with sector, macro (SPY MAs, VIX, DXY), and 52-week range context, and include a confidence badge.
 
 ## Core Value
 
 The bot must never place a real order without explicit human approval via Discord.
 
-## Current Milestone: v1.2 Signal Quality & Portfolio Analytics
+## Current Milestone: v1.3 (planning)
 
-**Goal:** Finish ETF polish, enrich Claude signals with sector/macro context and confidence scoring, add portfolio stats, and surface scan errors to Discord.
-
-**Target features:**
-- ETF scheduled scan at time offset + `[ETF]` ops alert prefix + expense ratio threshold filter (carry-overs)
-- Sector name, SPY trend + VIX level, and 52-week range position added to Claude BUY/SELL prompt
-- Claude confidence scoring (high/medium/low) displayed as badge in Discord embed
-- Total unrealized P&L aggregate in `/positions`; new `/stats` command (win rate, avg gain/loss on closed trades)
-- Scan exceptions posted to Discord ops channel (not silently swallowed)
+**Goal:** TBD — next milestone in planning.
 
 ## Requirements
 
@@ -53,19 +46,20 @@ The bot must never place a real order without explicit human approval via Discor
 - ✓ ETF scan separation: `partition_watchlist`, `etf_watchlist.txt`, `asset_type` column, `/scan_etf` command — v1.1 (ETF-01..06)
 - ✓ ETF analyst path: `build_etf_prompt` (RSI/MACD/expense ratio, no P/E), `analyze_etf_ticker` — v1.1 (ETF-03)
 - ✓ Asyncio event loop hardened: all 9 blocking yfinance calls wrapped in `asyncio.to_thread` — v1.1 (ASYNC-01..04)
+- ✓ Scan exceptions posted to Discord ops channel, capped at 3/run with overflow summary — v1.2 (OPS-01)
+- ✓ ETF zero-rec alert prefixed with `[ETF]` to distinguish from stock scan silence — v1.2 (ETF-08)
+- ✓ Sector name added to Claude BUY/SELL/ETF prompt via `screener/macro.py` — v1.2 (SIG-01)
+- ✓ SPY trend + VIX level added to Claude BUY/SELL/ETF prompt — v1.2 (SIG-02)
+- ✓ 52-week range position added to Claude BUY/SELL prompt — v1.2 (SIG-03)
+- ✓ Claude outputs confidence level (high/medium/low); displayed as badge in Discord embed — v1.2 (SIG-04)
+- ✓ Scheduled ETF scan at configurable time offset (default 09:30) via APScheduler — v1.2 (ETF-07)
+- ✓ ETF expense ratio threshold flag in Discord embed (`ETF_MAX_EXPENSE_RATIO`) — v1.2 (ETF-09)
+- ✓ Total unrealized P&L aggregate in `/positions` embed footer — v1.2 (PORT-01)
+- ✓ `/stats` slash command: win rate, avg gain %, avg loss % on closed trades — v1.2 (PORT-02)
 
 ### Active
 
-- [ ] Scheduled ETF scan at time offset (ETF-07) — avoids rate-limit contention with stock scan
-- [ ] `[ETF]` ops alert prefix to distinguish ETF scan silence from stock scan silence (ETF-08)
-- [ ] Expense ratio threshold filter in ETF embed (ETF-09)
-- [ ] Sector name added to Claude BUY/SELL/ETF prompt (SIG-01)
-- [ ] SPY trend + VIX level added to Claude BUY/SELL/ETF prompt (SIG-02)
-- [ ] 52-week range position added to Claude BUY/SELL prompt (SIG-03)
-- [ ] Claude outputs confidence level (high/medium/low); displayed as badge in Discord embed (SIG-04)
-- [ ] Total unrealized P&L aggregate added to `/positions` output (PORT-01)
-- [ ] `/stats` slash command: win rate, avg gain, avg loss on closed trades (PORT-02)
-- [ ] Scan exceptions posted to Discord ops channel (OPS-01)
+*(none — v1.3 requirements not yet defined)*
 
 ### Out of Scope
 
@@ -78,19 +72,24 @@ The bot must never place a real order without explicit human approval via Discor
 - Mobile app / web UI — Discord IS the UI
 - Parallel ticker scanning via asyncio.gather — explicitly out of scope
 - Dynamic ETF universe from external API — static etf_watchlist.txt sufficient
-- ETF_SCAN_TIMES config field — manual /scan_etf sufficient until scheduled ETF scan is validated
+- ETF_SCAN_TIMES config field — single scheduled time sufficient for current use
+- Separate Discord ops channel (`DISCORD_OPS_CHANNEL_ID`) — OPS-01 posts to trading channel; separation deferred
+- DRY_RUN trade marker in `trades` table — `/stats` includes dry-run trades; documented limitation
+- Confidence-based BUY filtering or yellow embed coloring — display-only badge; no behavioral change
 
 ## Context
 
-Shipped v1.1 with 252 tests green across 2 milestones, 9 phases, 21 plans, ~110 days of planning artifacts.
+Shipped v1.2 with 372 tests green across 3 milestones, 13 phases, 29 plans.
 
 Tech stack: Python 3.x, discord.py, yfinance, anthropic SDK, schwab-py, APScheduler, SQLite.
 
-Key fragility: yfinance is an unofficial scraper — silent empty returns are a known risk. All blocking yfinance calls are now off the event loop (Phase 8 sweep), eliminating gateway disconnect risk.
+Key fragility: yfinance is an unofficial scraper — silent empty returns are a known risk. All blocking yfinance calls are off the event loop (Phase 8 sweep), eliminating gateway disconnect risk.
 
 Key safety: DRY_RUN=true and PAPER_TRADING=true are defaults; live trading requires explicit opt-in.
 
-ETF scan is live: SPY, QQQ, GLD, BND etc. route through `/scan_etf` with ETF-aware analyst prompt. Stock fundamental filter is clean — no ETF bypass hacks.
+Signal enrichment live: every BUY/SELL/ETF prompt includes sector, SPY trend, VIX, 52-week range, and a confidence badge. `screener/macro.py` fetches macro context once per scan.
+
+Portfolio analytics live: `/positions` shows total unrealized P&L; `/stats` shows win rate and avg gain/loss on closed trades with `cost_basis` column in `trades` table.
 
 ## Constraints
 
@@ -115,8 +114,13 @@ ETF scan is live: SPY, QQQ, GLD, BND etc. route through `/scan_etf` with ETF-awa
 | Human approval required for every order | Core value; operator trust requires full visibility | ✓ Good — never compromised |
 | ETF scan separated (not bypassed in stock flow) | Clean separation beats ETF-bypass hacks in fundamental filter | ✓ Good — v1.1 |
 | `partition_watchlist` wrapped at call site, not inside function | Keeps function pure/testable; caller owns async boundary | ✓ Good — v1.1 |
-| Phase 8 placed after Phase 7 for comprehensive sweep | Ensures sell pass + ETF pass blocking calls covered in one audit | ✓ Good — v1.1 |
 | asyncio.to_thread for all yfinance I/O (not asyncio.gather) | Unblocks event loop without concurrency; simpler + safer | ✓ Good — v1.1 |
+| `fetch_macro_context` returns None dict on any exception | Scan continues without enrichment rather than aborting — v1.2 | ✓ Good |
+| Macro context fetched once per scan, threaded through analyze_* | Single yfinance fetch per scan, not per ticker — v1.2 | ✓ Good |
+| `parse_claude_response` returns `confidence=None` for missing/invalid values | Scan continues unaffected; confidence omitted from embed — v1.2 | ✓ Good |
+| `cost_basis` fetched from DB (`avg_cost_usd`), never from Discord payload | Prevents tampering via interaction payload (T-13-02) — v1.2 | ✓ Good |
+| `get_trade_stats()` returns `None` for no-data case | Callers send plain text, not empty embed — v1.2 | ✓ Good |
+| ETF scheduled scan via `configure_scheduler` reuse with `job_id_prefix` kwarg | Keeps scheduling logic in one place, avoids duplication — v1.2 | ✓ Good |
 
 ## Evolution
 
@@ -136,4 +140,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-12 — v1.2 milestone started*
+*Last updated: 2026-04-14 — v1.2 milestone completed*

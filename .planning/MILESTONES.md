@@ -1,5 +1,18 @@
 # Milestones
 
+## v1.2 Signal Quality & Portfolio Analytics (Shipped: 2026-04-14)
+
+**Phases completed:** 5 phases, 8 plans, 16 tasks
+
+**Key accomplishments:**
+
+- Confidence scoring data layer: `_VALID_CONFIDENCE` allowlist, three prompt builders updated, parser extracts `high/medium/low` with boundary-safe reasoning extraction, nullable `confidence` columns on both DB tables with idempotent migrations, cache and recommendation queries updated — 16 new tests, zero regressions across 316-test suite
+- Confidence badge wired end-to-end: all three embed builders display optional Confidence field, bot send methods forward confidence, main.py passes `analysis.get("confidence")` to cache writes, DB creation, and Discord sends — 14 new tests (11 embed + 3 wiring), 331 total, zero regressions
+- APScheduler ETF job registered at bot startup via etf_scan_ prefixed IDs, configurable via ETF_SCAN_HOUR/ETF_SCAN_MINUTE (default 09:30), fully independent from the 09:00 stock scan job
+- ETF embeds now visually flag high-cost funds via configurable threshold: expense_ratio > ETF_MAX_EXPENSE_RATIO renders "⚠️ 0.0075 (High)" in the Discord embed Expense Ratio field
+
+---
+
 ## v1.1 ETF + Async (Shipped: 2026-04-11)
 
 **Phases completed:** 2 phases (7–8), 4 plans, 252 tests green

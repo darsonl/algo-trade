@@ -102,14 +102,60 @@
 
 ---
 
+## Milestone: v1.2 — Signal Quality & Portfolio Analytics
+
+**Shipped:** 2026-04-14
+**Phases:** 5 (9–13) | **Plans:** 8 | **Timeline:** 3 days (2026-04-12 → 2026-04-14) | **Commits:** 57
+
+### What Was Built
+
+- `screener/macro.py`: sector, SPY trend, VIX, 52-week range fetched once per scan and injected into all BUY/SELL/ETF prompts
+- Claude confidence scoring (high/medium/low): prompt extraction, nullable DB columns, badge in all Discord embeds
+- APScheduler ETF job at configurable offset (default 09:30), independent from stock scan
+- ETF expense ratio threshold flag (`ETF_MAX_EXPENSE_RATIO`) with ⚠️ badge in embed
+- Scan exceptions posted to Discord ops channel, capped at 3/run with overflow summary; ETF zero-rec alert prefixed `[ETF]`
+- Unrealized P&L footer in `/positions`; `/stats` command with win rate, avg gain %, avg loss %; `cost_basis` column migration
+- 372 tests green (+120 from v1.1)
+
+### What Worked
+
+- **`fetch_macro_context` failure contract**: returning a None-valued dict (not raising) on any exception meant scan enrichment degrades gracefully without aborting — the pattern paid off and should be the template for any future optional data fetch
+- **Single macro fetch per scan**: fetching once before the ticker loop and threading through `analyze_*` was efficient; no per-ticker yfinance overhead
+- **`configure_scheduler` reuse via kwargs**: the ETF scheduler reused the same function with `job_id_prefix` and `times` kwargs — avoided duplication without adding complexity
+- **Fastest milestone yet**: 3 days for 5 phases reflects compounding planning discipline and clean module boundaries from earlier milestones
+
+### What Was Inefficient
+
+- **Requirements not checked off (3rd time)**: 7 of 10 requirements were shipped but unchecked in REQUIREMENTS.md — same pattern as v1.0 and v1.1; this is now a confirmed process gap, not a one-off
+- **STATE.md body stale at archival**: gsd-tools CLI updated YAML header but left body stale; same as v1.1
+
+### Patterns Established
+
+- **Scan-safe failure boundary**: optional enrichment fetches return None-valued dicts, never raise; prompt builders skip gracefully via `if macro_context.get(...)` guards — use for all future optional context fetches
+- **Inner try/except for partial isolation**: DXY (upcoming v1.3) will use an inner try/except so its failure doesn't discard SPY/VIX context — isolate optional sub-fetches from the main failure boundary
+- **`cost_basis` from DB, never from Discord payload**: security pattern for any value that could be tampered via interaction payload; always fetch from DB at approval time
+
+### Key Lessons
+
+1. **Requirements-checked-off discipline is a persistent gap** — 3 milestones, 3 failures; consider making it automatic (a phase-completion hook that checks off REQ-IDs mentioned in SUMMARY.md)
+2. **`pd.isna()` guard needed after `rolling().mean()`** — rolling windows produce NaN for insufficient data; always guard with `pd.isna()` before using MA values
+3. **Mock sizing matters for rolling-window tests** — mocks must have ≥N rows for `rolling(N).mean()` to produce non-NaN; smaller mocks silently make tests vacuous
+
+### Cost Observations
+
+- Sessions: ~4 across 3 days
+- Notable: Portfolio analytics (Phase 13) completed in ~5 minutes — the cleanest phase execution yet; clear plan + established patterns = near-zero friction
+
+---
+
 ## Cross-Milestone Trends
 
-| Metric | v1.0 | v1.1 |
-|--------|------|------|
-| Phases | 7 | 2 |
-| Plans | 17 | 4 |
-| Tests | 222 | 252 |
-| Days | 9 | 5 |
-| Commits | 81 | 32 |
-| Req completion rate | 48/48 (40 not formally checked) | 10/10 (0 formally checked before archival) |
-| Requirements-checked-off discipline | ❌ | ❌ — persistent pattern, needs process fix |
+| Metric | v1.0 | v1.1 | v1.2 |
+|--------|------|------|------|
+| Phases | 7 | 2 | 5 |
+| Plans | 17 | 4 | 8 |
+| Tests | 222 | 252 | 372 |
+| Days | 9 | 5 | 3 |
+| Commits | 81 | 32 | 57 |
+| Req completion rate | 48/48 (40 unchecked) | 10/10 (0 checked) | 10/10 (7 unchecked) |
+| Requirements-checked-off discipline | ❌ | ❌ | ❌ — 3rd milestone; needs automation |
