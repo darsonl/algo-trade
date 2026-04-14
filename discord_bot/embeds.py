@@ -125,7 +125,7 @@ def build_positions_embed(summaries: list[dict]) -> discord.Embed:
     embed = discord.Embed(title="Open Positions", color=discord.Color.blurple())
     for s in summaries[:25]:
         pnl_str = f"{s['pnl_pct']:.1%}" if s['pnl_pct'] is not None else "N/A"
-        price_str = f"${s['current_price']:.2f}" if s['current_price'] else "N/A"
+        price_str = f"${s['current_price']:.2f}" if s['current_price'] is not None else "N/A"
         embed.add_field(
             name=s["ticker"],
             value=(
