@@ -1,310 +1,313 @@
-# Stack Research — v1.2
+# Stack Research — v1.3 Risk & Signal Quality
 
-**Project:** Algo Trade Bot — v1.2 Signal Quality & Portfolio Analytics
-**Researched:** 2026-04-12
-**Scope:** Additions needed for new v1.2 features only. Existing validated stack (Python, discord.py,
-yfinance 0.2.51, anthropic/openai, schwab-py, APScheduler 3.10.4, SQLite) is not re-litigated.
+**Project:** Algo Trade Bot — v1.3
+**Researched:** 2026-04-18
+**Scope:** Limit orders, earnings date awareness, EPS quarterly trend, /history command.
+Existing validated stack (Python, discord.py, yfinance 1.2.0, anthropic SDK, schwab-py 1.5.1,
+APScheduler, SQLite) is not re-litigated.
 
 ---
 
 ## Summary
 
-All nine v1.2 features are achievable with the existing stack. No new pip packages are required.
-The work divides into four categories: yfinance info-dict field reads (already fetched, just
-unused), a new standalone yfinance fetch for SPY/VIX macro context, APScheduler second-job
-registration, and analyst pipeline + DB schema extensions for confidence scoring. The highest
-implementation risk is the confidence scoring change — it touches four layers (prompt, parser,
-DB schema, embeds) and interacts with the analyst cache.
+No new pip packages are required for any of the four v1.3 features. All capabilities are present
+in the installed versions of `schwab-py` (1.5.1) and `yfinance` (1.2.0). The work is entirely
+integration — new function calls into existing libraries with data-shape awareness.
 
----
+`equity_buy_limit` is a near-identical drop-in for `equity_buy_market` with one extra `price`
+argument. The only gotcha is float serialisation: always call `round(limit_price, 2)` before
+passing to schwab-py.
 
-## Feature Stack Analysis
+For yfinance earnings data, `ticker.calendar` and `ticker.earnings_history` are both separate
+HTTP calls not folded into `ticker.info`, so each requires its own `asyncio.to_thread` wrap.
+However, the earnings date needed for the Discord embed warning can be derived from
+`info['earningsTimestamp']` — a field already in the `ticker.info` call that
+`fetch_fundamental_info` already makes — at zero extra cost.
 
-### SIG-01 — Sector name in Claude prompts
+`ticker.quarterly_earnings` returns `None` under yfinance 1.2.0 and must not be used. The correct
+EPS trend source is `ticker.earnings_history` (DataFrame, 4 rows, `epsActual` column).
 
-- **yfinance fields / API**: `info.get("sector")` — present in the `yf_ticker.info` dict that
-  `fetch_fundamental_info` already returns (it returns the full `.info` dict as-is). For ETFs,
-  `sector` is typically absent; graceful fallback to `"N/A"` is correct. Confidence: MEDIUM —
-  yfinance is an unofficial scraper; `sector` is a standard field but Yahoo Finance can return
-  `None` for some tickers without warning.
-- **New package needed**: No.
-- **Integration notes**: No additional network call. `fetch_fundamental_info` already fetches and
-  returns the full `info` dict. `build_prompt` and `build_sell_prompt` each receive the `info`
-  dict as a parameter — add `info.get("sector", "N/A")` interpolation into the prompt string.
-  `build_etf_prompt` currently takes explicit keyword args; add `sector: str | None = None` as
-  a new kwarg. All three prompt builders are pure functions — the change is string interpolation
-  only. No DB change required; sector is prompt context, not stored.
+PE direction (expanding/contracting) for the Claude prompt requires no extra network call —
+`trailingPE` and `forwardPE` are both present in the already-fetched `ticker.info`.
 
-### SIG-02 — SPY 5-day trend + VIX level in Claude prompts
-
-- **yfinance fields / API**:
-  - SPY 5-day close trend: `yf.Ticker("SPY").history(period="5d")["Close"]` — returns a
-    pd.Series of closing prices. Net 5-day move: `closes.iloc[-1] - closes.iloc[0]`. Compute
-    as a percentage: `(closes.iloc[-1] / closes.iloc[0] - 1) * 100`. The `history` method is
-    already used in `fetch_technical_data` (period="3mo"); period="5d" is supported.
-  - VIX level: `yf.Ticker("^VIX").fast_info.last_price` — single float. The `fast_info`
-    accessor is already used in `screener/positions.py` for live price lookups. `^VIX` is the
-    Yahoo Finance ticker for the CBOE Volatility Index. Returns the last available price
-    (previous close when market is closed). Confidence: MEDIUM — `fast_info.last_price` is a
-    relatively recent yfinance API surface; it works in 0.2.x but is less tested than
-    `.history()`. Fallback: catch any exception and set `vix_level = None`.
-- **New package needed**: No.
-- **Integration notes**: Macro data is scan-level context — fetch once per `run_scan` /
-  `run_scan_etf` call, before the ticker loop. Both fetches are blocking yfinance calls and must
-  be wrapped in `await asyncio.to_thread(...)` per the project's mandatory pattern. Store as two
-  local variables (`spy_trend_pct: float | None`, `vix_level: float | None`) and pass them into
-  each `build_prompt` / `build_sell_prompt` / `build_etf_prompt` call as optional keyword args.
-  Both fetches need `try/except` guards — missing macro context shows "N/A" in the prompt, not
-  a crash. A helper function `fetch_macro_context() -> tuple[float | None, float | None]` in a
-  new or existing screener module keeps `run_scan` clean.
-
-### SIG-03 — 52-week range in Claude BUY/SELL prompts
-
-- **yfinance fields / API**: `info.get("fiftyTwoWeekHigh")` and `info.get("fiftyTwoWeekLow")` —
-  both present in the `yf_ticker.info` dict already fetched by `fetch_fundamental_info`. These
-  are standard yfinance fields populated for equities. ETFs also have them. Confidence: HIGH —
-  these are among the most stable yfinance info fields.
-  Derived value: `week52_position_pct = (current_price - week52_low) / (week52_high - week52_low)`
-  where `week52_high != week52_low`. Guards needed: both fields can be `None` for newly-listed
-  tickers; compute only when both are present and non-equal.
-- **New package needed**: No.
-- **Integration notes**: Fields are read from the already-fetched `info` dict — zero extra network
-  calls. Pass `week52_high`, `week52_low` (and optionally the derived `week52_position_pct`) into
-  `build_prompt` and `build_sell_prompt`. ETF prompt can also receive them via `build_etf_prompt`
-  kwargs. No DB change required.
-
-### SIG-04 — Confidence scoring (high/medium/low badge in Discord embed)
-
-- **yfinance fields / API**: None — analyst output and display change only.
-- **New package needed**: No.
-- **Integration notes**: This is the most cross-cutting v1.2 change. It touches five layers:
-
-  **1. Prompt builders** — All three prompt functions (`build_prompt`, `build_sell_prompt`,
-  `build_etf_prompt`) must request a third output line. The current two-line format becomes:
-  ```
-  SIGNAL: <BUY|HOLD|SKIP>
-  REASONING: <2-3 sentences>
-  CONFIDENCE: <HIGH|MEDIUM|LOW>
-  ```
-
-  **2. Parser** — `parse_claude_response` in `claude_analyst.py` currently extracts `signal`
-  and `reasoning`. Extend to also extract `CONFIDENCE:` line. Add
-  `_VALID_CONFIDENCE = {"HIGH", "MEDIUM", "LOW"}`. Missing CONFIDENCE line must default to
-  `confidence = None` (not raise ValueError) — LLMs occasionally omit optional lines, and
-  breaking the entire parse for a missing badge is the wrong tradeoff. Invalid confidence
-  value (not in the valid set) should also degrade to `None`, not raise.
-
-  **3. DB schema** — Add `confidence TEXT` column to `recommendations` via additive migration
-  in `initialize_db`. Pattern is established: `ALTER TABLE recommendations ADD COLUMN confidence TEXT`
-  wrapped in `try/except sqlite3.OperationalError`. Update `create_recommendation` in
-  `queries.py` to accept `confidence: str | None = None` and include it in the INSERT.
-  Also add `confidence TEXT` column to `analyst_cache` with the same migration pattern, and
-  update `get_cached_analysis` / `set_cached_analysis` to carry `confidence` through the cache.
-  Old cache rows will have `confidence = NULL` — all callers must handle `None` confidence.
-
-  **4. Embeds** — `build_recommendation_embed`, `build_sell_embed`,
-  `build_etf_recommendation_embed` in `embeds.py` accept a new `confidence: str | None`
-  parameter and display it as a Discord embed field. Suggested display: prefix with a colored
-  indicator character (HIGH = green circle, MEDIUM = yellow circle, LOW = red circle). Discord
-  does not support inline color; the character approach is the standard community pattern.
-
-  **5. Bot send methods** — `send_recommendation`, `send_sell_recommendation`,
-  `send_etf_recommendation` in `bot.py` need `confidence` threaded through to the embed builders.
-  `run_scan` / `run_scan_etf` in `main.py` pass `confidence` from `analysis["confidence"]`
-  (where `analysis` is the dict returned by `analyze_ticker` / `analyze_etf_ticker`).
-
-### ETF-07 — Scheduled ETF scan at time offset
-
-- **yfinance fields / API**: None — scheduling change only.
-- **New package needed**: No — APScheduler 3.10.4 already in stack.
-- **APScheduler job config**: The existing `configure_scheduler` registers stock scan jobs with
-  IDs `scan_0`, `scan_1`, etc. using `CronTrigger(hour=h, minute=m)`. A parallel
-  `configure_etf_scheduler` function follows the same pattern:
-  ```python
-  scheduler.add_job(
-      etf_job_fn,
-      trigger=CronTrigger(hour=config.etf_scan_hour, minute=config.etf_scan_minute),
-      id="etf_scan_0",
-      replace_existing=True,
-  )
-  ```
-  ETF job IDs must use a distinct prefix (`etf_scan_0`) to avoid colliding with stock job IDs
-  (`scan_0`). APScheduler raises if two jobs share an ID and `replace_existing=False`.
-- **Config additions needed**: Two new `Config` fields:
-  - `etf_scan_hour: int = int(os.getenv("ETF_SCAN_HOUR", "9"))`
-  - `etf_scan_minute: int = int(os.getenv("ETF_SCAN_MINUTE", "30"))`
-  Default of 30-minute offset from the stock scan (9:00 → 9:30) avoids rate-limit contention.
-- **Integration notes**: The `on_ready` coroutine in `main.py` calls `configure_scheduler` then
-  `scheduler.start()`. Add a `configure_etf_scheduler` call between those two lines, before
-  `scheduler.start()`. The `bot._scan_etf_callback` lambda is already wired in `main.py` —
-  the scheduler job wraps it the same way the stock job wraps `run_scan`.
-
-### ETF-08 — `[ETF]` ops alert prefix
-
-- **yfinance fields / API**: None.
-- **New package needed**: No.
-- **Integration notes**: `run_scan_etf` already calls `bot.send_ops_alert(...)` for zero
-  recommendations. Change the message string to `"[ETF] Scan complete: 0 recommendations posted."`.
-  One-line change in `main.py`.
-
-### ETF-09 — Expense ratio threshold filter
-
-- **yfinance fields / API**: `info.get("netExpenseRatio")` — already fetched in `run_scan_etf`
-  at `main.py` line 318. No new fetch needed. Note the codebase uses `netExpenseRatio` as the
-  primary key and falls back gracefully when it is `None`. The v1.1 STACK.md references
-  `annualReportExpenseRatio` as an alternative key seen in tests — both may be present; `netExpenseRatio`
-  is used in the live code path and should remain the primary key.
-- **New package needed**: No.
-- **Integration notes**: Add one `Config` field: `max_etf_expense_ratio: float = float(os.getenv("MAX_ETF_EXPENSE_RATIO", "0.005"))`. In `run_scan_etf`, after fetching `expense_ratio`, add a filter gate:
-  ```python
-  if expense_ratio is not None and expense_ratio > config.max_etf_expense_ratio:
-      logger.debug("Skipping %s: expense ratio %.4f exceeds %.4f threshold", ...)
-      continue
-  ```
-  When `expense_ratio is None`, skip the filter (same missing-data policy used throughout). The
-  embed already displays the expense ratio field — no embed change needed.
-
-### PORT-01 — Total unrealized P&L aggregate in `/positions`
-
-- **yfinance fields / API**: `yf.Ticker(ticker).fast_info.last_price` — already used in
-  `screener/positions.py` via `get_position_summary`. No new fields.
-- **New package needed**: No.
-- **Integration notes**: `get_position_summary` already returns per-position dicts with
-  `current_price`, `shares`, and `avg_cost_usd`. Total unrealized P&L:
-  ```python
-  total_pnl_usd = sum(
-      (s["current_price"] - s["avg_cost_usd"]) * s["shares"]
-      for s in summaries
-      if s["current_price"] is not None
-  )
-  ```
-  This summation belongs either in `_positions_command` in `bot.py` or passed as a parameter
-  to `build_positions_embed`. The embed should show the aggregate as a footer or summary field.
-  No DB change, no new fetch.
-
-### PORT-02 — `/stats` slash command (win rate, avg gain, avg loss)
-
-- **yfinance fields / API**: None — DB query against existing `trades` table only.
-- **New package needed**: No — standard `sqlite3` module already used throughout `queries.py`.
-- **SQLite query shape for closed trade stats**: The `trades` table has `recommendation_id`,
-  `ticker`, `price`, `side` (`buy`/`sell`), and `executed_at`. Pairing buy and sell by
-  `recommendation_id`:
-  ```sql
-  SELECT
-      t.ticker,
-      t.price       AS exit_price,
-      b.price       AS entry_price,
-      t.executed_at AS exit_at
-  FROM trades t
-  JOIN trades b
-    ON b.recommendation_id = t.recommendation_id
-   AND b.side = 'buy'
-  WHERE t.side = 'sell'
-  ORDER BY t.executed_at DESC
-  ```
-  This returns one row per closed trade. Compute stats in Python (not SQL) for testability:
-  ```python
-  gains = [(row["exit_price"] - row["entry_price"]) / row["entry_price"] for row in rows]
-  wins   = [g for g in gains if g > 0]
-  losses = [g for g in gains if g <= 0]
-  win_rate  = len(wins) / len(gains) if gains else None
-  avg_gain  = sum(wins) / len(wins) if wins else None
-  avg_loss  = sum(losses) / len(losses) if losses else None
-  ```
-  Add `get_trade_stats(db_path: str) -> dict` to `database/queries.py` returning
-  `{"total_trades": int, "win_rate": float|None, "avg_gain": float|None, "avg_loss": float|None}`.
-  Register the `/stats` slash command in `setup_hook` in `bot.py` alongside `/scan`, `/scan_etf`,
-  `/positions`. The handler calls `get_trade_stats` via `asyncio.to_thread` and formats a Discord
-  embed. When no closed trades exist, respond with a plain message ("No closed trades yet.") rather
-  than computing stats on an empty list.
-
-### OPS-01 — Scan exceptions posted to Discord ops channel
-
-- **yfinance fields / API**: None.
-- **New package needed**: No.
-- **Integration notes**: `send_ops_alert` already exists on `TradingBot` and posts to
-  `config.discord_channel_id`. Two distinct error surfaces:
-
-  **Per-ticker errors** are already caught by `try/except Exception` blocks in `run_scan` and
-  `run_scan_etf`. Currently they `logger.error(...)` and `continue`. Add a
-  `await bot.send_ops_alert(f"[SCAN ERROR] {ticker}: {exc}")` call inside those handlers. To
-  avoid Discord spam on a bad scan (e.g. all 20 tickers fail), gate the alert on a per-scan
-  error count: only post to Discord after the 3rd+ error in a single scan run.
-
-  **Scan-level exceptions** (uncaught exceptions that escape `run_scan` entirely) are currently
-  swallowed by APScheduler or the `asyncio.run_coroutine_threadsafe` wrapper. The cleanest fix
-  is a thin wrapper in `main.py`:
-  ```python
-  async def _guarded_scan(bot, config):
-      try:
-          await run_scan(bot, config)
-      except Exception as exc:
-          logger.error("Unhandled scan exception: %s", exc, exc_info=True)
-          await bot.send_ops_alert(f"[SCAN FAILED] Unhandled exception: {exc}")
-  ```
-  Replace `run_scan(bot, config)` with `_guarded_scan(bot, config)` in the scheduler lambda and
-  the `/scan` command callback. Mirror the same pattern for ETF scan.
+The `/history` command needs no new library — only one new DB query and a Discord embed, both
+using patterns already established in the codebase.
 
 ---
 
 ## New Dependencies
 
-| Package | Version | Purpose | Required? |
-|---------|---------|---------|-----------|
-| (none) | — | All v1.2 features use the existing stack | — |
+**None.** Do not add any packages.
 
-**No new packages required.** All API surface needed for v1.2 is available in the currently
-pinned versions. Confirmed surface used:
+Confirmed installed versions with verified API surface:
 
-| Library | Version | v1.2 Surface Used |
-|---------|---------|------------------|
-| yfinance | 0.2.51 | `info["sector"]`, `info["fiftyTwoWeekHigh"]`, `info["fiftyTwoWeekLow"]`, `Ticker("^VIX").fast_info.last_price`, `Ticker("SPY").history(period="5d")` |
-| APScheduler | 3.10.4 | Second `scheduler.add_job(...)` call with distinct `id="etf_scan_0"` |
-| discord.py | 2.4.0 | New `/stats` slash command via existing `app_commands.Command` pattern |
-| sqlite3 | stdlib | New `get_trade_stats` JOIN query; additive `ALTER TABLE` migrations for `confidence` column |
-| anthropic / openai SDK | 0.40.0 / >=1.0.0 | No API changes — prompt string and response parser only |
+| Library | Installed | v1.3 Surface Needed | Status |
+|---------|-----------|-------------------|--------|
+| schwab-py | 1.5.1 | `equity_buy_limit(symbol, quantity, price)` | Verified present |
+| yfinance | 1.2.0 | `ticker.calendar`, `ticker.earnings_history`, `info['earningsTimestamp']`, `info['forwardPE']` | Verified present |
+| discord.py | (existing) | New `/history` slash command via existing `app_commands` pattern | No change |
+| sqlite3 | stdlib | New `get_recent_closed_trades` query | No change |
 
 ---
 
-## Risks
+## API Details
 
-### yfinance field availability is not guaranteed (MEDIUM confidence)
+### schwab-py 1.5.1 — Limit Buy Order
 
-`sector`, `fiftyTwoWeekHigh`, `fiftyTwoWeekLow` are standard `info` dict keys but yfinance is an
-unofficial scraper. Yahoo Finance can change response shapes silently. Mitigation: always use
-`info.get("key")` (never bracket access) and treat `None` as "N/A" in prompts. This pattern is
-already established throughout the codebase. `^VIX` via `fast_info.last_price` is less exercised
-than standard equity tickers — wrap in `try/except` with `vix_level = None` fallback.
+**Import (add alongside existing imports in `orders.py`):**
+```python
+from schwab.orders.equities import equity_buy_market, equity_buy_limit, equity_sell_market
+```
 
-### Confidence scoring touches five layers simultaneously (HIGH risk, implementation only)
+**Signature:**
+```python
+equity_buy_limit(symbol: str, quantity: int, price: float) -> OrderBuilder
+```
 
-Changing `parse_claude_response` to expect a CONFIDENCE line affects all three prompt paths. The
-parser must remain permissive: missing CONFIDENCE line becomes `confidence = None`, not a parse
-failure. This is critical because:
-1. The analyst cache currently stores `{signal, reasoning}` — cache hits would return no
-   confidence until cache rows are regenerated. Code must handle `None` confidence everywhere.
-2. Existing tests in `test_analyst_claude.py` assert on two-line responses — they will need
-   updating to either three-line responses or explicit `confidence=None` assertions.
-3. The `_VALID_SIGNALS` check raises `ValueError` on bad signal values; confidence must NOT
-   raise on missing/invalid values to avoid a cascade where one omitted line fails the full scan.
+**Built JSON spec — diff from market order** (two fields change, all others identical):
+```json
+{
+  "session": "NORMAL",
+  "duration": "DAY",
+  "orderType": "LIMIT",          // was "MARKET"
+  "price": "175.50",             // added; serialised as string by schwab-py
+  "orderLegCollection": [
+    { "instruction": "BUY", "instrument": { "assetType": "EQUITY", "symbol": "AAPL" }, "quantity": 1 }
+  ],
+  "orderStrategyType": "SINGLE"
+}
+```
 
-### APScheduler ETF job ID collision
+**Price precision rule:** schwab-py serialises the price via Python's default float-to-str
+conversion, which can produce unexpected decimal places. `equity_buy_limit('X', 1, 175.555555)`
+produces `"price": "175.55"` (truncation behaviour). Always pass `round(limit_price, 2)` to
+guarantee exactly two decimal places and avoid unintended limit prices.
 
-If `configure_scheduler` and `configure_etf_scheduler` use the same job ID prefix, APScheduler
-will silently overwrite jobs if `replace_existing=True`. Use `etf_scan_0` for ETF jobs and
-`scan_0` for stock jobs. The existing test `test_scheduler_has_one_job_after_configure` asserts
-`len(scheduler.get_jobs()) == 1` after `configure_scheduler` — adding a new `configure_etf_scheduler`
-function (separate from `configure_scheduler`) keeps that test valid without modification.
+**New builder function for `orders.py`:**
+```python
+def build_limit_buy(ticker: str, shares: int, limit_price: float) -> dict:
+    """Return the JSON spec for a limit buy order (no network call)."""
+    return equity_buy_limit(ticker, shares, round(limit_price, 2)).build()
+```
 
-### `/stats` query assumes trades table integrity
+**`place_order` integration:** Add `USE_LIMIT_BUY` boolean to `Config` (default `True`). The
+limit price is the signal price already stored in the recommendation — no new yfinance call at
+order time. Branch in `place_order`:
+```python
+def place_order(ticker: str, shares: int, config, client=None, limit_price: float | None = None) -> str:
+    ...
+    if config.use_limit_buy and limit_price is not None:
+        spec = build_limit_buy(ticker, shares, limit_price)
+    else:
+        spec = build_market_buy(ticker, shares)
+```
 
-The JOIN query pairing sell trades to buy trades via `recommendation_id` assumes every sell has
-exactly one corresponding buy. This holds for the current flow. Positions opened before the bot
-was deployed have no `recommendation_id` — those trades are silently excluded from stats, which
-is the correct behavior (stats on bot-managed trades only). No defensive query change needed.
+The `place_order` return path (`resp.headers.get("Location", "").split("/")[-1]`) and
+`_call_place_order` retry wrapper are unchanged — limit orders use the same Schwab
+`place_order` endpoint and return the same `Location` header.
 
-### DB migration ordering
+`duration` defaults to `DAY`. A limit order placed after market close expires at the end of the
+next trading session. This is the correct behaviour for a signal-price limit order; do not change
+it to GTC.
 
-Adding `confidence` to `recommendations` and `analyst_cache` requires two new `ALTER TABLE`
-migrations in `initialize_db`. Apply both in the same function, after existing migrations, using
-the established `try/except sqlite3.OperationalError: pass` pattern.
+---
+
+### yfinance 1.2.0 — Earnings Date
+
+**Two sources, one preferred:**
+
+**Option A (preferred — zero extra cost):** `ticker.info` already contains `earningsTimestamp`.
+This is populated in the same call that `fetch_fundamental_info` already makes. Use when only
+the next earnings date is needed (Discord embed warning field).
+
+```python
+import datetime
+ts = info.get('earningsTimestamp')
+next_earnings: datetime.date | None = datetime.datetime.fromtimestamp(ts).date() if ts else None
+is_estimate: bool = info.get('isEarningsDateEstimate', True)
+```
+
+**Option B (if estimate range is also needed):** `ticker.calendar` — separate HTTP call.
+
+Attribute: `ticker.calendar` (separate HTTP request, ~0.06s in testing)
+Return type: `dict` when data exists, `{}` (empty dict) when absent (ETFs, invalid/delisted tickers)
+
+```python
+cal = ticker.calendar  # must be wrapped in asyncio.to_thread
+dates = cal.get('Earnings Date', []) if cal else []
+next_earnings: datetime.date | None = dates[0] if dates else None
+```
+
+Observed shape (equities):
+```python
+{
+    'Earnings Date': [datetime.date(2026, 5, 1)],  # always a list, first element is next date
+    'Earnings High': 2.16,
+    'Earnings Low': 1.75,
+    'Earnings Average': 1.94361,
+    'Revenue High': 112692596420,
+    'Revenue Low': 105000000000,
+    'Revenue Average': 109232144700,
+    'Dividend Date': datetime.date(2026, 2, 12),
+    'Ex-Dividend Date': datetime.date(2026, 2, 9),
+}
+```
+
+Both Option A and Option B agreed on the date in all tested tickers (AAPL, MSFT, GOOGL, NVDA).
+Prefer Option A for the embed warning to avoid an extra network call per ticker.
+
+---
+
+### yfinance 1.2.0 — EPS Quarterly Trend
+
+**DO NOT USE: `ticker.quarterly_earnings`** — returns `None` under yfinance 1.2.0. This
+attribute was removed or broken in the yfinance 1.x rewrite.
+
+**PRIMARY: `ticker.earnings_history`** — separate HTTP call, ~0.4s cold
+
+Return type: `DataFrame` or empty DataFrame. Never `None` (but may be empty).
+Shape: 4 rows (last 4 reported quarters), ascending date order (oldest first in index).
+
+Columns: `epsActual`, `epsEstimate`, `epsDifference`, `surprisePercent`
+Index: quarterly `Timestamp` values
+
+```python
+eh = ticker.earnings_history  # must be wrapped in asyncio.to_thread
+if eh is None or eh.empty:
+    eps_trend = None
+    eps_vals = None
+else:
+    eps_vals = eh['epsActual'].tolist()  # [q_oldest, q2, q3, q_newest]
+    eps_trend = 'up' if eps_vals[-1] > eps_vals[0] else 'down'
+    # For Claude prompt: format as "Q1=$1.65 Q2=$1.57 Q3=$1.85 Q4=$2.84 (trend: up)"
+```
+
+**FALLBACK: `ticker.quarterly_income_stmt`** — if `earnings_history` is empty
+Return type: wide DataFrame, rows = line items, columns = quarter-end Timestamps, newest first.
+
+```python
+qi = ticker.quarterly_income_stmt  # must be wrapped in asyncio.to_thread
+if qi is not None and not qi.empty and 'Basic EPS' in qi.index:
+    eps_row = qi.loc['Basic EPS']         # newest-first Series
+    eps_vals = list(reversed(eps_row.dropna().tolist()))  # flip to oldest-first
+```
+
+**PE direction (zero extra cost):**
+Both `trailingPE` and `forwardPE` are present in `ticker.info`, already fetched by
+`fetch_fundamental_info`. No new network call.
+
+```python
+trailing_pe = info.get('trailingPE')
+forward_pe = info.get('forwardPE')
+if trailing_pe and forward_pe:
+    pe_direction = 'contracting' if forward_pe < trailing_pe else 'expanding'
+else:
+    pe_direction = None
+# Add to Claude BUY prompt: "PE: 34.2 (trailing) → 28.9 (forward) [contracting]"
+```
+
+---
+
+### /history Discord Command — No New Dependencies
+
+The existing `trades` table has all columns needed. No schema changes required.
+
+Required new DB query (add to `database/queries.py`, following existing patterns):
+```python
+def get_recent_closed_trades(db_path: str, limit: int = 20) -> list[sqlite3.Row]:
+    """Return last `limit` sell trades ordered by most recent first.
+
+    Returns rows with: ticker, price (exit), cost_basis (entry), shares, executed_at.
+    Rows with cost_basis IS NULL are excluded (pre-migration trades).
+    """
+    conn = get_connection(db_path)
+    rows = conn.execute(
+        """SELECT ticker, price, cost_basis, shares, executed_at
+           FROM trades
+           WHERE side = 'sell' AND cost_basis IS NOT NULL
+           ORDER BY executed_at DESC
+           LIMIT ?""",
+        (limit,),
+    ).fetchall()
+    conn.close()
+    return rows
+```
+
+P&L per trade: `(price - cost_basis) / cost_basis * 100` — same formula already used in
+`get_trade_stats`. Register `/history` in `setup_hook` alongside `/scan`, `/positions`, `/stats`.
+Call `get_recent_closed_trades` via `asyncio.to_thread` in the command handler.
+
+---
+
+## Version Gotchas
+
+### yfinance 1.2.0
+
+1. **`ticker.quarterly_earnings` returns `None`** — do not use. Use `ticker.earnings_history`
+   instead. This broke silently in the 1.x rewrite with no deprecation warning.
+
+2. **`ticker.calendar` returns `{}` (empty dict), not `None`, when absent** — guard with
+   `cal.get('Earnings Date', [])` rather than `if cal['Earnings Date']`. ETFs (SPY), invalid
+   tickers, and recently listed stocks all return `{}`. Tested: SPY → `{}`, fake ticker → `{}`.
+
+3. **`ticker.earnings_history` can return an empty DataFrame** — guard with
+   `if eh is None or eh.empty`. Observed empty for NKLA (never reported positive EPS). Non-empty
+   for BRK-A, SPWR, BLNK. Always test both conditions.
+
+4. **`earnings_history` index order is ascending (oldest first)** — `eh['epsActual'].tolist()`
+   gives `[q_oldest, ..., q_newest]`. Compare `[-1] > [0]` for uptrend direction.
+
+5. **`quarterly_income_stmt` column order is descending (newest first)** — the opposite of
+   `earnings_history`. Reverse the list before directional comparison if using this fallback.
+
+6. **Each of `calendar`, `earnings_history`, `quarterly_income_stmt` is a separate HTTP call** —
+   each requires its own `asyncio.to_thread(...)` wrap. Calling any of these bare in an async
+   function blocks the Discord gateway heartbeat, violating ASYNC-01..04 established in v1.1.
+   `ticker.info` (already wrapped in `fetch_fundamental_info`) does not pre-cache these.
+
+7. **`earningsTimestamp` in `ticker.info` duplicates `ticker.calendar` date** — both return the
+   same next-earnings date in all tested tickers. The `info` field is free (no extra call);
+   prefer it for the embed warning field.
+
+### schwab-py 1.5.1
+
+1. **Price serialised as `str(float)`, not `"%.2f"` formatted** — `equity_buy_limit` does not
+   round for you. `175.555555` becomes `"175.55"` (Python's float repr truncation). Always pass
+   `round(limit_price, 2)` to guarantee exactly two decimal places.
+
+2. **Integer prices are padded to two decimal places** — `equity_buy_limit('X', 1, 175)` produces
+   `"price": "175.00"`. Passing an int is safe; Python's `str(175.00)` gives `"175.0"` but
+   schwab-py normalises it. Still: pass `round(float(price), 2)` for consistency.
+
+3. **`equity_buy_limit` returns `OrderBuilder`, not `dict`** — call `.build()` exactly like
+   `equity_buy_market`. The existing `_call_place_order` takes the spec dict; pattern is
+   unchanged.
+
+4. **Order lifetime is `DAY` by default** — correct for signal-price limit orders. Do not change
+   to `GOOD_TILL_CANCEL`; GTC orders can fill at stale prices after news events.
+
+5. **`place_order` `Location` header extraction is unchanged** — limit orders use the same
+   Schwab endpoint and return the same `Location: /orders/{order_id}` header. No change to the
+   `resp.headers.get("Location", "").split("/")[-1]` extraction.
+
+---
+
+## What NOT to Add
+
+- **No new pip packages** — all four features are achievable with installed versions.
+- **No GTC (Good Till Cancelled) limit orders** — `DAY` duration is correct. GTC orders persist
+  across sessions and can fill at stale prices after earnings or macro events.
+- **Do not use `ticker.quarterly_earnings`** — returns `None` in yfinance 1.2.0.
+- **Do not add `ticker.calendar` call if only the next earnings date is needed** — derive it from
+  `info['earningsTimestamp']` (already fetched by `fetch_fundamental_info`) at zero extra cost.
+  Only add the `calendar` call if the earnings estimate range (High/Low/Average) is required in
+  the Claude prompt.
+- **No dedicated earnings API or external calendar service** — yfinance is the single data source;
+  adding a second creates synchronisation risk and a new failure mode.
+- **No new DB tables** — the existing `trades` table has all columns needed for `/history`.
+  `get_recent_closed_trades` is a read-only query, no schema changes needed.
+- **No schema migration scripts** — follow the established additive `ALTER TABLE ... ADD COLUMN`
+  pattern inside `initialize_db` wrapped in `try/except sqlite3.OperationalError` for any new
+  columns. No new columns are needed for v1.3.
+- **No changes to the sell order path** — limit orders apply to BUY only. Sell orders remain
+  market orders (slippage on exit is acceptable; missing an exit on a declining position is not).

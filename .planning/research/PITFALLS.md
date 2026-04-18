@@ -1,133 +1,273 @@
-# Pitfalls Research — v1.2
+# Pitfalls Research — v1.3
 
-**Domain:** Adding signal enrichment, confidence scoring, macro context, ETF scheduling, portfolio stats, and error surfacing to a live Python Discord trading bot
-**Researched:** 2026-04-12
-**Confidence:** HIGH — all pitfalls derived from direct codebase inspection of main.py, claude_analyst.py, technicals.py, config.py, queries.py, and PROJECT.md
+**Domain:** Adding limit orders, yfinance earnings data, trade history, and test coverage to a live Python Discord trading bot
+**Researched:** 2026-04-19
+**Confidence:** HIGH — all pitfalls derived from direct codebase inspection plus live `python -c` verification of actual yfinance and schwab-py behavior
 
 ---
 
 ## Summary
 
-The highest risks in v1.2 share a common root: each new feature touches either the analyst prompt/parser pair, the yfinance `info` dict, or the APScheduler setup — three surfaces with established fragility in this codebase. Adding a fourth parse target (CONFIDENCE), a second scheduler job (ETF scheduled scan), and new yfinance field reads (sector, VIX, 52-week range) all extend existing fragile paths without replacing them. The analyst cache also becomes a hidden problem: cache hits return dicts without a `confidence` key, guaranteed to happen on the first post-deployment scan for any ticker with unchanged headlines. This is silent and affects Discord embed rendering, not scan correctness.
+v1.3 adds five features across four distinct subsystems: Schwab limit order API, yfinance calendar/income_stmt, SQLite history JOIN, and test infrastructure. Each subsystem has a distinct failure mode. The highest-priority risks are: (1) limit price staleness — the price stored at scan time becomes the limit price for an order placed hours later when the user finally clicks Approve, and (2) the `/history` JOIN producing duplicate rows when a ticker has been bought and sold more than once, silently inflating P&L calculations. The yfinance earnings pitfalls are real but lower-severity because the existing defensive patterns (`info.get(...)`, `None` guards, `asyncio.to_thread`) translate directly — the main trap is assuming `ticker.calendar` and `ticker.quarterly_income_stmt` behave uniformly across all tickers. Test infrastructure pitfalls center on Config env var leakage between test sessions and the mocking strategy for private functions.
 
 ---
 
-## Pitfalls
+## Limit Orders Pitfalls
 
 ---
 
-### P-01: Confidence line breaks the two-line parser
+### L-01: Float price passed to `equity_buy_limit` triggers DeprecationWarning, will break in future schwab-py version
 
-- **Risk**: `parse_claude_response` (claude_analyst.py lines 165-190) expects exactly `SIGNAL:` then `REASONING:`. Adding `CONFIDENCE:` requires the parser to handle a three-line contract. If the model omits CONFIDENCE, returns it inline with reasoning ("BUY — high confidence"), or labels it differently ("CONF:", "Confidence Level:"), `parse_claude_response` either silently ignores it or raises `ValueError` — both of which cause the entire ticker to be dropped via `except Exception: continue` in `run_scan`. No exception is logged at the Discord level; the scan just posts fewer recommendations.
-- **Trigger**: Prompt instructs "return exactly three lines" but any LLM output that does not strictly comply. Claude models frequently paraphrase format instructions when responding to complex multi-field prompts.
-- **Prevention**: Extend `parse_claude_response` using the existing `next(... startswith("CONFIDENCE:"), None)` pattern already used for SIGNAL and REASONING. Make CONFIDENCE optional in the parser — return `None` if absent rather than raising. Test with synthetic responses covering: missing CONFIDENCE, inline CONFIDENCE, reordered lines, alternate labels. Do not change the function's exception behavior for SIGNAL/REASONING; only CONFIDENCE should degrade gracefully.
-- **Phase**: Phase adding SIG-04 (confidence scoring).
+**What goes wrong:** `equity_buy_limit(ticker, shares, 150.005)` emits `UserWarning: passing floats to set_price and set_stop_price is deprecated and will be removed soon. Please update your code to pass prices as strings instead.` Verified live against the installed schwab-py. A future schwab-py point release will convert this warning to a `TypeError`, silently breaking all limit orders in production the next time the library is updated.
 
----
+**Why it happens:** The existing `build_market_buy` passes an `int` (shares) and `str` (ticker), but the limit price will be derived from `info.get("regularMarketPrice")` — a Python `float`. The natural implementation is `equity_buy_limit(ticker, shares, price)` with `price` as a float.
 
-### P-02: yfinance `info` dict returns None silently for new fields
+**Prevention:** Pass the limit price as a string formatted to the appropriate decimal places: `f"{price:.2f}"`. Use two decimal places for prices above $1.00, and up to four decimal places for penny stocks below $1.00 (Schwab accepts up to 4 decimal places). Add `build_limit_buy(ticker, shares, price_str)` in `schwab_client/orders.py` mirroring the existing `build_market_buy` pattern. The function signature should accept a `str` for price, not `float`, to make the caller responsible for formatting — this prevents accidental float drift.
 
-- **Risk**: `sector`, `fiftyTwoWeekHigh`, `fiftyTwoWeekLow`, and `netExpenseRatio` are all read from `yf_ticker.info`. yfinance is an unofficial scraper; these fields return `None`, an empty string, or are entirely absent with no exception. If prompt builders use `info["sector"]` (KeyError) or pass a raw `None` into an f-string format like `f"{sector.upper()}"` (AttributeError), the ticker is silently skipped. Worse, `f"Sector: {sector}"` renders as `"Sector: None"` — a valid string sent to the LLM, which degrades signal quality without triggering any error.
-- **Trigger**: ETF tickers return sparse `info` dicts. `sector` is frequently absent for ETFs, SPACs, and foreign-listed ADRs. `fiftyTwoWeekHigh`/`Low` can be absent for recently-listed tickers. `netExpenseRatio` is always absent for stocks and sometimes absent for ETFs.
-- **Prevention**: Use `.get("sector", "N/A")` everywhere — never direct index. Apply the same defensive pattern already established for `trailingPE`, `dividendYield`, and `earningsGrowth` in `build_prompt` (lines 92-94 of claude_analyst.py). Pass formatted strings to prompt builders, not raw values. Add unit tests with `info={}` confirming graceful fallback to "N/A" strings.
-- **Phase**: Phase adding SIG-01 (sector), SIG-02 (macro context), SIG-03 (52-week range).
+**Phase:** Phase implementing limit buy orders.
 
 ---
 
-### P-03: SPY/VIX macro fetch is a bare blocking yfinance call risk
+### L-02: Limit price is stale when user approves hours after the scan ran
 
-- **Risk**: The macro context fetch (SPY close, VIX level) will be a new yfinance call inside `run_scan`, which is an `async` function running on the Discord event loop. If written as a direct `yf.Ticker("SPY").history(...)` without `asyncio.to_thread`, it blocks the event loop and risks a Discord gateway heartbeat timeout. This is the exact class of bug that v1.1 Phase 8 spent a dedicated sweep to eliminate across 9 call sites — it is easy to reintroduce with a natural-looking one-liner.
-- **Trigger**: Macro fetch written at the top of `run_scan` before the ticker loop as a convenience one-liner. The developer sees it as "just one quick call" rather than a blocking I/O call.
-- **Prevention**: Wrap in `asyncio.to_thread` from the first commit. Model it like `get_top_sp500_by_fundamentals` — fetched once before the loop, wrapped, result passed down as a dict (e.g., `{"spy_trend": "uptrend", "vix": 18.2}`). Add a regression test asserting `asyncio.to_thread` was called for the macro fetch (patch `main.asyncio.to_thread` and assert it was invoked with a yfinance-related callable).
-- **Phase**: Phase adding SIG-02 (macro context).
+**What goes wrong:** The recommendation is created at scan time (e.g., 09:00 AM) with `price = info["regularMarketPrice"]` stored in the `recommendations` table. When the user clicks Approve at 3:45 PM, `ApproveRejectView` uses `self.price` — the price captured at view construction from the DB row at scan time. The limit order is placed at a price that is hours old. For volatile tickers, the actual price may have moved 2-5% away from the limit, causing the order to either: (a) never fill if the stock moved up past the limit, leaving an unfilled DAY order that expires silently, or (b) fill immediately at a price far below the current market if the stock dropped, which is actually favorable but unexpected.
 
----
+**Why it happens:** `ApproveRejectView.__init__` receives `price` from `send_recommendation` which reads from the DB row. The price is never refreshed between scan time and approval time. This is intentional for market orders (price is approximate anyway), but for limit orders, the limit price is a contract — the broker will not fill above it.
 
-### P-04: Second APScheduler job conflicts with or overwrites the first
+**Prevention:** Two options: (a) Fetch a fresh quote at Approve time and use that as the limit price — this requires a yfinance call inside the async button handler, wrapped in `asyncio.to_thread`, which adds latency and a potential failure path. (b) Store the limit price in the recommendations table and add a "price may be stale" warning in the Discord embed showing how long ago the recommendation was created. Option (b) is lower risk and consistent with the existing pattern. The embed should display `"Limit: $X.XX (as of HH:MM)"` and the operator is informed before clicking. Document in `.env.example` that `USE_LIMIT_BUY=true` means the limit price is the scan-time price.
 
-- **Risk**: `configure_scheduler` (main.py lines 39-48) adds jobs with IDs `scan_0`, `scan_1`, etc., using `replace_existing=True`. If the ETF scheduled scan is registered using the same ID pattern — or calls `configure_scheduler` again with ETF times — it silently overwrites existing stock scan jobs. Separately, if both scans fire at the same minute, they share analyst quota in a single run, exhausting `analyst_daily_limit` faster than designed.
-- **Trigger**: ETF scan job registered inside `configure_scheduler` with no namespace separation, or scheduled at the same time as the stock scan without an offset.
-- **Prevention**: Use a distinct ID namespace for ETF jobs (`etf_scan_0`, `etf_scan_1`). Add `ETF_SCAN_OFFSET_MINUTES` to Config (default 30 minutes after stock scan) and document in `.env.example`. Test that calling `configure_scheduler` for both stock and ETF times produces additive job counts — assert `scheduler.get_jobs()` has the expected count, not that some were replaced.
-- **Phase**: Phase adding ETF-07 (scheduled ETF scan).
+**Phase:** Phase implementing limit buy orders.
 
 ---
 
-### P-05: Confidence badge crashes Discord embed when field is None
+### L-03: DAY duration limit orders expire silently — no notification when unfilled
 
-- **Risk**: When the parser returns `confidence=None` (cache hit, optional parse miss, or legacy response), any embed builder code that calls `confidence.upper()` or `f"[{confidence}]"` without a None guard raises `AttributeError`. The embed send fails, the recommendation is written to DB via `create_recommendation` but the Discord message is never posted, and `set_discord_message_id` is never called — leaving an orphaned `pending` row in the recommendations table with no Discord message.
-- **Trigger**: Any code path in `discord_bot/embeds.py` or `bot.send_recommendation` that references `confidence` without checking for None. Cache hit paths are guaranteed to produce `confidence=None` after deployment (see P-09).
-- **Prevention**: Default confidence to `"unknown"` or `""` before passing to the embed. Guard with `confidence or "N/A"` in the embed builder. Add an explicit test: `send_recommendation` called with `confidence=None` must not raise and must produce a valid embed.
-- **Phase**: Phase adding SIG-04 (confidence badge in embed).
+**What goes wrong:** `equity_buy_limit` defaults to `duration=DAY`. If the scan runs at 09:00 and the user approves at 09:30, but the stock never trades at or below the limit price before market close, the order expires unfilled at 4:00 PM. The `trades` table has no row for this trade (no fill = no `create_trade` call). The `recommendations` table still has `status='approved'`. The position is not opened. The operator has no indication that the order expired — the Discord approval message shows "Approved" but no follow-up notification of the unfill. Worse, the recommendation is `approved` in the DB, which prevents the dupe-check from recommending the same ticker tomorrow via `should_recommend()`.
 
----
+**Why it happens:** `place_order` and `place_sell_order` return the order ID and call `create_trade` immediately — they do not poll for fill status. Schwab order status polling is not implemented and is explicitly out of scope for this milestone.
 
-### P-06: `/stats` SQLite aggregates return None on empty or buy-only DB
+**Prevention:** For v1.3, set duration to `GOOD_TILL_CANCEL` by default (or make it configurable via `LIMIT_ORDER_DURATION` in Config, defaulting to `GTC`). GTC orders remain open until filled or manually cancelled, which is more appropriate for end-of-day Discord approval workflows. Document the trade-off: GTC orders must be manually cancelled if the recommendation expires before it fills, and the operator must monitor open orders in the Schwab app. Add a note to the Approve confirmation message: `"Limit order placed (GTC) at $X.XX — monitor Schwab for fill status."` The existing dupe prevention (`should_recommend`) already guards against re-recommending the same ticker within 24h regardless of fill status.
 
-- **Risk**: Win-rate and avg-gain queries on the `trades` table return `NULL` from SQLite when the table is empty or has no sell-side rows. In Python, `sqlite3` maps SQL `NULL` to Python `None`. Any code that formats this as `f"{win_rate:.1%}"` raises `TypeError: float argument required, not NoneType`. The `/stats` command fails visibly in Discord with an unhandled exception embed, or silently with an empty response if the exception is swallowed.
-- **Trigger**: `/stats` called on a fresh DB, or a DB with only open positions and no closed round-trip trades (buy + matching sell). Also: dry-run trades have `order_id=None` — a P&L join that relies on `order_id` matching will produce incorrect results.
-- **Prevention**: All aggregate queries must use `COALESCE(AVG(...), 0.0)` at the SQL level, or handle `None` return in Python before formatting. Define "closed trade" explicitly as a buy trade with a matching sell trade by ticker, and implement the join before building the embed. Add three tests: empty DB, buy-only DB, one complete round-trip.
-- **Phase**: Phase adding PORT-02 (/stats command).
+**Phase:** Phase implementing limit buy orders.
 
 ---
 
-### P-07: Enriched prompts increase token usage and hit Gemini free-tier token cap before call-count cap
+### L-04: `USE_LIMIT_BUY` config flag not guarded at validate() time
 
-- **Risk**: Adding sector, SPY trend, VIX level, and 52-week range to every prompt increases token count per call by approximately 40-100 tokens. The `analyst_calls` table guards by call count (default limit 18), not by token count. The actual Gemini free-tier token/day limit (1M tokens/day for Flash, as of research cutoff) can now exhaust before the call-count guard fires, causing 429 errors that the retry logic handles — but which consume retry budget and add delay inside the scan loop.
-- **Trigger**: Full universe scan (20+ tickers) on Gemini free tier after prompt enrichment with all four new context fields.
-- **Prevention**: Keep macro context brief — one line each (e.g., `"SPY trend: above 200MA"`, `"VIX: 18.2"`). Do not repeat macro data per ticker; fetch it once and pass it as a compact prefix. Measure token count of the enriched prompt against a representative ticker before committing the implementation. Document the new approximate tokens-per-call in the phase plan so the quota math can be re-validated.
-- **Phase**: Phase adding SIG-01 through SIG-03.
+**What goes wrong:** If `USE_LIMIT_BUY` is parsed as `bool(os.getenv("USE_LIMIT_BUY", "true"))` (incorrect) rather than `os.getenv("USE_LIMIT_BUY", "true").lower() == "true"` (correct), then any non-empty string value in `.env` evaluates to `True` — including `USE_LIMIT_BUY=false`. This mirrors a known Python trap and produces a bot that always places limit orders regardless of operator intent.
 
----
+**Why it happens:** `bool("false")` is `True` in Python. The Config pattern used by all other bool fields in this codebase (`os.getenv(...).lower() == "true"`) is correct, but a new contributor unfamiliar with the pattern may use `bool(...)` directly.
 
-### P-08: Error surfacing to Discord creates a feedback loop on ops channel flood
+**Prevention:** Copy the exact pattern from `dry_run` and `paper_trading` fields: `os.getenv("USE_LIMIT_BUY", "true").lower() == "true"`. Add a test: `Config` constructed with `USE_LIMIT_BUY=false` in the env has `use_limit_buy=False`. This test will catch the `bool(str)` mistake immediately.
 
-- **Risk**: OPS-01 adds per-exception Discord ops alerts. If `bot.send_ops_alert` itself fails (Discord rate limit, channel misconfigured, bot not ready), and the failure is inside an exception handler that calls `send_ops_alert`, the error is silently swallowed with only a log line — safe. But if per-ticker errors trigger one `send_ops_alert` per ticker, a scan with 20 failing tickers floods the ops channel with 20 messages within seconds, hitting Discord's rate limit and causing the later alerts to silently fail.
-- **Trigger**: yfinance returning errors for multiple tickers simultaneously (common during Yahoo Finance maintenance windows). Or Discord rate limit on the ops channel from a previous flood.
-- **Prevention**: Never call `send_ops_alert` inside the per-ticker `except` block. Accumulate failures into a list during the loop, then send one summary alert after the loop completes: `"Scan complete: 3 tickers failed — AAPL, MSFT, TSLA"`. Wrap all `send_ops_alert` calls in their own `try/except` with `logger.error` as the only fallback — never a nested `send_ops_alert`.
-- **Phase**: Phase adding OPS-01 (error surfacing).
+**Phase:** Phase implementing limit buy orders.
 
 ---
 
-### P-09: Cache hit returns analysis dict without confidence key — guaranteed on first post-deployment scan
-
-- **Risk**: The analyst cache (`analyst_cache` table) stores `signal` and `reasoning` but not `confidence`. When `get_cached_analysis` returns a hit, the returned dict has no `confidence` key. All downstream code added for SIG-04 that reads `analysis.get("confidence")` will return `None` for every cache hit. This is not a rare edge case — it is guaranteed for every ticker with unchanged headlines on the first scan after deploying SIG-04. If the embed builder or DB write code assumes confidence is populated, cache-hit recommendations fail silently while cache-miss recommendations succeed, producing inconsistent scan behavior.
-- **Trigger**: Any ticker whose headline SHA-256 hash matches a cache entry written before confidence scoring was deployed. Given the 24h cache TTL (if implemented) or unlimited cache (current state — no TTL in queries.py), this affects all previously-analyzed tickers.
-- **Prevention**: Add `confidence TEXT` column to `analyst_cache` with `DEFAULT NULL` as a schema migration (additive, backward compatible with existing rows). Populate on new cache writes. In all readers, treat `confidence=None` as `"unknown"`. Test the cache-hit path explicitly: assert that `analysis` returned from `get_cached_analysis` used with `confidence=None` does not crash the embed builder.
-- **Phase**: Phase adding SIG-04 — requires a DB migration coordinated with the confidence parser implementation.
+## yfinance Data Pitfalls
 
 ---
 
-### P-10: Expense ratio config field fails at scan time, not startup
+### Y-01: `ticker.calendar` returns `{}` for ETFs, not `None` — silent empty dict
 
-- **Risk**: ETF-09 adds an expense ratio threshold filter. If `MAX_EXPENSE_RATIO` is added to Config as `float(os.getenv("MAX_EXPENSE_RATIO", "0.01"))`, a misconfigured `.env` value like `"0.5%"` (with percent sign) causes `ValueError: could not convert string to float` at Config construction. But if the field is introduced incorrectly — parsed lazily inside a filter function rather than at Config construction — the bot starts successfully and the error only surfaces per-ETF during the scan, causing every ETF to be silently skipped via `except Exception: continue`.
-- **Trigger**: `.env` value contains a percent sign, or the field defaults to `""` which `float("")` raises on. Also: if the filter function does the parse rather than Config doing it.
-- **Prevention**: Parse `MAX_EXPENSE_RATIO` in Config exactly like all other float fields — at dataclass construction time, with a safe default (`0.01`). Add validation in `Config.validate()` that `0 < max_expense_ratio < 1`. Add a test asserting that a Config with invalid `MAX_EXPENSE_RATIO` raises at construction, not at scan time.
-- **Phase**: Phase adding ETF-09 (expense ratio threshold filter).
+**What goes wrong:** For ETF tickers (e.g., SPY), `ticker.calendar` returns an empty dict `{}` — verified live. Code that checks `if cal is None` will not guard against this. Code that does `cal["Earnings Date"]` on the empty dict raises `KeyError`. Code that does `cal.get("Earnings Date")` returns `None` silently, which is correct behavior — but if downstream code then formats `None` as a date string it crashes.
 
----
+**Why it happens:** The existing ETF path (`run_scan_etf`) already skips fundamentals, but if a `fetch_earnings_date` helper is added to `screener/fundamentals.py` and called from both scan paths, it will silently receive an ETF ticker. The empty dict is yfinance's way of indicating "no calendar data."
 
-### P-11: Cache key is news headlines hash — prompt enrichment does not invalidate it
+**Prevention:** Guard with `cal.get("Earnings Date")`, not `cal["Earnings Date"]`. Return `None` from any helper when the earnings date list is empty or missing. Do not call the earnings date helper from `run_scan_etf` at all — ETFs have no earnings calendar and the feature is described as a field on the "Discord BUY embed" for stocks only.
 
-- **Risk**: The analyst cache key is `SHA-256(sorted(headlines))` — not a hash of the prompt. This means that when SIG-01 through SIG-03 enrich `build_prompt` with sector, macro, and 52-week data, tickers with unchanged headlines continue to hit the cache and receive old-format analyses (without sector/macro context) as if they were current. The enrichment only benefits tickers whose headlines changed since the last cache write. This is a correctness issue, not a crash — the system behaves normally, but the signal quality improvement from enrichment is invisible on cache-hit paths.
-- **Trigger**: First several scans after deploying SIG-01 through SIG-03, for all tickers with stable news (e.g., blue-chips that have been in the scan universe for days).
-- **Prevention**: Accept this as a known limitation and document it explicitly in the phase plan. Options to mitigate: (a) clear the analyst cache on deployment of SIG-01-03 (a one-time `DELETE FROM analyst_cache`), or (b) include a prompt version hash in the cache key. Option (a) is simpler and lower risk. Do not silently accept stale cache hits as enriched responses — communicate the limitation to the operator.
-- **Phase**: Phase adding SIG-01 through SIG-03.
+**Phase:** Phase adding earnings date warning to BUY embed.
 
 ---
 
-### P-12: Unrealized P&L aggregate requires live price fetch not in existing queries.py
+### Y-02: `ticker.calendar["Earnings Date"]` is always a `list[datetime.date]`, but can have zero or multiple entries
 
-- **Risk**: PORT-01 adds total unrealized P&L to `/positions`. The current `get_position_summary` in `screener/positions.py` fetches live prices per position. Aggregating unrealized P&L requires summing `(current_price - avg_cost) * shares` across all positions. This is a live price fetch inside an async Discord slash command handler — meaning it must be wrapped in `asyncio.to_thread`, must handle yfinance returning None for any ticker, and must handle positions with `shares=0` or `avg_cost=0` without dividing by zero. If any of these are not handled, the `/positions` embed either crashes or displays an incorrect total.
-- **Trigger**: `/positions` called when any open position has a yfinance data unavailability, or when `avg_cost_usd` is 0 (edge case from dry-run trades where price was not confirmed).
-- **Prevention**: Guard every position's contribution to the aggregate with `if current_price is not None and avg_cost > 0`. Display "P&L unavailable" for positions where live price fetch failed rather than omitting them or showing 0. Wrap the batch price fetch in `asyncio.to_thread`. Test with a position that has `avg_cost_usd=0`.
-- **Phase**: Phase adding PORT-01 (unrealized P&L aggregate in /positions).
+**What goes wrong:** Verified live for AAPL, MSFT, GOOGL, T, NVDA, BRK-B — `Earnings Date` is always a `list` of `datetime.date` objects when present, never a bare `datetime.date` or a string. However, this is an unofficial scraper — the format can vary. A list with zero items (`[]`) is possible for tickers without upcoming earnings estimates. A list with two items occurs when the estimate range spans two dates.
+
+**Why it happens:** Code that assumes `calendar["Earnings Date"]` is a single value (not a list) will fail with `AttributeError` or `TypeError` when trying to format it as a date string, or will silently show only the first date when two are present.
+
+**Prevention:** Always index with `[0]` after confirming `len(list) > 0`. Preferred pattern:
+
+```python
+dates = cal.get("Earnings Date") or []
+earnings_date = dates[0] if dates else None
+```
+
+`datetime.date` objects can be formatted directly with `str(earnings_date)` or `earnings_date.strftime("%b %d")` — no Timestamp conversion needed. Do not call `.strftime` on a `None` value.
+
+**Phase:** Phase adding earnings date warning to BUY embed.
 
 ---
 
-## Top 3 Risks
+### Y-03: `ticker.quarterly_income_stmt` — columns are Timestamps, not quarter label strings, and the DataFrame is empty for ETFs
 
-1. **P-01 — Confidence line breaks the two-line parser (HIGH impact)**: The current parser is the single failure point for every analyst signal. Breaking it silently drops recommendations for the entire scan. It is the highest regression risk because adding a required third output line is a breaking change to the format contract, and the `except Exception: continue` pattern in `run_scan` ensures failures are swallowed, not surfaced. The 252 existing tests all pass through this parser; any change to it requires comprehensive test coverage of the new format variants before shipping.
+**What goes wrong:** `quarterly_income_stmt` (the correct attribute for EPS trend) has Timestamp column headers (`Timestamp('2025-12-31 00:00:00')`) sorted newest-first. Verified live for AAPL. For ETFs (SPY), the DataFrame is empty — `empty=True` with no rows. Code that assumes columns are quarter strings like `"Q1 2025"` will fail. Code that accesses EPS via `df["Q1 2025"]` will raise `KeyError`.
 
-2. **P-09 — Cache hit returns no confidence field — guaranteed on first post-deployment scan (HIGH certainty)**: Unlike most pitfalls that are possible, this one is certain. Every ticker with unchanged headlines will hit the cache on the first scan after SIG-04 deploys and return a dict missing `confidence`. If embed rendering assumes the field exists, cache-hit tickers silently fail to post to Discord while cache-miss tickers succeed — an inconsistent, hard-to-diagnose failure mode. Must be addressed in the same phase as SIG-04, not as a follow-up.
+**Why it happens:** `ticker.quarterly_earnings` is deprecated (DeprecationWarning confirmed in live testing) and returns `None` for AAPL under the current yfinance version. The correct source is `ticker.quarterly_income_stmt` with the row `"Diluted EPS"` or `"Basic EPS"`. Developers who consult old Stack Overflow answers or pre-2024 documentation may use the deprecated attribute.
 
-3. **P-03 — SPY/VIX macro fetch blocks the Discord event loop (HIGH impact, hard to detect)**: The bot has a hard-won rule — every yfinance call must be in `asyncio.to_thread`. The macro fetch is the natural place to break this rule because it looks like a one-liner at the top of `run_scan`. A bare blocking call here causes intermittent gateway disconnects under load that manifest as the bot going offline mid-scan — not an obvious exception. v1.1 Phase 8 eliminated this class of bug across 9 call sites; v1.2 must not reintroduce it on the 10th.
+**Prevention:** Use `ticker.quarterly_income_stmt`. Access EPS via `df.loc["Diluted EPS"]` after confirming the row exists with `"Diluted EPS" in df.index`. Columns are `pd.Timestamp` — use `.dt` or convert to ISO string with `str(col.date())` for display. Guard with `if df is None or df.empty: return None` before any index access. Wrap the entire call in `asyncio.to_thread` — `quarterly_income_stmt` is a blocking HTTP call, not a cached property.
+
+**Phase:** Phase adding EPS quarterly trend to Claude BUY prompt.
+
+---
+
+### Y-04: NaN values in the EPS row — `math.isnan` not equivalent to pandas `pd.isna`
+
+**What goes wrong:** `df.loc["Diluted EPS"]` returns a pandas Series. Individual values in the Series can be `float('nan')` (Python NaN) or `pd.NA`. Using `if value is None` will not catch NaN. Using `math.isnan(value)` will raise `TypeError` on `pd.NA`. The correct guard is `pd.isna(value)`.
+
+**Why it happens:** Quarterly income statements have gaps — a quarter may have no reported EPS if the earnings report was restated, or the most recent quarter may not yet have final figures. The latest column (newest quarter) is most likely to contain NaN if the report was just filed.
+
+**Prevention:** Use `pd.isna(value)` to filter the EPS series before computing trend. Example:
+
+```python
+eps_series = df.loc["Diluted EPS"].dropna()
+if len(eps_series) < 2:
+    return None  # insufficient data for trend
+```
+
+Never use `math.isnan`, `value is None`, or `value == float('nan')` on pandas data.
+
+**Phase:** Phase adding EPS quarterly trend to Claude BUY prompt.
+
+---
+
+### Y-05: P/E direction requires both `trailingPE` and `forwardPE` — `forwardPE` is frequently absent
+
+**What goes wrong:** P/E direction ("expanding" or "contracting") is computed from `trailingPE` vs `forwardPE` from `ticker.info`. `forwardPE` is absent for many tickers — particularly small-caps, recent IPOs, and tickers without analyst coverage. `info.get("forwardPE")` returns `None` in these cases. Code that computes `"expanding" if forwardPE < trailingPE else "contracting"` raises `TypeError` when `forwardPE` is `None`.
+
+**Why it happens:** `forwardPE` requires analyst EPS estimates to be available on Yahoo Finance. The fundamental filter already permits tickers without earnings data through (`earningsGrowth` is optional per `passes_fundamental_filter`). Those same tickers will have no `forwardPE`.
+
+**Prevention:** Return `"N/A"` or omit the P/E direction field from the prompt when `forwardPE` is None. Do not infer direction from `trailingPE` alone — a single value has no direction. The `build_prompt` function already handles this pattern for `earningsGrowth`. Keep the same defensive style: `if pe is None or forward_pe is None: pe_direction = "N/A"`.
+
+**Phase:** Phase adding P/E direction to Claude BUY prompt.
+
+---
+
+## History Query Pitfalls
+
+---
+
+### H-01: Naive JOIN on `ticker` produces duplicate rows when ticker has been bought and sold multiple times
+
+**What goes wrong:** A `/history` query written as `JOIN trades s ON s.ticker = b.ticker AND s.side = 'sell' WHERE b.side = 'buy'` produces a cartesian product when a ticker has been bought and sold more than once. Two buy rows for AAPL joined against two sell rows for AAPL produces four result rows — inflating the trade count, duplicating P&L entries, and presenting a false history to the operator.
+
+**Why it happens:** The `trades` table schema has no explicit linkage between buy and sell trades for the same position. A buy trade is linked to its BUY recommendation via `recommendation_id`. A sell trade is linked to its SELL recommendation via `recommendation_id`. But there is no column in the sell trade row that points to the corresponding buy trade row. `recommendation_id` on a sell trade points to a SELL-signal recommendation row, not the original BUY recommendation.
+
+**Prevention:** Two viable approaches:
+
+(a) **Temporal pairing** — join the most recent buy before each sell using `b.executed_at < s.executed_at` with a `ROW_NUMBER()` or `MAX()` subquery. This is correct for the existing schema and requires no migration.
+
+(b) **Schema extension** — add a `buy_trade_id` column to the `trades` table, populated when a sell trade is recorded. This enables exact pairing but requires a migration and a change to `create_trade` and `SellApproveRejectView`.
+
+For v1.3, option (a) avoids a schema change. A safe working query:
+
+```sql
+SELECT s.ticker, s.price AS exit_price, s.cost_basis, s.executed_at AS sell_date,
+       (s.price - s.cost_basis) / s.cost_basis AS pnl_pct
+FROM trades s
+WHERE s.side = 'sell' AND s.cost_basis IS NOT NULL
+ORDER BY s.executed_at DESC
+LIMIT 20
+```
+
+The sell trade already contains `cost_basis` (the `avg_cost_usd` from the position at sell time, recorded via `SellApproveRejectView`). The entry price is captured in `cost_basis`. There is no need to join to the buy trade at all for the `/history` view — the sell row is self-contained.
+
+**Phase:** Phase implementing `/history` slash command.
+
+---
+
+### H-02: `cost_basis IS NULL` on sell trades from pre-v1.2 data silently excludes them from history
+
+**What goes wrong:** The `cost_basis` column was added to the `trades` table as a migration in v1.2. Any sell trades recorded before that migration have `cost_basis = NULL`. A `/history` query that computes `(exit_price - cost_basis) / cost_basis` raises `ZeroDivisionError` or returns `NULL` when `cost_basis` is `NULL` or `0`. The `get_trade_stats` function already guards this with `WHERE cost_basis IS NOT NULL` — the same guard must be applied to `/history`.
+
+**Why it happens:** The `initialize_db` migration adds `cost_basis REAL` with no `DEFAULT` value, so existing rows get `NULL`. Pre-migration sell trades exist in any DB that has been running since before v1.2.
+
+**Prevention:** Filter with `WHERE s.side = 'sell' AND s.cost_basis IS NOT NULL` in the `/history` query, matching the existing `get_trade_stats` pattern. Display a note in the `/history` embed footer: `"Trades before v1.2 excluded (no cost basis)"` if any NULL-cost_basis sell rows exist. Do not attempt to infer the cost basis from the buy trade at query time — this produces incorrect results when averaged positions were held.
+
+**Phase:** Phase implementing `/history` slash command.
+
+---
+
+### H-03: Buy-with-no-sell rows cause zero results if query requires a matching sell
+
+**What goes wrong:** A query that requires a JOIN between buy and sell for the same ticker will return zero rows for any currently-open position (no sell recorded yet) and for positions where the sell was rejected. The `/history` command result will appear empty even if trades exist — confusing the operator.
+
+**Why it happens:** The query design in H-01 naive JOIN approach excludes all open positions correctly by design, but if the query is written as an INNER JOIN requiring both sides, a DB with only open positions (new deployment, no closed trades yet) returns an empty embed with no explanation.
+
+**Prevention:** Use the sell-side-only query approach from H-01. The sell trade row is the authoritative record of a closed trade. If no sell rows exist, display `"No closed trades yet."` explicitly rather than an empty embed or a silent no-response. Test with an empty DB, a buy-only DB, and a DB with one complete round-trip.
+
+**Phase:** Phase implementing `/history` slash command.
+
+---
+
+## Test Coverage Pitfalls
+
+---
+
+### T-01: Config instantiation in tests leaks env vars between test sessions
+
+**What goes wrong:** `Config()` calls `load_dotenv()` at module import time (line 6 of `config.py`). If a test sets `os.environ["USE_LIMIT_BUY"] = "false"` without cleaning up, subsequent tests in the same session that instantiate `Config()` silently inherit the value. This causes intermittent test failures that are order-dependent — the test suite passes in isolation but fails when run with `pytest` (all tests in sequence).
+
+**Why it happens:** `Config` is a plain dataclass whose fields read `os.getenv(...)` at instantiation time, not at class definition time. Each `Config()` call re-reads from `os.environ`. Tests that mutate `os.environ` without cleanup pollute the process environment for the entire test session.
+
+**Prevention:** Use `monkeypatch.setenv("KEY", "value")` (pytest's `monkeypatch` fixture) for all env var overrides in tests — it automatically restores the original value after each test. Alternatively, use `unittest.mock.patch.dict(os.environ, {"KEY": "value"})` as a context manager. Never mutate `os.environ` directly in test code. Apply the same pattern already established in the existing test suite (inspect `test_analyst_claude.py` and `test_discord_buttons.py` for the current convention before adding new tests).
+
+**Phase:** Phase adding test coverage for config validation and analyst fallback logic.
+
+---
+
+### T-02: Mocking `_call_api` directly patches a private name but not the bound reference
+
+**What goes wrong:** `_call_api` is a module-level function in `analyst/claude_analyst.py`. Mocking it as `mock.patch("analyst.claude_analyst._call_api")` works correctly when called within `analyze_ticker`, which resolves the name at call time. However, if tests for the fallback path test `_should_retry` directly (patching `_parse_retry_delay`), they may interact with the `@_retry` decorator which is bound at import time. Patching the decorated function after import does not change the retry behavior — only patching the internal mechanism does.
+
+**Why it happens:** The `@_retry` decorator wraps `_call_api` into a new callable at import time. The `retry` object stores a reference to the original function. Patching `_call_api` in the module namespace replaces what `analyze_ticker` sees at the `_call_api(client, model, prompt)` call site — this works. But tests that try to assert retry behavior by patching the `_retry` decorator itself or `tenacity` internals will not work as expected.
+
+**Prevention:** For fallback path tests, mock `_call_api` at the `analyst.claude_analyst._call_api` name and configure the mock's `side_effect` to raise an exception on the first call and return a valid response on the second. This simulates primary failure + fallback without touching tenacity internals. For `_should_retry` unit tests, call `_should_retry(exc)` directly with a synthetic exception object — no patching needed. Confirmed: the existing test suite already patches `_call_api` at the module level; the fallback tests should follow the same pattern.
+
+**Phase:** Phase adding test coverage for analyst fallback logic.
+
+---
+
+### T-03: Test for `run_scan` quota exhaustion path requires both `get_analyst_call_count_today` and the scan loop to be exercised
+
+**What goes wrong:** The quota guard in `run_scan` (presumed: calls `get_analyst_call_count_today` before `analyze_ticker`) must be tested by exercising the actual scan loop with a DB state where count equals `analyst_daily_limit`. A test that patches `get_analyst_call_count_today` to return a high value but does not run `run_scan` end-to-end will not catch integration bugs — for example, if the quota check is placed after the cache check (wrong order), a test that exercises only the quota function misses the ordering bug entirely.
+
+**Why it happens:** `run_scan` is a large async function with multiple guards in sequence (dupe check, fundamental filter, quota check, cache check, API call). Testing one guard in isolation does not verify the guard fires at the right point in the execution order.
+
+**Prevention:** Write integration tests for `run_scan` quota exhaustion that mock the DB state (set `call_count = analyst_daily_limit`) and run the full `run_scan` function (with yfinance and Schwab mocked). Assert that: (a) no `analyze_ticker` call was made, (b) the scan completes without error, (c) zero recommendations are created, (d) the ops-channel zero-rec alert fires (if applicable). Use the existing `test_run_scan.py` as the template — it already runs `run_scan` end-to-end with mocked dependencies.
+
+**Phase:** Phase adding test coverage for quota exhaustion path.
+
+---
+
+## Prevention Checklist
+
+Before shipping each v1.3 phase, verify:
+
+**Limit Orders**
+- [ ] `equity_buy_limit` price argument is a formatted string (`f"{price:.2f}"`), never a raw float
+- [ ] `USE_LIMIT_BUY` Config field uses `.lower() == "true"` pattern, not `bool(str)`
+- [ ] Limit order duration is `GOOD_TILL_CANCEL` (or configurable) — not `DAY`
+- [ ] Approve button embed displays scan-time price and a staleness warning (e.g., "as of HH:MM")
+- [ ] `build_limit_buy` is a pure function in `schwab_client/orders.py` — testable without network
+
+**yfinance Earnings Data**
+- [ ] `ticker.calendar` accessed with `.get("Earnings Date") or []` — never direct index
+- [ ] Earnings date extracted as `dates[0]` after `len(dates) > 0` check
+- [ ] `ticker.quarterly_income_stmt` used (not deprecated `quarterly_earnings`)
+- [ ] EPS NaN guard uses `pd.isna()` or `.dropna()` — not `math.isnan` or `is None`
+- [ ] `forwardPE` guarded: if None, P/E direction returns "N/A"
+- [ ] All new yfinance calls (`quarterly_income_stmt`, `calendar`) wrapped in `asyncio.to_thread`
+- [ ] ETF tickers do not reach earnings date or EPS trend code paths
+
+**History Query**
+- [ ] `/history` query uses sell-side rows only (`WHERE side='sell'`) — no JOIN to buy rows
+- [ ] `cost_basis IS NOT NULL` filter applied — pre-v1.2 rows excluded explicitly
+- [ ] Empty result case displays `"No closed trades yet."` — not an empty embed
+- [ ] Three tests: empty DB, buy-only DB, one complete round-trip
+
+**Test Coverage**
+- [ ] Env var overrides use `monkeypatch.setenv` or `patch.dict(os.environ)` — never direct `os.environ` mutation
+- [ ] Fallback path tests mock `analyst.claude_analyst._call_api` with `side_effect` sequence
+- [ ] Quota exhaustion test runs `run_scan` end-to-end with mocked DB state, not just the guard function
+- [ ] `Config.validate()` test covers the new `USE_LIMIT_BUY` field with invalid value

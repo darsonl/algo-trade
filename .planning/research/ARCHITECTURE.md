@@ -1,126 +1,562 @@
-# Architecture Research — v1.2
+# Architecture: v1.3 Feature Integration
+
+**Project:** Algo Trade Bot — v1.3 Risk & Signal Quality
+**Researched:** 2026-04-18
+**Scope:** Four targeted features integrated into existing screener → analyst → Discord → Schwab pipeline
+
+---
 
 ## Summary
 
-v1.2 adds seven features to an existing, well-structured pipeline. Most changes are additive: new arguments flow through existing call chains, new prompt sections are injected into existing prompt builders, and one new scheduler job mirrors the existing stock scan job. The only structural addition is a new `screener/macro.py` module; everything else is changes to existing modules. The largest single-file change is `claude_analyst.py` (prompt format + response parser + three prompt builder signatures). No existing module needs a rewrite.
+v1.3 adds four features to an already-mature pipeline. None require new modules or schema redesigns. The risk surface is small: one new Schwab order builder function, two new yfinance calls that extend an existing fetcher, one new DB query with a JOIN-free design, and three new test files filling known gaps.
+
+The critical discipline is the project's existing "additive only" rule for DB schema changes and "asyncio.to_thread for all yfinance I/O" rule. Both apply here and must be observed.
+
+All four features fit cleanly into existing seams without touching the core scan loop's control flow.
 
 ---
 
-## Integration Points
+## Limit Order Data Flow
 
-### Feature 1: Macro Context (SPY trend + VIX) — SIG-02
+### Current flow (market order)
 
-- **Modules changed**: `main.py` (call site + pass-through to analyze functions), `analyst/claude_analyst.py` (`build_prompt`, `build_sell_prompt`, `build_etf_prompt` — new "Market Context" section; `analyze_ticker`, `analyze_sell_ticker`, `analyze_etf_ticker` — new `macro_context` kwarg)
-- **New modules**: `screener/macro.py` — pure synchronous function `fetch_macro_context(config) -> dict` returning `{"spy_trend": str, "vix_level": float | None}`. SPY trend is derived from 5d vs 20d moving average of SPY close price using two `yf.download` or `yf.Ticker` calls. VIX level is the most recent close of `^VIX`. Both are standard yfinance calls.
-- **Data flow change**: `run_scan()` and `run_scan_etf()` each call `await asyncio.to_thread(fetch_macro_context, config)` once at the top of the function, before the ticker loop. The returned dict is passed into `analyze_ticker`, `analyze_sell_ticker`, and `analyze_etf_ticker` as `macro_context=macro_context`. The prompt builders add a new "Market Context" block: `SPY Trend: {spy_trend} / VIX: {vix_level}`. `fetch_macro_context` must be a sync function; the `asyncio.to_thread` boundary lives in `main.py`, consistent with the project's existing pattern.
-- **Build order position**: Early — pure function with no dependency on other v1.2 features. Every other feature touching prompts benefits from stable prompt builder signatures. Bundle with SIG-01/SIG-03 to touch `build_prompt` once.
-
----
-
-### Feature 2: Sector Fetch — SIG-01
-
-- **Modules changed**: `analyst/claude_analyst.py` (`build_prompt`, `build_sell_prompt` — new `sector` param; ETF prompt omits sector — funds have no single sector), `main.py` (extract `info.get("sector")` after `fetch_fundamental_info` in buy pass; in sell pass, `info` is not currently fetched — add one `fetch_fundamental_info` call or read from the `positions` row if sector is stored there)
-- **New modules**: None. `yfinance info["sector"]` is already returned by `fetch_fundamental_info` (which calls `yf_ticker.info`). Zero new I/O for the buy pass.
-- **Data flow change**: In `run_scan` buy pass, `sector = info.get("sector")` extracted after the existing `fetch_fundamental_info` call. Passed to `analyze_ticker(... sector=sector)`. In the sell pass, `info` is not currently fetched per position — a lightweight `fetch_fundamental_info` call is needed, wrapped in `asyncio.to_thread`. Alternatively, if the sector is stable (it is for stocks), fetch it once and store in `positions` table as an optional column; retrieve from DB instead of making a live yfinance call on the sell pass. The DB-storage approach eliminates a yfinance call per position per sell scan — recommended given the project's sensitivity to yfinance call count.
-- **Build order position**: Early — bundle with SIG-02 and SIG-03 to update prompt builder signatures in a single pass.
-
----
-
-### Feature 3: 52-Week Range — SIG-03
-
-- **Modules changed**: `analyst/claude_analyst.py` (`build_prompt`, `build_sell_prompt` — new `fifty_two_week_high` and `fifty_two_week_low` params), `main.py` (extract from `info` dict)
-- **New modules**: None. `info["fiftyTwoWeekHigh"]` and `info["fiftyTwoWeekLow"]` are already present in the `yf.Ticker.info` dict returned by `fetch_fundamental_info`. Zero new network calls.
-- **Data flow change**: In `run_scan` buy pass, `week52_high = info.get("fiftyTwoWeekHigh")` and `week52_low = info.get("fiftyTwoWeekLow")` extracted after the existing `fetch_fundamental_info` call. Passed to `analyze_ticker` as new kwargs. Formatted in `build_prompt` as `52-Week Range: ${week52_low:.2f} – ${week52_high:.2f}` under the Fundamentals section. For the sell pass, same extraction from the `info` dict (requires the sell pass `fetch_fundamental_info` call described in SIG-01).
-- **Build order position**: Early — zero new I/O, trivially bundled with SIG-01 and SIG-02.
-
----
-
-### Feature 4: Confidence Scoring — SIG-04
-
-- **Modules changed**: `analyst/claude_analyst.py` (`build_prompt`, `build_sell_prompt`, `build_etf_prompt` — new third output line in prompt; `parse_claude_response` — extract CONFIDENCE line, add `"confidence"` to returned dict), `discord_bot/embeds.py` (`build_recommendation_embed`, `build_sell_embed`, `build_etf_recommendation_embed` — new `confidence` param, rendered as embed footer), `discord_bot/bot.py` (`send_recommendation`, `send_sell_recommendation`, `send_etf_recommendation` — new `confidence` param passed to embed builders), `main.py` (pass `analysis["confidence"]` through to `send_*` methods)
-- **New modules**: None.
-- **Data flow change**: Prompts gain a third required output line: `CONFIDENCE: <high|medium|low>`. `parse_claude_response` is extended to find a line starting with `CONFIDENCE:`, parse the value, and return it as `result["confidence"]`. If the line is absent (cache hit from pre-v1.2 prompt format), default to `"medium"`. The `analysis` dict returned by `analyze_ticker` now carries `{"signal", "reasoning", "confidence", "provider_used"}`. `run_scan` passes `confidence=analysis.get("confidence", "medium")` to `bot.send_recommendation`, which passes it to `build_recommendation_embed`, where it renders as `embed.set_footer(text=f"Confidence: {confidence.upper()}")`. The analyst cache currently stores only `signal` and `reasoning` — cache hits will not have a stored confidence value. Do not add a cache column for v1.2; defaulting cache hits to "medium" is acceptable. The prompt hash includes macro/sector/52-week content that changes with v1.2, so most pre-v1.2 cache entries will be cache misses on first run anyway (different prompt → different headlines hash key is unchanged, but prompt content changes do not affect the cache key — see Notes section).
-- **Build order position**: Mid — depends on prompt builder signatures being stable (SIG-01/02/03 merged first). Touching `parse_claude_response` and all three embed functions is the largest cross-module change in v1.2.
-
----
-
-### Feature 5: ETF Scheduled Scan — ETF-07
-
-- **Modules changed**: `main.py` (`on_ready` — register second APScheduler job for `run_scan_etf`; or extend `configure_scheduler` to accept an optional etf job function), `config.py` (new `etf_scan_times: list` field parsed from `ETF_SCAN_TIMES` env var, defaulting to stock scan time + 30 minutes)
-- **New modules**: None.
-- **Data flow change**: Currently `configure_scheduler` registers only the stock scan. A second `configure_etf_scheduler(scheduler, config, etf_job_fn)` function (mirroring `configure_scheduler`) is the cleanest approach — it keeps both functions pure and independently testable. `on_ready` calls both. The 30-minute offset between stock scan and ETF scan prevents simultaneous yfinance + analyst API load. Note: the v1.1 ARCHITECTURE.md recommended a combined `run_full_scan` wrapper to avoid two independent scheduler jobs and quota contention. That recommendation still applies — a combined job is preferable to two independent jobs if the sequential ordering matters for quota accounting. However, if independent manual triggering via `/scan` and `/scan_etf` must also work, the current design (separate `_scan_callback` and `_scan_etf_callback`) already supports that correctly. The scheduled job can call both in sequence from a single lambda.
-- **Build order position**: Mid — standalone change with no dependency on signal enrichment features. Can be developed in parallel with SIG features on a separate branch.
-
----
-
-### Feature 6: /stats Command — PORT-02
-
-- **Modules changed**: `discord_bot/bot.py` (new `_stats_command` registered in `setup_hook`), `discord_bot/embeds.py` (new `build_stats_embed` function), `database/queries.py` (new `get_trade_stats(db_path) -> dict` function)
-- **New modules**: None.
-- **Data flow change**: `get_trade_stats` queries existing `trades` and `positions` tables. The query joins sell-side trades (`trades WHERE side='sell'`) to their corresponding position rows (`positions WHERE status='closed' AND ticker=trades.ticker`) to recover `avg_cost_usd` as cost basis. It returns `{"total_closed": int, "win_count": int, "loss_count": int, "win_rate": float, "avg_gain_pct": float | None, "avg_loss_pct": float | None}`. Win is defined as `trade.price > position.avg_cost_usd`. The `positions` table retains closed rows with `status='closed'` and `avg_cost_usd` intact (verified: `close_position` in queries.py only sets `status='closed'`; the cost basis survives). No new DB tables or columns required — all data is already present.
-- **Build order position**: Late — fully independent of all signal enrichment features. Requires only existing DB schema. Can be built last without blocking anything.
-
----
-
-### Feature 7: Error Surfacing to Ops Channel — OPS-01 + ETF-08
-
-- **Modules changed**: `main.py` (`run_scan` — wrap full scan body in outer `try/except Exception` that calls `await bot.send_ops_alert`; `run_scan_etf` — same outer guard), `discord_bot/bot.py` — `send_ops_alert` already exists but posts to `config.discord_channel_id`. No separate ops channel exists today. If a separate ops channel is desired, add `discord_ops_channel_id: int` to `Config` with a fallback to `discord_channel_id`. ETF-08: one-line change in `run_scan_etf` — change `"ETF scan complete: 0 recommendations posted."` to `"[ETF] ETF scan complete: 0 recommendations posted."`.
-- **New modules**: None.
-- **Data flow change**: Currently, per-ticker exceptions are caught with `continue` but scan-level exceptions (e.g., DB schema error, `partition_watchlist` hard failure) propagate through the APScheduler thread and are silently dropped by the scheduler. The outer `try/except` in `run_scan` wraps everything after `expire_stale_recommendations` and before the sell pass. The sell pass gets its own outer guard or is included in the same wrapper. `run_scan_etf` already handles `sqlite3.OperationalError` with an early return and ops alert — extend this to a general `except Exception` wrapper. `send_ops_alert` is already implemented and available on `bot`.
-- **Build order position**: First — lowest risk, highest dev-time value. Wrap both scan functions before any other work so errors during v1.2 development are surfaced to Discord rather than silently lost in scheduler threads.
-
----
-
-## Suggested Build Order
-
-1. **OPS-01 + ETF-08** (first): Outer exception wrapper on `run_scan` and `run_scan_etf`. One-line `[ETF]` prefix fix. No dependencies, immediately improves error visibility for all subsequent feature work.
-
-2. **SIG-01 + SIG-02 + SIG-03** (together): Sector, macro context, and 52-week range all extend the same three prompt builder signatures in `claude_analyst.py` and the same `analyze_ticker` / `analyze_sell_ticker` / `analyze_etf_ticker` call sites in `main.py`. Touching these signatures three separate times creates unnecessary merge complexity. New `screener/macro.py` module is the only new file introduced here.
-
-3. **SIG-04** (after step 2): Confidence scoring requires the prompt builders to be in their final signature state before adding the third output line. Updates `parse_claude_response`, all three embed builders, and the three `send_*` methods in `bot.py`.
-
-4. **ETF-07** (after step 3, or parallel branch): Second APScheduler job. Independent of signal enrichment. Add `etf_scan_times` to `Config`. Extend `configure_scheduler` or add `configure_etf_scheduler`.
-
-5. **PORT-01** (total unrealized P&L in `/positions`): Aggregate sum across position summaries in `build_positions_embed`. Minor embed change, no new DB query needed — sum the per-position P&L values already computed by `get_position_summary`.
-
-6. **PORT-02** (`/stats` command): New query, new embed, new slash command. All data already in DB. No dependencies on steps 2–4.
-
----
-
-## Schema Changes
-
-**No new tables required for v1.2.**
-
-**Optional additive columns:**
-
-`positions` table — if storing sector to avoid a live yfinance call on the sell pass (SIG-01):
-```sql
-ALTER TABLE positions ADD COLUMN sector TEXT DEFAULT NULL;
 ```
-Written at position open time from `info.get("sector")`. Eliminates one `fetch_fundamental_info` call per position per sell-pass scan run. Recommended if the sell pass sector fetch proves noisy on yfinance (common for yfinance silent-empty returns on small caps).
-
-`recommendations` table — if storing confidence for future analytics (SIG-04):
-```sql
-ALTER TABLE recommendations ADD COLUMN confidence TEXT DEFAULT 'medium';
+run_scan() → create_recommendation(price=tech_data["price"]) → send_recommendation(price=...)
+  → ApproveRejectView.__init__(price=self.price)
+  → approve() → place_order(ticker, shares, config)
+                   → build_market_buy(ticker, shares)  ← no price involved
 ```
-Not required for v1.2 embed display (confidence is embed-only). Useful for future `/stats` extensions (e.g., win rate by confidence tier). Mark as deferred unless the roadmap explicitly calls for it.
 
-`analyst_cache` table — do NOT add a confidence column for v1.2. Cache hits default to "medium" sentinel. The cost of a wrong confidence badge on a cache hit is low; the complexity of cache versioning is not worth it for this release.
+`price` is stored in `recommendations.price` at scan time and passed into `ApproveRejectView` as `self.price`. It is already threaded through cleanly. The gap is only in `place_order` and `build_market_buy` — they ignore price entirely.
 
-**Config additions** (`.env` fields, not DB):
-- `ETF_SCAN_TIMES` — comma-separated HH:MM list for ETF scheduled scan. Defaults to stock scan time + 30 minutes.
-- `DISCORD_OPS_CHANNEL_ID` — optional separate channel for ops alerts. Defaults to `DISCORD_CHANNEL_ID` if unset.
+### Integration point
+
+`schwab_client/orders.py` is the only file that changes on the execution side. The data flow already carries `price` end-to-end:
+
+1. `tech_data["price"]` → `create_recommendation(price=...)` → DB row
+2. `send_recommendation(price=...)` → `ApproveRejectView(price=self.price)`
+3. `approve()` already has `self.price` — pass it to `place_order`
+
+No new columns. No new parameters in `run_scan` or `send_recommendation`.
+
+### New: `build_limit_buy`
+
+```python
+# schwab_client/orders.py — add alongside build_market_buy
+from schwab.orders.equities import equity_buy_limit
+
+def build_limit_buy(ticker: str, shares: int, limit_price: float) -> dict:
+    """Return the JSON spec for a limit buy order at limit_price."""
+    return equity_buy_limit(ticker, shares, limit_price).build()
+```
+
+Verify `equity_buy_limit` name and signature against current schwab-py docs before shipping — this is a third-party wrapper.
+
+### Modified: `place_order`
+
+```python
+def place_order(ticker: str, shares: int, config, limit_price: float | None = None, client=None) -> str:
+    ...
+    if config.use_limit_buy and limit_price is not None:
+        spec = build_limit_buy(ticker, shares, limit_price)
+    else:
+        spec = build_market_buy(ticker, shares)
+    ...
+```
+
+### Modified: `ApproveRejectView.approve`
+
+```python
+order_id = place_order(self.ticker, shares, self.config, limit_price=self.price)
+```
+
+`self.price` is already available. The limit price is the signal price recorded at scan time, which is the correct semantics — the operator approved the recommendation at that price, so the limit matches their expectation.
+
+### Config addition
+
+```python
+# config.py — add to Config dataclass
+use_limit_buy: bool = os.getenv("USE_LIMIT_BUY", "true").lower() == "true"
+```
+
+Add `USE_LIMIT_BUY=true` to `.env.example`. No validate() change needed — this is a behavioral flag, not a credential.
+
+### What does NOT change
+
+- `run_scan` — no change
+- `send_recommendation` — no change
+- `create_recommendation` / `queries.py` — no change
+- `recommendations` schema — no change
+- `SellApproveRejectView` — sell orders stay market orders; limit sells are out of scope
+
+### Edge cases
+
+- **Price staleness:** `self.price` was fetched at scan time and may be stale by the time the operator clicks Approve. This is a known limitation; limit orders already behave correctly in this case — the order simply won't fill if price has moved past the limit. Document in `.env.example` under `USE_LIMIT_BUY`.
+- **`price <= 0`:** `compute_share_quantity` already guards against this; `place_order` will only be reached if `shares > 0`. No additional guard needed.
+- **Dry run:** `place_order` is only called when `not self.config.dry_run`. The `use_limit_buy` branch is inside `place_order`, so dry run continues to log instead of calling Schwab.
 
 ---
 
-## Notes on Existing Patterns to Preserve
+## Fundamentals Extension Pattern
 
-**asyncio.to_thread discipline**: `fetch_macro_context` must be synchronous; the thread boundary lives in `main.py`. This is consistent with all other screener functions (`fetch_fundamental_info`, `fetch_technical_data`, etc.). Do not add an async version to `macro.py`.
+### Current state
 
-**analyst cache key**: The cache key is `(ticker, headline_hash)`. The prompt content (sector, macro, 52-week) does not factor into the key — a cache hit from a pre-v1.2 entry will be used even though the enriched prompt would have produced a different response. This is a known limitation. On v1.2 first deployment, truncating `analyst_cache` ensures all responses are generated with the new prompt. Document this as a deployment step.
+`fetch_fundamental_info(yf_ticker)` returns `yf_ticker.info` — a single dict from the yfinance info endpoint. The dict contains static fundamentals (`trailingPE`, `dividendYield`, etc.) but not calendar or quarterly earnings series.
 
-**configure_scheduler purity**: Keep `configure_scheduler` a pure function. Do not read `config` inside it beyond what is already passed. For the ETF scheduler, add a parallel `configure_etf_scheduler(scheduler, config, etf_job_fn)` rather than adding optional parameters to the existing function. Both functions remain independently testable.
+### New data needed
 
-**Quota guard duplication**: The quota guard block (check primary + fallback count, skip if exhausted) appears three times in `main.py` (buy pass, sell pass, ETF pass). v1.2 does not add a fourth. A `_quota_exhausted(config, db_path) -> bool` helper extraction is a worthwhile cleanup but not required for correctness.
+| Data | yfinance attribute | Return type | Use |
+|------|-------------------|-------------|-----|
+| Next earnings date | `yf_ticker.calendar` | dict with `Earnings Date` key | Embed field: warning if < 7 days away |
+| Quarterly EPS series | `yf_ticker.quarterly_earnings` | DataFrame with `Earnings` column, index = quarter | P/E direction + EPS trend in prompt |
 
-**send_ops_alert channel routing**: `send_ops_alert` currently posts to `config.discord_channel_id`. If `DISCORD_OPS_CHANNEL_ID` is added to Config, update `send_ops_alert` to use `config.discord_ops_channel_id` with a fallback to `config.discord_channel_id`. Existing deployments without the new env var will see no behavior change.
+Both are separate network calls from `.info`. Both are blocking and must be wrapped in `asyncio.to_thread` — but because they are inside `fetch_fundamental_info` (which is already wrapped at its call sites), they inherit the thread context without additional wrapping at the call site in `run_scan`.
+
+### Recommendation: extend `fetch_fundamental_info`, not separate calls
+
+**Rationale:** `fetch_fundamental_info` is already the single yfinance fetch point for fundamental data in `run_scan`. Returning an enriched dict from one function keeps `run_scan`'s control flow unchanged and avoids adding two more `await asyncio.to_thread(...)` call sites in the scan loop. The function is already retried via `@_retry` — the new calls inherit that retry.
+
+### New implementation shape
+
+```python
+@_retry
+def fetch_fundamental_info(yf_ticker: yf.Ticker) -> dict:
+    info = yf_ticker.info
+
+    next_earnings = None
+    try:
+        cal = yf_ticker.calendar  # dict: {'Earnings Date': [Timestamp, ...], ...}
+        dates = cal.get("Earnings Date") or []
+        if dates:
+            next_earnings = dates[0].date() if hasattr(dates[0], "date") else None
+    except Exception:
+        pass  # empty dict is common for stocks without upcoming earnings
+
+    eps_trend = None
+    pe_direction = None
+    try:
+        qe = yf_ticker.quarterly_earnings  # DataFrame: index=quarter, 'Earnings' column
+        if qe is not None and not qe.empty and "Earnings" in qe.columns:
+            series = qe["Earnings"].dropna().tolist()
+            if len(series) >= 2:
+                eps_trend = series[-4:]  # last 4 quarters, chronological
+                pe_direction = "expanding" if series[-1] > series[-2] else "contracting"
+    except Exception:
+        pass
+
+    return {**info, "next_earnings_date": next_earnings, "eps_trend": eps_trend, "pe_direction": pe_direction}
+```
+
+### Where the new fields flow
+
+- `next_earnings_date` → `send_recommendation` → `build_recommendation_embed` → new "Earnings" embed field
+- `eps_trend` + `pe_direction` → `build_prompt` → new lines in the Fundamentals block of the Claude prompt
+- Neither field flows to `passes_fundamental_filter` — they are signal-enrichment only, not filter gates
+
+### Changes required
+
+| File | Change |
+|------|--------|
+| `screener/fundamentals.py` | Extend `fetch_fundamental_info` as above |
+| `analyst/claude_analyst.py` | `build_prompt` adds P/E direction + EPS trend lines to Fundamentals block |
+| `discord_bot/embeds.py` | `build_recommendation_embed` adds "Earnings" field when `next_earnings_date` is not None |
+| `discord_bot/bot.py` | `send_recommendation` adds `next_earnings_date` kwarg; passes to embed builder |
+| `main.py` | `run_scan` passes `info.get("next_earnings_date")` to `send_recommendation` |
+
+All new kwargs must default to `None` to preserve backward compatibility with existing tests.
+
+### Config addition
+
+```python
+earnings_warning_days: int = int(os.getenv("EARNINGS_WARNING_DAYS", "7"))
+```
+
+The embed builder computes days from today inline; no DB column needed. Warning is display-only — no behavioral change to scan filtering.
+
+### yfinance silent-empty risk
+
+`yf_ticker.calendar` frequently returns an empty dict for stocks without upcoming earnings. `yf_ticker.quarterly_earnings` returns `None` or an empty DataFrame for non-earnings issuers (REITs, some ETFs). Both cases are handled by the try/except pattern. Fields default to `None`; the embed and prompt builders treat `None` as absent (no field rendered).
+
+---
+
+## History Query Design
+
+### What `/history` needs
+
+Last 20 closed round-trips with ticker, exit date, exit price, entry price (cost basis), P&L%.
+
+### Data model
+
+`trades` has `side` ('buy'/'sell'), `cost_basis` (on sell rows only, set since v1.2), `price`, `shares`, `ticker`, `executed_at`, `recommendation_id`.
+
+A closed trade is a matched buy + sell for the same ticker. The linkage is through `positions.avg_cost_usd` at the time of the sell — already captured in `trades.cost_basis` during `SellApproveRejectView.approve()`.
+
+### Query design: no JOIN needed
+
+The sell-side trade row is self-contained. It already contains entry price (`cost_basis`), exit price (`price`), shares, ticker, and executed_at. This matches the pattern of `get_trade_stats()` exactly:
+
+```sql
+SELECT
+    ticker,
+    executed_at AS exit_date,
+    price       AS exit_price,
+    shares,
+    cost_basis  AS entry_price,
+    ROUND((price - cost_basis) / cost_basis * 100, 2) AS pnl_pct
+FROM trades
+WHERE side = 'sell'
+  AND cost_basis IS NOT NULL
+  AND cost_basis > 0
+ORDER BY executed_at DESC
+LIMIT 20
+```
+
+### New query function
+
+```python
+def get_closed_trades(db_path: str, limit: int = 20) -> list[sqlite3.Row]:
+    """Return the last `limit` closed sell trades with P&L data, newest first.
+
+    Only returns rows where cost_basis IS NOT NULL AND cost_basis > 0
+    (pre-migration rows and zero-cost anomalies excluded).
+    """
+    conn = get_connection(db_path)
+    rows = conn.execute(
+        """SELECT ticker, executed_at, price AS exit_price, shares,
+                  cost_basis AS entry_price,
+                  ROUND((price - cost_basis) / cost_basis * 100, 2) AS pnl_pct
+           FROM trades
+           WHERE side = 'sell' AND cost_basis IS NOT NULL AND cost_basis > 0
+           ORDER BY executed_at DESC
+           LIMIT ?""",
+        (limit,),
+    ).fetchall()
+    conn.close()
+    return rows
+```
+
+### Edge cases
+
+| Case | Behavior |
+|------|----------|
+| Sell trade with `cost_basis IS NULL` (pre-migration row) | Excluded by WHERE clause — consistent with `get_trade_stats()` |
+| `cost_basis = 0` (anomaly) | Excluded by `cost_basis > 0` guard; avoids division by zero in pnl_pct |
+| Dry-run sell trade | Included — no `dry_run` marker in `trades`; documented limitation carried from v1.2 |
+| No closed trades yet | Returns empty list; bot sends "No trade history yet." plain message |
+| Position re-opened after close | No issue — sell row's `cost_basis` is point-in-time from when the sell was approved |
+
+### New slash command: `/history`
+
+Add registration in `TradingBot.setup_hook()` and handler:
+
+```python
+async def _history_command(self, interaction: discord.Interaction):
+    from database.queries import get_closed_trades
+    rows = await asyncio.to_thread(get_closed_trades, self.config.db_path)
+    if not rows:
+        await interaction.response.send_message("No trade history yet.")
+        return
+    embed = build_history_embed(rows)
+    await interaction.response.send_message(embed=embed)
+```
+
+`build_history_embed` goes in `discord_bot/embeds.py`. Each row gets one inline field: ticker, exit date, exit price, P&L%. Truncate at 20 rows (Discord embed limit is 25 fields; 20 rows fits within the limit).
+
+### No schema migration needed
+
+`cost_basis` column was added in v1.2. `get_closed_trades` is a pure read query. No new columns, no new tables.
+
+---
+
+## Test Mock Patterns
+
+### 1. Analyst fallback logic
+
+**Gap:** `analyze_ticker` fallback path (primary raises → fallback client used) is not tested.
+
+**What to mock:** Mock `_call_api` directly, not the SDK clients. `_call_api` is the boundary between the retry decorator and the network. This avoids reproducing the exact OpenAI/Anthropic SDK response shape in every test.
+
+```python
+# tests/test_analyst_fallback.py
+from unittest.mock import MagicMock, patch, call
+from analyst.claude_analyst import analyze_ticker
+from config import Config
+
+def _make_config():
+    c = Config()
+    c.analyst_provider = "gemini"
+    c.analyst_model = "gemini-2.5-flash"
+    c.analyst_fallback_provider = "gemma"
+    c.analyst_fallback_model = "gemma-3-27b-it"
+    c.analyst_call_delay_s = 0
+    return c
+
+GOOD_RESPONSE = "SIGNAL: BUY\nREASONING: Strong fundamentals.\nCONFIDENCE: high"
+
+def test_fallback_used_when_primary_fails():
+    config = _make_config()
+    primary_client = MagicMock()
+    fallback_client = MagicMock()
+
+    with patch("analyst.claude_analyst._call_api") as mock_call:
+        mock_call.side_effect = [Exception("quota exceeded"), GOOD_RESPONSE]
+        result = analyze_ticker("AAPL", {}, [], config, primary_client, fallback_client)
+
+    assert result["signal"] == "BUY"
+    assert result["provider_used"] == "gemma"
+    assert mock_call.call_count == 2
+
+def test_primary_used_when_it_succeeds():
+    config = _make_config()
+    with patch("analyst.claude_analyst._call_api", return_value=GOOD_RESPONSE) as mock_call:
+        result = analyze_ticker("AAPL", {}, [], config, MagicMock(), MagicMock())
+    assert result["provider_used"] == "gemini"
+    assert mock_call.call_count == 1
+
+def test_raises_when_primary_fails_and_no_fallback():
+    config = _make_config()
+    with patch("analyst.claude_analyst._call_api", side_effect=Exception("quota")):
+        import pytest
+        with pytest.raises(Exception, match="quota"):
+            analyze_ticker("AAPL", {}, [], config, MagicMock(), fallback_client=None)
+
+def test_raises_when_both_providers_fail():
+    config = _make_config()
+    with patch("analyst.claude_analyst._call_api", side_effect=Exception("fail")):
+        import pytest
+        with pytest.raises(Exception):
+            analyze_ticker("AAPL", {}, [], config, MagicMock(), MagicMock())
+
+def test_parse_error_does_not_trigger_fallback():
+    """ValueError from parse_claude_response must propagate, not trigger fallback."""
+    config = _make_config()
+    bad_response = "INVALID RESPONSE FORMAT"
+    with patch("analyst.claude_analyst._call_api", return_value=bad_response) as mock_call:
+        import pytest
+        with pytest.raises(ValueError):
+            analyze_ticker("AAPL", {}, [], config, MagicMock(), MagicMock())
+    assert mock_call.call_count == 1  # fallback was NOT called
+```
+
+The last test is critical: `parse_claude_response(text)` is called after the try/except block in `analyze_ticker` (lines 294-295 of `claude_analyst.py`). Parse errors propagate to the caller without triggering the fallback. This must be verified by the test.
+
+### 2. Config validation
+
+**Gap:** `Config.validate()` error paths are untested.
+
+**Mock pattern:** No mocks needed. Construct `Config()` and overwrite individual fields — the dataclass reads env vars at instantiation, so field overwrite after construction is clean. This pattern is already used in `test_run_scan.py` (`c.db_path = ":memory:"`).
+
+```python
+# tests/test_config_validation.py
+import pytest
+from config import Config
+
+def _valid_config():
+    """Return a Config with all required fields set."""
+    c = Config()
+    c.schwab_app_key = "key"
+    c.schwab_app_secret = "secret"
+    c.schwab_account_hash = "hash"
+    c.discord_token = "tok"
+    c.discord_channel_id = 12345
+    c.analyst_provider = "claude"
+    c.analyst_api_key = "sk-key"
+    return c
+
+def test_validate_raises_on_missing_schwab_app_key():
+    c = _valid_config()
+    c.schwab_app_key = ""
+    with pytest.raises(ValueError, match="SCHWAB_APP_KEY"):
+        c.validate()
+
+def test_validate_raises_on_missing_discord_token():
+    c = _valid_config()
+    c.discord_token = ""
+    with pytest.raises(ValueError, match="DISCORD_TOKEN"):
+        c.validate()
+
+def test_validate_raises_on_missing_anthropic_key_for_claude_provider():
+    c = _valid_config()
+    c.analyst_provider = "claude"
+    c.analyst_api_key = ""
+    c.anthropic_api_key = ""
+    with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
+        c.validate()
+
+def test_validate_accepts_anthropic_api_key_as_alternative():
+    c = _valid_config()
+    c.analyst_provider = "claude"
+    c.analyst_api_key = ""
+    c.anthropic_api_key = "sk-real"
+    c.validate()  # must not raise
+
+def test_validate_passes_with_all_required_fields():
+    _valid_config().validate()  # must not raise
+```
+
+### 3. run_scan quota exhaustion path
+
+**Gap:** The path where both primary and fallback quota counters are exhausted causes `continue` — the ticker is skipped with a log warning. This path exists at `main.py` lines 126-141 (buy pass) and 265-270 (sell pass).
+
+**Mock pattern:** Reuse the `_full_patch` context manager pattern from `test_run_scan.py`. The key is `queries.get_analyst_call_count_today` returning a value `>= analyst_daily_limit` for all calls. The mock is called twice per ticker (once for primary, once for fallback), so `return_value=5` satisfies both with `analyst_daily_limit=5`.
+
+```python
+# tests/test_run_scan_quota.py
+import pytest
+from unittest.mock import AsyncMock, MagicMock, patch
+from config import Config
+from main import run_scan
+
+@pytest.mark.asyncio
+async def test_run_scan_skips_ticker_when_quota_exhausted():
+    bot = MagicMock()
+    bot.send_recommendation = AsyncMock(return_value="msg_1")
+    bot.send_ops_alert = AsyncMock()
+    bot.send_sell_recommendation = AsyncMock()
+
+    config = Config()
+    config.db_path = ":memory:"
+    config.analyst_daily_limit = 5
+    config.analyst_provider = "gemini"
+    config.analyst_fallback_provider = "gemma"
+
+    fund_info = {"trailingPE": 20.0, "dividendYield": 0.03, "earningsGrowth": 0.10}
+    tech_data = {"price": 150.0, "rsi": 55.0, "ma50": 140.0, "volume": 1_200_000, "avg_volume": 1_000_000}
+
+    with patch("main.get_top_sp500_by_fundamentals", return_value=[]), \
+         patch("main.get_universe", return_value=["AAPL"]), \
+         patch("main.queries.expire_stale_recommendations"), \
+         patch("main.queries.ticker_recommended_today", return_value=False), \
+         patch("main.queries.has_open_position", return_value=False), \
+         patch("main.queries.get_open_positions", return_value=[]), \
+         patch("main.yf.Ticker"), \
+         patch("main.create_analyst_client", return_value=MagicMock()), \
+         patch("main.create_fallback_client", return_value=MagicMock()), \
+         patch("main.fetch_macro_context", return_value={}), \
+         patch("main.fetch_fundamental_info", return_value=fund_info), \
+         patch("main.passes_fundamental_filter", return_value=True), \
+         patch("main.fetch_news_headlines", return_value=["headline"]), \
+         patch("main.queries.get_cached_analysis", return_value=None), \
+         patch("main.queries.get_analyst_call_count_today", return_value=5), \
+         patch("main.analyze_ticker") as mock_analyze, \
+         patch("main.fetch_technical_data", return_value=tech_data), \
+         patch("main.queries.create_recommendation") as mock_create_rec:
+
+        await run_scan(bot, config)
+
+    mock_analyze.assert_not_called()
+    mock_create_rec.assert_not_called()
+    bot.send_ops_alert.assert_awaited()  # zero-rec alert
+```
+
+**Additional quota test:** Add a second test for the cache-hit path — when `get_cached_analysis` returns a cached result, the quota guard is never reached, so `analyze_ticker` is not called even though quota is exhausted:
+
+```python
+@pytest.mark.asyncio
+async def test_run_scan_uses_cache_when_quota_exhausted():
+    """Cache hit bypasses quota guard entirely."""
+    # Same setup as above but get_cached_analysis returns a cached BUY
+    cached = {"signal": "BUY", "reasoning": "Cached.", "confidence": "high"}
+    with patch(...), \
+         patch("main.queries.get_cached_analysis", return_value=cached), \
+         patch("main.queries.get_analyst_call_count_today", return_value=5), \
+         patch("main.analyze_ticker") as mock_analyze, \
+         patch("main.passes_technical_filter", return_value=True), \
+         patch("main.queries.create_recommendation", return_value=1):
+        await run_scan(bot, config)
+
+    mock_analyze.assert_not_called()  # cache was used, no API call
+    mock_create_rec.assert_called_once()  # recommendation was still posted
+```
+
+This test documents the intentional behavior: cache hits bypass both the quota guard and the quota increment (see `main.py` lines 120-124 — cached path skips directly to `tech_data` fetch).
+
+### General mock discipline
+
+Follow the project's established pattern: `patch("main.module.function")` (patch at import site), not `patch("module.function")`. `asyncio.to_thread` is transparent — patched functions are called synchronously at the `main.py` call site when the target is patched.
+
+---
+
+## Build Order
+
+### Dependency chain
+
+```
+Config additions (use_limit_buy, earnings_warning_days)
+    ↓
+Phase 1: schwab_client/orders.py: build_limit_buy + place_order(limit_price)
+         discord_bot/bot.py: ApproveRejectView.approve passes limit_price=self.price
+    ↓
+Phase 2: screener/fundamentals.py: extend fetch_fundamental_info
+         analyst/claude_analyst.py: extend build_prompt
+         discord_bot/embeds.py: add Earnings field to build_recommendation_embed
+         discord_bot/bot.py: send_recommendation(next_earnings_date)
+         main.py: pass next_earnings_date to send_recommendation
+    ↓
+Phase 3: database/queries.py: add get_closed_trades
+         discord_bot/embeds.py: add build_history_embed
+         discord_bot/bot.py: _history_command + setup_hook registration
+    ↓
+Phase 4: tests/test_analyst_fallback.py
+         tests/test_config_validation.py
+         tests/test_run_scan_quota.py
+```
+
+### Why this order
+
+- Phase 1 is self-contained, touches only the order execution path, and can be validated with a unit test for `build_limit_buy` before any scan-loop changes.
+- Phase 2 must follow Phase 1 because both touch `discord_bot/bot.py` and `discord_bot/embeds.py` — consolidating those changes reduces merge surface.
+- Phase 3 is independent of Phases 1 and 2 (different files entirely) and can run in parallel if desired. Listed last only because it has the smallest risk surface.
+- Phase 4 (tests) closes last. `test_run_scan_quota.py` tests existing code paths, so it benefits from the scan loop being confirmed stable after Phase 2.
+
+---
+
+## Component Boundaries: New vs Modified
+
+### New functions/classes
+
+| Item | File |
+|------|------|
+| `build_limit_buy` | `schwab_client/orders.py` |
+| `get_closed_trades` | `database/queries.py` |
+| `build_history_embed` | `discord_bot/embeds.py` |
+| `_history_command` | `discord_bot/bot.py` |
+| `tests/test_analyst_fallback.py` | `tests/` |
+| `tests/test_config_validation.py` | `tests/` |
+| `tests/test_run_scan_quota.py` | `tests/` |
+
+### Modified functions
+
+| Item | File | Change |
+|------|------|--------|
+| `place_order` | `schwab_client/orders.py` | Add `limit_price` kwarg; conditional spec builder |
+| `fetch_fundamental_info` | `screener/fundamentals.py` | Merge calendar + quarterly_earnings into returned dict |
+| `build_prompt` | `analyst/claude_analyst.py` | Add P/E direction + EPS trend lines to Fundamentals block |
+| `build_recommendation_embed` | `discord_bot/embeds.py` | Add optional `next_earnings_date` field |
+| `send_recommendation` | `discord_bot/bot.py` | Add `next_earnings_date` kwarg; pass to embed builder |
+| `ApproveRejectView.approve` | `discord_bot/bot.py` | Pass `limit_price=self.price` to `place_order` |
+| `run_scan` | `main.py` | Pass `info.get("next_earnings_date")` to `send_recommendation` |
+| `Config` | `config.py` | Add `use_limit_buy`, `earnings_warning_days` |
+| `setup_hook` | `discord_bot/bot.py` | Register `/history` command |
+
+### Unchanged
+
+- `database/models.py` — no schema changes required
+- `screener/technicals.py`, `screener/exit_signals.py`, `screener/macro.py`, `screener/universe.py`
+- `schwab_client/auth.py`, `place_sell_order`, `build_market_sell`
+- `SellApproveRejectView` — sell path unchanged
+- `run_scan_etf` — ETF path unchanged (no earnings date enrichment for ETFs)
+- `build_etf_prompt`, `analyze_sell_ticker`, `analyze_etf_ticker`
+
+---
+
+## Confidence Assessment
+
+| Area | Confidence | Basis |
+|------|------------|-------|
+| Limit order data flow | HIGH | Code read: `self.price` is in scope in `approve()`; schwab-py has limit order support |
+| Fundamentals extension pattern | HIGH | Code read: `fetch_fundamental_info` returns a plain dict; yfinance `.calendar` and `.quarterly_earnings` are standard attributes |
+| History query design | HIGH | Code read: `cost_basis` column exists on sell rows since v1.2; query mirrors `get_trade_stats` exactly |
+| Test mock patterns | HIGH | Code read: existing patterns in `test_run_scan.py` are directly reusable |
+| yfinance silent-empty behavior | MEDIUM | Known project fragility (documented in PROJECT.md); try/except pattern is the established mitigation |
+| schwab-py `equity_buy_limit` function name | MEDIUM | schwab-py is a third-party wrapper — verify exact function name and signature against current schwab-py source before shipping Phase 1 |
