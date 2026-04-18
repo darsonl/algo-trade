@@ -1,16 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.2
-milestone_name: Signal Quality & Portfolio Analytics — SHIPPED 2026-04-14
-status: complete
+milestone: v1.3
+milestone_name: Risk & Signal Quality
+status: in_progress
 last_updated: "2026-04-18T00:00:00.000Z"
-last_activity: 2026-04-14
+last_activity: 2026-04-18
 progress:
-  total_phases: 5
-  completed_phases: 5
-  total_plans: 8
-  completed_plans: 8
-  percent: 100
+  total_phases: 4
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
 ---
 
 # Project State
@@ -24,18 +24,18 @@ See: .planning/PROJECT.md (updated 2026-04-12)
 
 ## Current Position
 
-Phase: 13 (portfolio-analytics) — COMPLETE
-Plan: 1 of 1
-Status: Phase verified — milestone v1.2 complete
-Last activity: 2026-04-14
+Phase: Not started (defining requirements)
+Plan: —
+Status: Defining requirements
+Last activity: 2026-04-18 — Milestone v1.3 started
 
 ---
 
 ## Milestone
 
-**Milestone v1.2:** Signal Quality & Portfolio Analytics
-**Started:** 2026-04-12
-**Phases:** 9–13 (5 phases, 10 requirements)
+**Milestone v1.3:** Risk & Signal Quality
+**Started:** 2026-04-18
+**Phases:** 14–17 (4 phases)
 
 ---
 
@@ -116,4 +116,4 @@ Location: .planning/codebase/
 
 ## Next Action
 
-Milestone v1.2 (Signal Quality & Portfolio Analytics) complete — all 5 phases done. Run `/gsd-complete-milestone` or start next milestone with `/gsd-new-milestone`.
+Milestone v1.3 started. Run `/gsd-plan-phase 14` to plan Phase 14 (Limit Orders).

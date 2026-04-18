@@ -8,9 +8,16 @@ An automated stock and ETF screener that uses Claude AI to generate BUY and SELL
 
 The bot must never place a real order without explicit human approval via Discord.
 
-## Current Milestone: v1.3 (planning)
+## Current Milestone: v1.3 Risk & Signal Quality
 
-**Goal:** TBD — next milestone in planning.
+**Goal:** Harden trade execution with limit orders, enrich Claude signals with earnings and fundamental trend data, add trade history visibility, and close critical test gaps.
+
+**Target features:**
+- Limit buy orders at signal price (configurable `USE_LIMIT_BUY`, default true)
+- Earnings date warning field in Discord BUY embed
+- P/E direction (expanding/contracting) + EPS quarterly trend in Claude BUY prompt
+- `/history` Discord slash command: last 20 closed trades with entry/exit/P&L
+- Test coverage: analyst fallback logic, config validation, run_scan quota exhaustion path
 
 ## Requirements
 
