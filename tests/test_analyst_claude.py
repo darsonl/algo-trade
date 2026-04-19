@@ -310,11 +310,12 @@ def test_build_prompt_with_macro_context_includes_market_context_block():
         "fiftyTwoWeekLow": 100.0,
         "regularMarketPrice": 180.0,
     }
-    macro = {"spy_trend": "Bullish (+3.2%)", "vix_level": "18.4 (Low volatility)"}
+    macro = {"spy_trend_1m": "Bullish (+3.2%)", "spy_trend_1y": "Bearish (-8.5%)", "vix_level": "18.4 (Low volatility)"}
     prompt = build_prompt("AAPL", info, ["Apple beats estimates"], macro_context=macro)
     assert "Market Context:" in prompt
     assert "Sector: Technology" in prompt
-    assert "SPY trend: Bullish (+3.2%)" in prompt
+    assert "SPY trend (1m): Bullish (+3.2%)" in prompt
+    assert "SPY trend (1y): Bearish (-8.5%)" in prompt
     assert "VIX: 18.4 (Low volatility)" in prompt
     assert "52-week range:" in prompt
 
@@ -329,7 +330,8 @@ def test_build_prompt_without_macro_context_omits_spy_vix():
         "regularMarketPrice": 180.0,
     }
     prompt = build_prompt("AAPL", info, [], macro_context=None)
-    assert "SPY trend:" not in prompt
+    assert "SPY trend (1m):" not in prompt
+    assert "SPY trend (1y):" not in prompt
     assert "VIX:" not in prompt
     assert "Sector: Technology" in prompt
     assert "52-week range:" in prompt
@@ -358,7 +360,7 @@ def test_build_prompt_market_context_position():
         "fiftyTwoWeekHigh": 200.0,
         "fiftyTwoWeekLow": 100.0,
     }
-    macro = {"spy_trend": "Bullish (+3.2%)", "vix_level": "18.4 (Low volatility)"}
+    macro = {"spy_trend_1m": "Bullish (+3.2%)", "spy_trend_1y": "Bearish (-8.5%)", "vix_level": "18.4 (Low volatility)"}
     prompt = build_prompt("AAPL", info, ["Headline"], macro_context=macro)
     fundamentals_pos = prompt.index("Fundamentals:")
     market_pos = prompt.index("Market Context:")
@@ -377,16 +379,17 @@ def test_build_prompt_backward_compat_no_macro_context_arg():
 
 def test_build_etf_prompt_with_macro_context_includes_spy_and_vix():
     """build_etf_prompt with macro_context includes SPY trend and VIX in Market Context block."""
-    macro = {"spy_trend": "Bearish (-1.4%)", "vix_level": "25.0 (Elevated volatility)"}
+    macro = {"spy_trend_1m": "Bearish (-1.4%)", "spy_trend_1y": "Bearish (-8.5%)", "vix_level": "25.0 (Elevated volatility)"}
     prompt = build_etf_prompt("SPY", ["ETF news"], rsi=65.0, macro_context=macro)
     assert "Market Context:" in prompt
-    assert "SPY trend: Bearish (-1.4%)" in prompt
+    assert "SPY trend (1m): Bearish (-1.4%)" in prompt
+    assert "SPY trend (1y): Bearish (-8.5%)" in prompt
     assert "VIX: 25.0 (Elevated volatility)" in prompt
 
 
 def test_build_etf_prompt_with_macro_context_excludes_sector_and_52w():
     """build_etf_prompt Market Context block does NOT include Sector or 52-week range (per D-10)."""
-    macro = {"spy_trend": "Bullish (+3.2%)", "vix_level": "18.4 (Low volatility)"}
+    macro = {"spy_trend_1m": "Bullish (+3.2%)", "spy_trend_1y": "Bearish (-8.5%)", "vix_level": "18.4 (Low volatility)"}
     prompt = build_etf_prompt("QQQ", [], macro_context=macro)
     assert "Sector:" not in prompt
     assert "52-week range:" not in prompt
