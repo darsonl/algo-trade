@@ -106,8 +106,10 @@ def build_prompt(ticker: str, info: dict, headlines: list[str], macro_context: d
 
     market_lines = [f"- Sector: {sector}"]
     if macro_context is not None:
-        if macro_context.get("spy_trend"):
-            market_lines.append(f"- SPY trend: {macro_context['spy_trend']}")
+        if macro_context.get("spy_trend_1m"):
+            market_lines.append(f"- SPY trend (1m): {macro_context['spy_trend_1m']}")
+        if macro_context.get("spy_trend_1y"):
+            market_lines.append(f"- SPY trend (1y): {macro_context['spy_trend_1y']}")
         if macro_context.get("vix_level"):
             market_lines.append(f"- VIX: {macro_context['vix_level']}")
     market_lines.append(f"- 52-week range: {pos_52w}")
@@ -166,8 +168,10 @@ def build_etf_prompt(
     etf_market_block = ""
     if macro_context is not None:
         etf_market_lines = []
-        if macro_context.get("spy_trend"):
-            etf_market_lines.append(f"- SPY trend: {macro_context['spy_trend']}")
+        if macro_context.get("spy_trend_1m"):
+            etf_market_lines.append(f"- SPY trend (1m): {macro_context['spy_trend_1m']}")
+        if macro_context.get("spy_trend_1y"):
+            etf_market_lines.append(f"- SPY trend (1y): {macro_context['spy_trend_1y']}")
         if macro_context.get("vix_level"):
             etf_market_lines.append(f"- VIX: {macro_context['vix_level']}")
         if etf_market_lines:
@@ -384,8 +388,10 @@ def build_sell_prompt(
 
         market_lines = [f"- Sector: {sector}"]
         if macro_context is not None:
-            if macro_context.get("spy_trend"):
-                market_lines.append(f"- SPY trend: {macro_context['spy_trend']}")
+            if macro_context.get("spy_trend_1m"):
+                market_lines.append(f"- SPY trend (1m): {macro_context['spy_trend_1m']}")
+            if macro_context.get("spy_trend_1y"):
+                market_lines.append(f"- SPY trend (1y): {macro_context['spy_trend_1y']}")
             if macro_context.get("vix_level"):
                 market_lines.append(f"- VIX: {macro_context['vix_level']}")
         market_lines.append(f"- 52-week range: {pos_52w}")
