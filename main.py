@@ -90,7 +90,7 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
         macro_context = await asyncio.to_thread(fetch_macro_context)
     except Exception as exc:
         logger.warning("Macro context fetch failed: %s — continuing without macro", exc)
-        macro_context = {"spy_trend": None, "vix_level": None}
+        macro_context = {"spy_trend_1m": None, "spy_trend_1y": None, "vix_level": None}
 
     client = create_analyst_client(config)
     fallback_client = create_fallback_client(config)
@@ -338,7 +338,7 @@ async def run_scan_etf(bot: TradingBot, config: Config) -> None:
         macro_context = await asyncio.to_thread(fetch_macro_context)
     except Exception as exc:
         logger.warning("Macro context fetch failed: %s — continuing without macro", exc)
-        macro_context = {"spy_trend": None, "vix_level": None}
+        macro_context = {"spy_trend_1m": None, "spy_trend_1y": None, "vix_level": None}
 
     client = create_analyst_client(config)
     fallback_client = create_fallback_client(config)
