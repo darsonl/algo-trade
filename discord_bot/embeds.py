@@ -154,6 +154,33 @@ def build_positions_embed(summaries: list[dict]) -> discord.Embed:
     return embed
 
 
+def build_history_embed(trades: list[dict]) -> discord.Embed:
+    """Build 'Trade History' embed — monospaced code-block table of last N closed trades.
+
+    Caller MUST pass a non-empty list; empty-state is handled at the command layer.
+    Columns per D-02: Ticker  Entry     Exit      P&L%     Date (ISO YYYY-MM-DD per D-03).
+    P&L% prefixed with '+' for gains, '-' for losses (embedded sign format).
+    """
+    header = "Ticker  Entry     Exit      P&L%     Date"
+    lines = [header]
+    for t in trades:
+        ticker = t["ticker"]
+        entry = t["cost_basis"]
+        exit_price = t["price"]
+        pnl_pct = (exit_price - entry) / entry * 100.0
+        sign = "+" if pnl_pct >= 0 else "-"
+        pnl_str = f"{sign}{abs(pnl_pct):.1f}%"
+        # ISO date only — strip time portion if executed_at is 'YYYY-MM-DDTHH:MM:SS'
+        date_iso = str(t["executed_at"])[:10]
+        lines.append(
+            f"{ticker:<7} {entry:>8.2f}  {exit_price:>8.2f}  {pnl_str:>8}  {date_iso}"
+        )
+    table = "\n".join(lines)
+    embed = discord.Embed(title="Trade History", color=discord.Color.blurple())
+    embed.description = f"```\n{table}\n```"
+    return embed
+
+
 def build_stats_embed(stats: dict) -> discord.Embed:
     """Build a Trade Statistics embed from get_trade_stats() result dict (PORT-02).
 

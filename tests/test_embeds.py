@@ -169,3 +169,98 @@ def test_build_stats_embed_avg_loss_negative():
     embed = build_stats_embed(_make_stats(avg_loss_pct=-0.021))
     val = _field_value(embed, "Avg Loss")
     assert val.startswith("-"), f"Expected negative loss, got: {val}"
+
+
+# ---------------------------------------------------------------------------
+# Phase 14 Task 2: build_history_embed tests
+# ---------------------------------------------------------------------------
+
+def _make_trade(ticker="AAPL", cost_basis=100.0, price=110.0, executed_at="2026-04-01T10:00:00"):
+    """Helper to build a minimal closed-trade dict mirroring get_closed_trades output."""
+    return {
+        "ticker": ticker,
+        "cost_basis": cost_basis,
+        "price": price,
+        "executed_at": executed_at,
+    }
+
+
+def test_build_history_embed_title():
+    """embed.title == 'Trade History'."""
+    from discord_bot.embeds import build_history_embed
+    embed = build_history_embed([_make_trade()])
+    assert embed.title == "Trade History"
+
+
+def test_build_history_embed_color():
+    """embed.color == discord.Color.blurple()."""
+    import discord
+    from discord_bot.embeds import build_history_embed
+    embed = build_history_embed([_make_trade()])
+    assert embed.color == discord.Color.blurple()
+
+
+def test_build_history_embed_description_is_code_block():
+    """embed.description starts and ends with triple-backtick fence."""
+    from discord_bot.embeds import build_history_embed
+    embed = build_history_embed([_make_trade()])
+    assert embed.description.startswith("```")
+    assert embed.description.endswith("```")
+
+
+def test_build_history_embed_header_row():
+    """Description contains the header with expected column names."""
+    from discord_bot.embeds import build_history_embed
+    embed = build_history_embed([_make_trade()])
+    assert "Ticker" in embed.description
+    assert "Entry" in embed.description
+    assert "Exit" in embed.description
+    assert "P&L%" in embed.description
+    assert "Date" in embed.description
+
+
+def test_build_history_embed_row_count():
+    """Given 3 trades, the description contains exactly 3 data rows."""
+    from discord_bot.embeds import build_history_embed
+    trades = [
+        _make_trade(ticker="AAPL", executed_at="2026-04-01T10:00:00"),
+        _make_trade(ticker="MSFT", executed_at="2026-04-02T10:00:00"),
+        _make_trade(ticker="GOOG", executed_at="2026-04-03T10:00:00"),
+    ]
+    embed = build_history_embed(trades)
+    # Strip the code fence and header to count data rows
+    lines = embed.description.strip("`").strip().splitlines()
+    # lines[0] is header, rest are data rows
+    data_rows = [l for l in lines[1:] if l.strip()]
+    assert len(data_rows) == 3
+
+
+def test_build_history_embed_gain_sign():
+    """A trade with price=110, cost_basis=100 renders '+10.0%'."""
+    from discord_bot.embeds import build_history_embed
+    embed = build_history_embed([_make_trade(cost_basis=100.0, price=110.0)])
+    assert "+10.0%" in embed.description
+
+
+def test_build_history_embed_loss_sign():
+    """A trade with price=90, cost_basis=100 renders '-10.0%'."""
+    from discord_bot.embeds import build_history_embed
+    embed = build_history_embed([_make_trade(cost_basis=100.0, price=90.0)])
+    assert "-10.0%" in embed.description
+
+
+def test_build_history_embed_date_format():
+    """executed_at='2026-04-01T14:30:00' renders as '2026-04-01' in the row."""
+    from discord_bot.embeds import build_history_embed
+    embed = build_history_embed([_make_trade(executed_at="2026-04-01T14:30:00")])
+    assert "2026-04-01" in embed.description
+    assert "14:30" not in embed.description
+
+
+def test_build_history_embed_ticker_and_prices():
+    """A trade with ticker='AAPL', cost_basis=150.25, price=165.50 produces a row with all three."""
+    from discord_bot.embeds import build_history_embed
+    embed = build_history_embed([_make_trade(ticker="AAPL", cost_basis=150.25, price=165.50)])
+    assert "AAPL" in embed.description
+    assert "150.25" in embed.description
+    assert "165.50" in embed.description
