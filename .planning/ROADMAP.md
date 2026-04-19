@@ -72,6 +72,16 @@ See `.planning/milestones/v1.2-ROADMAP.md` for full phase details.
   4. The query uses a sell-side-only SELECT — no JOIN that would duplicate rows for multi-trade tickers
 **Plans**: TBD
 
+### Phase 14.1: SPY 1-year trend signal (INSERTED)
+
+**Goal:** Add a 1-year SPY trend signal alongside the existing 1-month signal, giving Claude two temporal perspectives (momentum + structural trend) across all BUY/SELL/ETF prompts
+**Requirements**: N/A (signal quality improvement, no formal requirement ID)
+**Depends on:** Phase 14
+**Plans:** 1 plan
+
+Plans:
+- [ ] 14.1-01-PLAN.md — Update macro.py producer, claude_analyst.py consumers, main.py fallbacks, and all tests
+
 ### Phase 15: Fundamental Trend Enrichment
 **Goal**: Claude BUY prompt includes P/E direction and EPS trend so signal quality reflects valuation trajectory
 **Depends on**: Phase 14
@@ -140,6 +150,7 @@ See `.planning/milestones/v1.2-ROADMAP.md` for full phase details.
 | 12. ETF Polish | v1.2 | 2/2 | Complete | 2026-04-13 |
 | 13. Portfolio Analytics | v1.2 | 1/1 | Complete | 2026-04-14 |
 | 14. Trade History Command | v1.3 | 0/? | Not started | - |
+| 14.1. SPY 1-year trend signal | v1.3 | 0/1 | Not started | - |
 | 15. Fundamental Trend Enrichment | v1.3 | 0/? | Not started | - |
 | 16. Earnings Date Warning | v1.3 | 0/? | Not started | - |
 | 17. Limit Buy Orders | v1.3 | 0/? | Not started | - |
@@ -147,4 +158,4 @@ See `.planning/milestones/v1.2-ROADMAP.md` for full phase details.
 
 ---
 *Roadmap defined: 2026-03-30*
-*Last updated: 2026-04-18 — v1.3 roadmap added (Phases 14-18)*
+*Last updated: 2026-04-19 — Phase 14.1 planned (1 plan)*
