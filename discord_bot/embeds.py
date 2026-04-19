@@ -167,7 +167,7 @@ def build_history_embed(trades: list[dict]) -> discord.Embed:
         ticker = t["ticker"]
         entry = t["cost_basis"]
         exit_price = t["price"]
-        pnl_pct = (exit_price - entry) / entry * 100.0
+        pnl_pct = (exit_price - entry) / entry * 100.0 if entry != 0 else 0.0
         sign = "+" if pnl_pct >= 0 else "-"
         pnl_str = f"{sign}{abs(pnl_pct):.1f}%"
         # ISO date only — strip time portion if executed_at is 'YYYY-MM-DDTHH:MM:SS'
