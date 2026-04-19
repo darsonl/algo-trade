@@ -56,7 +56,7 @@ The bot must never place a real order without explicit human approval via Discor
 - ✓ Scan exceptions posted to Discord ops channel, capped at 3/run with overflow summary — v1.2 (OPS-01)
 - ✓ ETF zero-rec alert prefixed with `[ETF]` to distinguish from stock scan silence — v1.2 (ETF-08)
 - ✓ Sector name added to Claude BUY/SELL/ETF prompt via `screener/macro.py` — v1.2 (SIG-01)
-- ✓ SPY trend + VIX level added to Claude BUY/SELL/ETF prompt — v1.2 (SIG-02)
+- ✓ SPY trend (1m + 1y) + VIX level added to Claude BUY/SELL/ETF prompt — v1.2/v1.3 (SIG-02, validated in Phase 14.1)
 - ✓ 52-week range position added to Claude BUY/SELL prompt — v1.2 (SIG-03)
 - ✓ Claude outputs confidence level (high/medium/low); displayed as badge in Discord embed — v1.2 (SIG-04)
 - ✓ Scheduled ETF scan at configurable time offset (default 09:30) via APScheduler — v1.2 (ETF-07)
@@ -94,7 +94,7 @@ Key fragility: yfinance is an unofficial scraper — silent empty returns are a 
 
 Key safety: DRY_RUN=true and PAPER_TRADING=true are defaults; live trading requires explicit opt-in.
 
-Signal enrichment live: every BUY/SELL/ETF prompt includes sector, SPY trend, VIX, 52-week range, and a confidence badge. `screener/macro.py` fetches macro context once per scan.
+Signal enrichment live: every BUY/SELL/ETF prompt includes sector, SPY trend (1m + 1y), VIX, 52-week range, and a confidence badge. `screener/macro.py` fetches macro context once per scan, returning `spy_trend_1m`, `spy_trend_1y`, and `vix_level`.
 
 Portfolio analytics live: `/positions` shows total unrealized P&L; `/stats` shows win rate and avg gain/loss on closed trades with `cost_basis` column in `trades` table.
 
@@ -147,4 +147,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-14 — v1.2 milestone completed*
+*Last updated: 2026-04-19 — Phase 14.1 complete: spy_trend_1m + spy_trend_1y in fetch_macro_context()*
