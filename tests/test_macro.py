@@ -129,12 +129,12 @@ def test_compute_52w_position_at_low():
 # --- fetch_macro_context (mocked) ---
 
 def test_fetch_macro_context_returns_correct_shape_on_success():
-    """fetch_macro_context returns dict with spy_trend and vix_level strings on success."""
+    """fetch_macro_context returns dict with spy_trend_1m, spy_trend_1y, and vix_level strings on success."""
     spy_closes = pd.Series([100.0] + [103.2] * 19)  # ~3.2% return
     vix_closes = pd.Series([18.4] * 5)
 
     mock_spy_ticker = MagicMock()
-    mock_spy_ticker.history.return_value = pd.DataFrame({"Close": spy_closes})
+    mock_spy_ticker.history.side_effect = lambda period: pd.DataFrame({"Close": spy_closes})
 
     mock_vix_ticker = MagicMock()
     mock_vix_ticker.fast_info = {"lastPrice": 18.4}
@@ -149,20 +149,22 @@ def test_fetch_macro_context_returns_correct_shape_on_success():
     with patch("screener.macro.yf.Ticker", side_effect=mock_ticker):
         result = fetch_macro_context()
 
-    assert "spy_trend" in result
+    assert "spy_trend_1m" in result
+    assert "spy_trend_1y" in result
     assert "vix_level" in result
-    assert result["spy_trend"] is not None
+    assert result["spy_trend_1m"] is not None
+    assert result["spy_trend_1y"] is not None
     assert result["vix_level"] is not None
-    assert "Bullish" in result["spy_trend"]
+    assert "Bullish" in result["spy_trend_1m"]
     assert "Low volatility" in result["vix_level"]
 
 
 def test_fetch_macro_context_returns_none_values_on_exception():
-    """fetch_macro_context returns {'spy_trend': None, 'vix_level': None} on any exception."""
+    """fetch_macro_context returns {'spy_trend_1m': None, 'spy_trend_1y': None, 'vix_level': None} on any exception."""
     with patch("screener.macro.yf.Ticker", side_effect=RuntimeError("network error")):
         result = fetch_macro_context()
 
-    assert result == {"spy_trend": None, "vix_level": None}
+    assert result == {"spy_trend_1m": None, "spy_trend_1y": None, "vix_level": None}
 
 
 def test_fetch_macro_context_bearish_spy():
@@ -171,7 +173,7 @@ def test_fetch_macro_context_bearish_spy():
     vix_closes = pd.Series([25.0] * 5)
 
     mock_spy_ticker = MagicMock()
-    mock_spy_ticker.history.return_value = pd.DataFrame({"Close": spy_closes})
+    mock_spy_ticker.history.side_effect = lambda period: pd.DataFrame({"Close": spy_closes})
 
     mock_vix_ticker = MagicMock()
     mock_vix_ticker.fast_info = {"lastPrice": 25.0}
@@ -186,21 +188,21 @@ def test_fetch_macro_context_bearish_spy():
     with patch("screener.macro.yf.Ticker", side_effect=mock_ticker):
         result = fetch_macro_context()
 
-    assert "Bearish" in result["spy_trend"]
+    assert "Bearish" in result["spy_trend_1m"]
     assert "Elevated volatility" in result["vix_level"]
 
 
 def test_fetch_macro_context_vix_fallback_to_history():
     """fetch_macro_context falls back to VIX history when fast_info['lastPrice'] raises KeyError."""
     spy_closes = pd.Series([100.0] + [103.2] * 19)
+    vix_history = pd.DataFrame({"Close": pd.Series([22.0, 23.0, 21.5, 22.5, 35.1])})
 
     mock_spy_ticker = MagicMock()
-    mock_spy_ticker.history.return_value = pd.DataFrame({"Close": spy_closes})
+    mock_spy_ticker.history.side_effect = lambda period: pd.DataFrame({"Close": spy_closes})
 
     mock_vix_ticker = MagicMock()
     # fast_info raises KeyError
     mock_vix_ticker.fast_info = {}
-    vix_history = pd.DataFrame({"Close": pd.Series([22.0, 23.0, 21.5, 22.5, 35.1])})
     mock_vix_ticker.history.return_value = vix_history
 
     def mock_ticker(symbol):
@@ -215,3 +217,35 @@ def test_fetch_macro_context_vix_fallback_to_history():
 
     assert result["vix_level"] is not None
     assert "High volatility" in result["vix_level"]
+
+
+def test_fetch_macro_context_returns_spy_trend_1y():
+    """fetch_macro_context returns spy_trend_1y with Bearish label when 1-year SPY return is negative."""
+    spy_1m_closes = pd.Series([100.0] + [103.2] * 19)   # +3.2% for 1m
+    spy_1y_closes = pd.Series([100.0] + [91.5] * 251)   # -8.5% for 1y
+
+    mock_spy_ticker = MagicMock()
+    def spy_history(period):
+        if period == "1mo":
+            return pd.DataFrame({"Close": spy_1m_closes})
+        if period == "1y":
+            return pd.DataFrame({"Close": spy_1y_closes})
+        return pd.DataFrame({"Close": pd.Series([100.0, 100.0])})
+    mock_spy_ticker.history.side_effect = spy_history
+
+    mock_vix_ticker = MagicMock()
+    mock_vix_ticker.fast_info = {"lastPrice": 18.4}
+
+    def mock_ticker(symbol):
+        if symbol == "SPY":
+            return mock_spy_ticker
+        if symbol == "^VIX":
+            return mock_vix_ticker
+        return MagicMock()
+
+    with patch("screener.macro.yf.Ticker", side_effect=mock_ticker):
+        result = fetch_macro_context()
+
+    assert "Bullish" in result["spy_trend_1m"]
+    assert "Bearish" in result["spy_trend_1y"]
+    assert result["spy_trend_1y"].startswith("Bearish")
