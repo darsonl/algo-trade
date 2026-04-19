@@ -51,7 +51,7 @@ See `.planning/milestones/v1.2-ROADMAP.md` for full phase details.
 
 ### v1.3 Risk & Signal Quality (Phases 14-18)
 
-- [ ] **Phase 14: Trade History Command** — `/history` slash command showing last 20 closed trades
+- [x] **Phase 14: Trade History Command** — `/history` slash command showing last 20 closed trades (completed 2026-04-19)
 - [ ] **Phase 15: Fundamental Trend Enrichment** — P/E direction and EPS quarterly trend in Claude BUY prompt
 - [ ] **Phase 16: Earnings Date Warning** — Next earnings date in BUY embed and Claude prompt
 - [ ] **Phase 17: Limit Buy Orders** — Limit order execution on Approve with config flag and audit trail
@@ -149,7 +149,7 @@ Plans:
 | 11. Confidence Scoring | v1.2 | 2/2 | Complete | 2026-04-12 |
 | 12. ETF Polish | v1.2 | 2/2 | Complete | 2026-04-13 |
 | 13. Portfolio Analytics | v1.2 | 1/1 | Complete | 2026-04-14 |
-| 14. Trade History Command | v1.3 | 0/? | Not started | - |
+| 14. Trade History Command | v1.3 | 1/1 | Complete    | 2026-04-19 |
 | 14.1. SPY 1-year trend signal | v1.3 | 1/1 | Complete    | 2026-04-19 |
 | 15. Fundamental Trend Enrichment | v1.3 | 0/? | Not started | - |
 | 16. Earnings Date Warning | v1.3 | 0/? | Not started | - |
