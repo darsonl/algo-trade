@@ -152,3 +152,81 @@ async def test_send_etf_recommendation_posts_embed_and_returns_message_id():
 
     # Returns str(msg.id)
     assert result == "99001"
+
+
+# ---------------------------------------------------------------------------
+# Phase 14 Task 3: _history_command tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_history_command_empty_state_plain_string():
+    """When get_closed_trades returns [], _history_command sends plain string with no embed."""
+    from discord_bot.bot import TradingBot
+
+    bot = _make_bot_instance()
+    bot.config.db_path = "test_history.db"
+
+    interaction = MagicMock()
+    interaction.response.send_message = AsyncMock()
+
+    with patch("database.queries.get_closed_trades", return_value=[]) as mock_fn:
+        with patch("asyncio.to_thread", new_callable=AsyncMock, return_value=[]):
+            await TradingBot._history_command(bot, interaction)
+
+    interaction.response.send_message.assert_called_once_with("No closed trades yet.")
+    # Ensure no embed= kwarg was passed
+    call_kwargs = interaction.response.send_message.call_args[1]
+    assert "embed" not in call_kwargs
+
+
+@pytest.mark.asyncio
+async def test_history_command_embed_path():
+    """When get_closed_trades returns 2 trades, sends embed with title 'Trade History'."""
+    import discord
+    from discord_bot.bot import TradingBot
+
+    bot = _make_bot_instance()
+    bot.config.db_path = "test_history.db"
+
+    fake_trades = [
+        {"ticker": "AAPL", "cost_basis": 100.0, "price": 110.0, "executed_at": "2026-04-01T10:00:00"},
+        {"ticker": "MSFT", "cost_basis": 200.0, "price": 220.0, "executed_at": "2026-04-02T10:00:00"},
+    ]
+
+    interaction = MagicMock()
+    interaction.response.send_message = AsyncMock()
+
+    with patch("asyncio.to_thread", new_callable=AsyncMock, return_value=fake_trades):
+        await TradingBot._history_command(bot, interaction)
+
+    interaction.response.send_message.assert_called_once()
+    call_kwargs = interaction.response.send_message.call_args[1]
+    assert "embed" in call_kwargs
+    assert call_kwargs["embed"].title == "Trade History"
+
+
+@pytest.mark.asyncio
+async def test_history_command_uses_to_thread():
+    """asyncio.to_thread is called with get_closed_trades and db_path."""
+    from discord_bot.bot import TradingBot
+    from database.queries import get_closed_trades
+
+    bot = _make_bot_instance()
+    bot.config.db_path = "test_history.db"
+
+    interaction = MagicMock()
+    interaction.response.send_message = AsyncMock()
+
+    recorded_calls = []
+
+    async def recording_to_thread(fn, *args, **kwargs):
+        recorded_calls.append((fn, args))
+        return []  # empty → plain string path
+
+    with patch("discord_bot.bot.asyncio.to_thread", side_effect=recording_to_thread):
+        await TradingBot._history_command(bot, interaction)
+
+    assert len(recorded_calls) == 1
+    called_fn, called_args = recorded_calls[0]
+    assert called_fn is get_closed_trades
+    assert called_args[0] == "test_history.db"

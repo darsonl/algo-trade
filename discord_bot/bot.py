@@ -9,7 +9,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from config import Config
 from database import queries
-from discord_bot.embeds import build_recommendation_embed, build_positions_embed, build_sell_embed, build_etf_recommendation_embed, build_stats_embed
+from discord_bot.embeds import build_recommendation_embed, build_positions_embed, build_sell_embed, build_etf_recommendation_embed, build_stats_embed, build_history_embed
 from schwab_client.orders import place_order, place_sell_order
 
 logger = logging.getLogger(__name__)
@@ -200,6 +200,13 @@ class TradingBot(discord.Client):
                 callback=self._stats_command,
             )
         )
+        self.tree.add_command(
+            app_commands.Command(
+                name="history",
+                description="Show the last 20 closed trades",
+                callback=self._history_command,
+            )
+        )
         await self.tree.sync()
 
     async def _scan_command(self, interaction: discord.Interaction):
@@ -238,6 +245,16 @@ class TradingBot(discord.Client):
             )
             return
         embed = build_stats_embed(stats)
+        await interaction.response.send_message(embed=embed)
+
+    async def _history_command(self, interaction: discord.Interaction):
+        """Handle /history slash command: show last 20 closed trades as a code-block table."""
+        from database.queries import get_closed_trades
+        trades = await asyncio.to_thread(get_closed_trades, self.config.db_path)
+        if not trades:
+            await interaction.response.send_message("No closed trades yet.")
+            return
+        embed = build_history_embed(trades)
         await interaction.response.send_message(embed=embed)
 
     async def send_recommendation(
