@@ -61,6 +61,7 @@ Last activity: 2026-04-18 — v1.3 roadmap defined (Phases 14-18)
 | 15 | Fundamental Trend Enrichment | 🔄 Not started |
 | 16 | Earnings Date Warning | 🔄 Not started |
 | 17 | Limit Buy Orders | 🔄 Not started |
+| 14.1 | SPY 1-year trend signal | 🔄 Not started |
 | 18 | Test Coverage Gaps | 🔄 Not started |
 
 ---
@@ -132,6 +133,12 @@ Location: .planning/codebase/
 - `ticker.quarterly_income_stmt` (not `ticker.quarterly_earnings`) for EPS trend — `quarterly_earnings` returns None silently in yfinance 1.2.0
 - `quarterly_income_stmt` columns are newest-first `pd.Timestamp` — reverse before extracting last 4 quarters
 - New yfinance attributes (`quarterly_income_stmt`) need `asyncio.to_thread` wrapping — not folded into `ticker.info`
+
+## Accumulated Context
+
+### Roadmap Evolution
+
+- Phase 14.1 inserted after Phase 14: SPY 1-year trend signal (INSERTED)
 
 ## Next Action
 
