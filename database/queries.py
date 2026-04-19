@@ -121,6 +121,35 @@ def get_trade_stats(db_path: str) -> dict | None:
     }
 
 
+def get_closed_trades(db_path: str, limit: int = 20) -> list[dict]:
+    """Return up to `limit` closed sell-trades newest-first.
+
+    Filter per D-05/D-06: WHERE side = 'sell' AND cost_basis IS NOT NULL — no JOIN.
+    Pre-migration rows with NULL cost_basis are excluded consistent with get_trade_stats.
+
+    Returns a list of plain dicts with keys: ticker, price (exit price), cost_basis (entry price),
+    executed_at (ISO timestamp string). Empty list when no qualifying rows exist.
+    """
+    conn = get_connection(db_path)
+    rows = conn.execute(
+        """SELECT ticker, price, cost_basis, executed_at FROM trades
+           WHERE side = 'sell' AND cost_basis IS NOT NULL
+           ORDER BY executed_at DESC
+           LIMIT ?""",
+        (limit,),
+    ).fetchall()
+    conn.close()
+    return [
+        {
+            "ticker": row["ticker"],
+            "price": row["price"],
+            "cost_basis": row["cost_basis"],
+            "executed_at": row["executed_at"],
+        }
+        for row in rows
+    ]
+
+
 def get_pending_recommendations(db_path: str) -> list[sqlite3.Row]:
     """Return all pending recommendations ordered newest first."""
     conn = get_connection(db_path)

@@ -523,3 +523,147 @@ def test_get_trade_stats_null_cost_basis_excluded():
     stats = get_trade_stats(DB_PATH)
     assert stats["total"] == 1
     assert stats["wins"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Phase 14 Task 1: get_closed_trades tests
+# ---------------------------------------------------------------------------
+
+def test_get_closed_trades_empty_returns_empty_list():
+    """get_closed_trades on an empty trades table returns [] (not None)."""
+    from database.queries import get_closed_trades
+    result = get_closed_trades(DB_PATH)
+    assert result == []
+
+
+def test_get_closed_trades_only_buys_returns_empty():
+    """trades table contains only side='buy' rows → returns []."""
+    from database.queries import get_closed_trades
+    rec_id = create_recommendation(
+        db_path=DB_PATH, ticker="AAPL", signal="BUY",
+        reasoning="Test.", price=100.0, dividend_yield=None, pe_ratio=None,
+    )
+    create_trade(db_path=DB_PATH, recommendation_id=rec_id, ticker="AAPL",
+                 shares=5, price=110.0, order_id=None, side="buy", cost_basis=100.0)
+    result = get_closed_trades(DB_PATH)
+    assert result == []
+
+
+def test_get_closed_trades_null_cost_basis_excluded():
+    """A sell row with cost_basis=NULL is excluded from results."""
+    from database.queries import get_closed_trades
+    import sqlite3 as _sqlite3
+    conn = _sqlite3.connect(DB_PATH)
+    conn.row_factory = _sqlite3.Row
+    rec_id = create_recommendation(
+        db_path=DB_PATH, ticker="AAPL", signal="BUY",
+        reasoning=".", price=100.0, dividend_yield=None, pe_ratio=None,
+    )
+    # Insert sell trade with NULL cost_basis directly
+    conn.execute(
+        "INSERT INTO trades (recommendation_id, ticker, shares, price, order_id, side, cost_basis, executed_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (rec_id, "AAPL", 5, 110.0, None, "sell", None, "2026-04-15T10:00:00"),
+    )
+    conn.commit()
+    conn.close()
+    result = get_closed_trades(DB_PATH)
+    assert result == []
+
+
+def test_get_closed_trades_ordering_newest_first():
+    """Insert 3 sells with distinct executed_at timestamps; result[0] is most recent."""
+    from database.queries import get_closed_trades
+    import sqlite3 as _sqlite3
+    rec_id = create_recommendation(
+        db_path=DB_PATH, ticker="AAPL", signal="BUY",
+        reasoning=".", price=100.0, dividend_yield=None, pe_ratio=None,
+    )
+    conn = _sqlite3.connect(DB_PATH)
+    conn.execute(
+        "INSERT INTO trades (recommendation_id, ticker, shares, price, order_id, side, cost_basis, executed_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (rec_id, "AAPL", 5, 110.0, None, "sell", 100.0, "2026-04-10T10:00:00"),
+    )
+    conn.execute(
+        "INSERT INTO trades (recommendation_id, ticker, shares, price, order_id, side, cost_basis, executed_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (rec_id, "MSFT", 3, 320.0, None, "sell", 300.0, "2026-04-15T10:00:00"),
+    )
+    conn.execute(
+        "INSERT INTO trades (recommendation_id, ticker, shares, price, order_id, side, cost_basis, executed_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (rec_id, "GOOG", 2, 180.0, None, "sell", 170.0, "2026-04-12T10:00:00"),
+    )
+    conn.commit()
+    conn.close()
+    result = get_closed_trades(DB_PATH)
+    assert len(result) == 3
+    assert result[0]["executed_at"] == "2026-04-15T10:00:00"  # most recent first
+
+
+def test_get_closed_trades_limit_enforced():
+    """Insert 25 qualifying sells; get_closed_trades(DB_PATH, limit=20) returns exactly 20 rows."""
+    from database.queries import get_closed_trades
+    import sqlite3 as _sqlite3
+    rec_id = create_recommendation(
+        db_path=DB_PATH, ticker="AAPL", signal="BUY",
+        reasoning=".", price=100.0, dividend_yield=None, pe_ratio=None,
+    )
+    conn = _sqlite3.connect(DB_PATH)
+    for i in range(25):
+        conn.execute(
+            "INSERT INTO trades (recommendation_id, ticker, shares, price, order_id, side, cost_basis, executed_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (rec_id, f"T{i:02d}", 1, 110.0, None, "sell", 100.0, f"2026-04-{i+1:02d}T10:00:00"),
+        )
+    conn.commit()
+    conn.close()
+    result = get_closed_trades(DB_PATH, limit=20)
+    assert len(result) == 20
+
+
+def test_get_closed_trades_default_limit_is_20():
+    """get_closed_trades(DB_PATH) without limit arg defaults to 20."""
+    from database.queries import get_closed_trades
+    import sqlite3 as _sqlite3
+    rec_id = create_recommendation(
+        db_path=DB_PATH, ticker="AAPL", signal="BUY",
+        reasoning=".", price=100.0, dividend_yield=None, pe_ratio=None,
+    )
+    conn = _sqlite3.connect(DB_PATH)
+    for i in range(25):
+        conn.execute(
+            "INSERT INTO trades (recommendation_id, ticker, shares, price, order_id, side, cost_basis, executed_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (rec_id, f"X{i:02d}", 1, 110.0, None, "sell", 100.0, f"2026-04-{i+1:02d}T10:00:00"),
+        )
+    conn.commit()
+    conn.close()
+    result = get_closed_trades(DB_PATH)
+    assert len(result) == 20
+
+
+def test_get_closed_trades_shape():
+    """Each returned dict has keys ticker (str), price (float), cost_basis (float), executed_at (str)."""
+    from database.queries import get_closed_trades
+    import sqlite3 as _sqlite3
+    rec_id = create_recommendation(
+        db_path=DB_PATH, ticker="AAPL", signal="BUY",
+        reasoning=".", price=100.0, dividend_yield=None, pe_ratio=None,
+    )
+    conn = _sqlite3.connect(DB_PATH)
+    conn.execute(
+        "INSERT INTO trades (recommendation_id, ticker, shares, price, order_id, side, cost_basis, executed_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (rec_id, "AAPL", 5, 115.50, None, "sell", 100.25, "2026-04-15T10:00:00"),
+    )
+    conn.commit()
+    conn.close()
+    result = get_closed_trades(DB_PATH)
+    assert len(result) == 1
+    row = result[0]
+    assert isinstance(row["ticker"], str)
+    assert isinstance(row["price"], float)
+    assert isinstance(row["cost_basis"], float)
+    assert isinstance(row["executed_at"], str)
