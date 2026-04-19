@@ -6,7 +6,7 @@ status: in_progress
 last_updated: "2026-04-18T00:00:00.000Z"
 last_activity: 2026-04-18
 progress:
-  total_phases: 4
+  total_phases: 5
   completed_phases: 0
   total_plans: 0
   completed_plans: 0
@@ -17,17 +17,17 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-04-12)
+See: .planning/PROJECT.md (updated 2026-04-14)
 
 **Core value:** The bot must never place a real order without explicit human approval via Discord.
-**Current focus:** Phase 13 — portfolio-analytics (complete)
+**Current focus:** Phase 14 — Trade History Command (not started)
 
 ## Current Position
 
-Phase: Not started (defining requirements)
+Phase: 14 — Trade History Command
 Plan: —
-Status: Defining requirements
-Last activity: 2026-04-18 — Milestone v1.3 started
+Status: Not started
+Last activity: 2026-04-18 — v1.3 roadmap defined (Phases 14-18)
 
 ---
 
@@ -35,7 +35,7 @@ Last activity: 2026-04-18 — Milestone v1.3 started
 
 **Milestone v1.3:** Risk & Signal Quality
 **Started:** 2026-04-18
-**Phases:** 14–17 (4 phases)
+**Phases:** 14–18 (5 phases)
 
 ---
 
@@ -57,6 +57,11 @@ Last activity: 2026-04-18 — Milestone v1.3 started
 | 11 | Confidence Scoring | ✅ Complete (2/2 plans) |
 | 12 | ETF Polish | ✅ Complete (2/2 plans) |
 | 13 | Portfolio Analytics | ✅ Complete (1/1 plan) |
+| 14 | Trade History Command | 🔄 Not started |
+| 15 | Fundamental Trend Enrichment | 🔄 Not started |
+| 16 | Earnings Date Warning | 🔄 Not started |
+| 17 | Limit Buy Orders | 🔄 Not started |
+| 18 | Test Coverage Gaps | 🔄 Not started |
 
 ---
 
@@ -70,7 +75,7 @@ Location: .planning/codebase/
 - ARCHITECTURE.md — screener → analyst → Discord → Schwab pipeline, daily APScheduler cron
 - STRUCTURE.md — module dependency graph, entry points, config loading pattern
 - CONVENTIONS.md — snake_case, dataclasses, pure functions, pytest, type hints
-- TESTING.md — 252 tests green as of v1.1
+- TESTING.md — 372 tests green as of v1.2
 - CONCERNS.md — full audit: security, reliability, tech debt, missing features, test gaps
 
 ---
@@ -83,6 +88,9 @@ Location: .planning/codebase/
 - ETF scan live: `/scan_etf` command, `etf_watchlist.txt` (10 ETFs), ETF-aware analyst prompt
 - All 9 blocking yfinance calls wrapped in asyncio.to_thread — gateway heartbeat safe
 - Phase 10 complete: sector, SPY trend, VIX, 52-week range injected into all BUY/SELL/ETF prompts via screener/macro.py
+- Phase 11 complete: confidence scoring end-to-end (parse → DB → embed badge)
+- Phase 12 complete: ETF scheduled scan + expense ratio threshold flag
+- Phase 13 complete: /positions total P&L footer + /stats win rate command
 
 ## Key Decisions (Phase 11)
 
@@ -114,6 +122,17 @@ Location: .planning/codebase/
 - `cost_basis` fetched from DB (`avg_cost_usd`), never from Discord interaction payload (T-13-02 mitigated)
 - Break-even (sell_price >= cost_basis) counts as win per plan spec
 
+## Research Decisions (v1.3 — pre-phase)
+
+- `/history` query is sell-side-only SELECT (`WHERE side='sell' AND cost_basis IS NOT NULL`) — no JOIN to avoid cartesian duplicates on multi-trade tickers
+- `equity_buy_limit` price must be a formatted string `f"{price:.2f}"` — raw float triggers DeprecationWarning today, future TypeError
+- Limit order duration defaults to GTC (not DAY) — DAY + late approval = silent unfill that locks DB recommendation
+- `USE_LIMIT_BUY` must use `.lower() == "true"` Config pattern — `bool("false")` is `True` in Python
+- Earnings date sourced from `info["earningsTimestamp"]` (already fetched) — zero extra network cost
+- `ticker.quarterly_income_stmt` (not `ticker.quarterly_earnings`) for EPS trend — `quarterly_earnings` returns None silently in yfinance 1.2.0
+- `quarterly_income_stmt` columns are newest-first `pd.Timestamp` — reverse before extracting last 4 quarters
+- New yfinance attributes (`quarterly_income_stmt`) need `asyncio.to_thread` wrapping — not folded into `ticker.info`
+
 ## Next Action
 
-Milestone v1.3 started. Run `/gsd-plan-phase 14` to plan Phase 14 (Limit Orders).
+Run `/gsd-plan-phase 14` to plan Phase 14 (Trade History Command).

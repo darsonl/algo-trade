@@ -58,19 +58,17 @@
 
 ## Traceability
 
-*(filled by roadmapper)*
-
 | REQ-ID | Phase | Description |
 |--------|-------|-------------|
-| RISK-01 | — | Limit buy order on Approve |
-| RISK-02 | — | USE_LIMIT_BUY config flag |
-| RISK-03 | — | limit_price/order_type in trades table |
-| RISK-04 | — | Scan-time price staleness in embed |
-| SIG-05 | — | Earnings date in BUY embed |
-| SIG-06 | — | Earnings date in Claude prompt |
-| SIG-07 | — | P/E direction in Claude prompt |
-| SIG-08 | — | Quarterly EPS trend in Claude prompt |
-| OPS-02 | — | /history slash command |
-| TEST-09 | — | Analyst fallback tests |
-| TEST-10 | — | Config validation tests |
-| TEST-11 | — | run_scan quota exhaustion test |
+| RISK-01 | Phase 17 | Limit buy order on Approve |
+| RISK-02 | Phase 17 | USE_LIMIT_BUY config flag |
+| RISK-03 | Phase 17 | limit_price/order_type in trades table |
+| RISK-04 | Phase 17 | Scan-time price staleness in embed |
+| SIG-05 | Phase 16 | Earnings date in BUY embed |
+| SIG-06 | Phase 16 | Earnings date in Claude prompt |
+| SIG-07 | Phase 15 | P/E direction in Claude prompt |
+| SIG-08 | Phase 15 | Quarterly EPS trend in Claude prompt |
+| OPS-02 | Phase 14 | /history slash command |
+| TEST-09 | Phase 18 | Analyst fallback tests |
+| TEST-10 | Phase 18 | Config validation tests |
+| TEST-11 | Phase 18 | run_scan quota exhaustion test |
