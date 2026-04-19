@@ -71,14 +71,16 @@ def compute_52w_position(
 
 
 def fetch_macro_context() -> dict:
-    """Fetch macro context from yfinance: SPY trend direction and VIX level.
+    """Fetch macro context from yfinance: SPY trend direction (1m and 1y) and VIX level.
 
-    SPY trend: 1-month return expressed as "Bullish (+3.2%)" or "Bearish (-1.4%)"
+    SPY trend (1m): 1-month return expressed as "Bullish (+3.2%)" or "Bearish (-1.4%)"
+    SPY trend (1y): 1-year return expressed as "Bullish (+12.5%)" or "Bearish (-8.5%)"
     VIX level: Latest close with volatility label "18.4 (Low volatility)"
 
     Returns:
-        {"spy_trend": str | None, "vix_level": str | None}
-        On any failure, returns {"spy_trend": None, "vix_level": None} and logs a warning.
+        {"spy_trend_1m": str | None, "spy_trend_1y": str | None, "vix_level": str | None}
+        On any failure, returns {"spy_trend_1m": None, "spy_trend_1y": None, "vix_level": None}
+        and logs a warning.
     """
     try:
         # SPY: compute 1-month return
@@ -87,6 +89,12 @@ def fetch_macro_context() -> dict:
         first_close = spy_hist["Close"].iloc[0]
         last_close = spy_hist["Close"].iloc[-1]
         spy_return = (last_close - first_close) / first_close
+
+        # SPY: compute 1-year return (reuse same spy Ticker object)
+        spy_hist_1y = spy.history(period="1y")
+        first_close_1y = spy_hist_1y["Close"].iloc[0]
+        last_close_1y = spy_hist_1y["Close"].iloc[-1]
+        spy_return_1y = (last_close_1y - first_close_1y) / first_close_1y
 
         # VIX: get latest close price (fast_info preferred, fallback to history)
         vix = yf.Ticker("^VIX")
@@ -97,9 +105,10 @@ def fetch_macro_context() -> dict:
             vix_close = vix_hist["Close"].iloc[-1]
 
         return {
-            "spy_trend": format_spy_trend(spy_return),
+            "spy_trend_1m": format_spy_trend(spy_return),
+            "spy_trend_1y": format_spy_trend(spy_return_1y),
             "vix_level": format_vix_level(vix_close),
         }
     except Exception as exc:
         logger.warning("Failed to fetch macro context: %s", exc)
-        return {"spy_trend": None, "vix_level": None}
+        return {"spy_trend_1m": None, "spy_trend_1y": None, "vix_level": None}
