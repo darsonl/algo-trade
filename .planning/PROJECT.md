@@ -63,6 +63,7 @@ The bot must never place a real order without explicit human approval via Discor
 - ✓ ETF expense ratio threshold flag in Discord embed (`ETF_MAX_EXPENSE_RATIO`) — v1.2 (ETF-09)
 - ✓ Total unrealized P&L aggregate in `/positions` embed footer — v1.2 (PORT-01)
 - ✓ `/stats` slash command: win rate, avg gain %, avg loss % on closed trades — v1.2 (PORT-02)
+- ✓ `/history` slash command: last 20 closed trades with entry/exit/P&L%/date in code-block embed — v1.3 (OPS-02, validated in Phase 14)
 
 ### Active
 
