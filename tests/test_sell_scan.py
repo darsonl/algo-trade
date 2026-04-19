@@ -56,7 +56,7 @@ TECH_DATA_NORMAL = {
 @patch("main.fetch_technical_data", return_value=TECH_DATA_OVERBOUGHT)
 @patch("main.analyze_sell_ticker", return_value={"signal": "SELL", "reasoning": "Overbought", "provider_used": "gemini"})
 @patch("main.fetch_fundamental_info", return_value={"trailingPE": 20, "dividendYield": 0.03, "earningsGrowth": 0.1})
-@patch("main.fetch_macro_context", return_value={"spy_trend": "Bullish (+1.0%)", "vix_level": "18.0 (Low volatility)"})
+@patch("main.fetch_macro_context", return_value={"spy_trend_1m": "Bullish (+1.0%)", "spy_trend_1y": "Bearish (-8.5%)", "vix_level": "18.0 (Low volatility)"})
 @patch("main.get_top_sp500_by_fundamentals", return_value=[])
 @patch("main.get_universe", return_value=[])
 async def test_sell_pass_posts_sell_recommendation(
@@ -80,7 +80,7 @@ async def test_sell_pass_posts_sell_recommendation(
 @patch("main.fetch_news_headlines", return_value=[])
 @patch("main.fetch_technical_data", return_value=TECH_DATA_NORMAL)
 @patch("main.fetch_fundamental_info", return_value={"trailingPE": 20, "dividendYield": 0.03, "earningsGrowth": 0.1})
-@patch("main.fetch_macro_context", return_value={"spy_trend": "Bullish (+1.0%)", "vix_level": "18.0 (Low volatility)"})
+@patch("main.fetch_macro_context", return_value={"spy_trend_1m": "Bullish (+1.0%)", "spy_trend_1y": "Bearish (-8.5%)", "vix_level": "18.0 (Low volatility)"})
 @patch("main.get_top_sp500_by_fundamentals", return_value=[])
 @patch("main.get_universe", return_value=[])
 async def test_sell_pass_skips_when_rsi_below_threshold(
@@ -99,7 +99,7 @@ async def test_sell_pass_skips_when_rsi_below_threshold(
 @patch("main.fetch_technical_data", return_value=TECH_DATA_OVERBOUGHT)
 @patch("main.analyze_sell_ticker", return_value={"signal": "HOLD", "reasoning": "Momentum strong", "provider_used": "gemini"})
 @patch("main.fetch_fundamental_info", return_value={"trailingPE": 20, "dividendYield": 0.03, "earningsGrowth": 0.1})
-@patch("main.fetch_macro_context", return_value={"spy_trend": "Bullish (+1.0%)", "vix_level": "18.0 (Low volatility)"})
+@patch("main.fetch_macro_context", return_value={"spy_trend_1m": "Bullish (+1.0%)", "spy_trend_1y": "Bearish (-8.5%)", "vix_level": "18.0 (Low volatility)"})
 @patch("main.get_top_sp500_by_fundamentals", return_value=[])
 @patch("main.get_universe", return_value=[])
 async def test_sell_pass_skips_when_analyst_says_hold(
@@ -117,7 +117,7 @@ async def test_sell_pass_skips_when_analyst_says_hold(
 @patch("main.fetch_news_headlines", return_value=[])
 @patch("main.fetch_technical_data", return_value=TECH_DATA_OVERBOUGHT)
 @patch("main.fetch_fundamental_info", return_value={"trailingPE": 20, "dividendYield": 0.03, "earningsGrowth": 0.1})
-@patch("main.fetch_macro_context", return_value={"spy_trend": "Bullish (+1.0%)", "vix_level": "18.0 (Low volatility)"})
+@patch("main.fetch_macro_context", return_value={"spy_trend_1m": "Bullish (+1.0%)", "spy_trend_1y": "Bearish (-8.5%)", "vix_level": "18.0 (Low volatility)"})
 @patch("main.get_top_sp500_by_fundamentals", return_value=[])
 @patch("main.get_universe", return_value=[])
 async def test_sell_pass_skips_sell_blocked_position(
@@ -137,7 +137,7 @@ async def test_sell_pass_skips_sell_blocked_position(
 @patch("main.fetch_news_headlines", return_value=[])
 @patch("main.fetch_technical_data", return_value=TECH_DATA_NORMAL)
 @patch("main.fetch_fundamental_info", return_value={"trailingPE": 20, "dividendYield": 0.03, "earningsGrowth": 0.1})
-@patch("main.fetch_macro_context", return_value={"spy_trend": "Bullish (+1.0%)", "vix_level": "18.0 (Low volatility)"})
+@patch("main.fetch_macro_context", return_value={"spy_trend_1m": "Bullish (+1.0%)", "spy_trend_1y": "Bearish (-8.5%)", "vix_level": "18.0 (Low volatility)"})
 @patch("main.get_top_sp500_by_fundamentals", return_value=[])
 @patch("main.get_universe", return_value=[])
 async def test_sell_pass_resets_sell_blocked_when_rsi_drops(
@@ -162,7 +162,7 @@ async def test_sell_pass_resets_sell_blocked_when_rsi_drops(
 @patch("main.fetch_news_headlines", return_value=[])
 @patch("main.fetch_technical_data", return_value=TECH_DATA_OVERBOUGHT)
 @patch("main.fetch_fundamental_info", return_value={"trailingPE": 20, "dividendYield": 0.03, "earningsGrowth": 0.1})
-@patch("main.fetch_macro_context", return_value={"spy_trend": "Bullish (+1.0%)", "vix_level": "18.0 (Low volatility)"})
+@patch("main.fetch_macro_context", return_value={"spy_trend_1m": "Bullish (+1.0%)", "spy_trend_1y": "Bearish (-8.5%)", "vix_level": "18.0 (Low volatility)"})
 @patch("main.get_top_sp500_by_fundamentals", return_value=[])
 @patch("main.get_universe", return_value=[])
 async def test_sell_pass_does_not_reset_sell_blocked_when_rsi_still_high(
@@ -185,7 +185,7 @@ async def test_sell_pass_does_not_reset_sell_blocked_when_rsi_still_high(
 
 @pytest.mark.asyncio
 @patch("main.fetch_fundamental_info", return_value={"trailingPE": 20, "dividendYield": 0.03, "earningsGrowth": 0.1})
-@patch("main.fetch_macro_context", return_value={"spy_trend": "Bullish (+1.0%)", "vix_level": "18.0 (Low volatility)"})
+@patch("main.fetch_macro_context", return_value={"spy_trend_1m": "Bullish (+1.0%)", "spy_trend_1y": "Bearish (-8.5%)", "vix_level": "18.0 (Low volatility)"})
 @patch("main.get_top_sp500_by_fundamentals", return_value=[])
 @patch("main.get_universe", return_value=[])
 async def test_sell_pass_no_positions_skips_sell_evaluation(
@@ -204,7 +204,7 @@ async def test_sell_pass_no_positions_skips_sell_evaluation(
 @patch("main.fetch_technical_data", return_value=TECH_DATA_OVERBOUGHT)
 @patch("main.analyze_sell_ticker", return_value={"signal": "SELL", "reasoning": "Overbought", "provider_used": "gemini"})
 @patch("main.fetch_fundamental_info", return_value={"trailingPE": 20, "dividendYield": 0.03, "earningsGrowth": 0.1})
-@patch("main.fetch_macro_context", return_value={"spy_trend": "Bullish (+1.0%)", "vix_level": "18.0 (Low volatility)"})
+@patch("main.fetch_macro_context", return_value={"spy_trend_1m": "Bullish (+1.0%)", "spy_trend_1y": "Bearish (-8.5%)", "vix_level": "18.0 (Low volatility)"})
 @patch("main.get_top_sp500_by_fundamentals", return_value=[])
 @patch("main.get_universe", return_value=[])
 async def test_sell_pass_sets_discord_message_id_after_posting(
@@ -226,7 +226,7 @@ async def test_sell_pass_sets_discord_message_id_after_posting(
 @patch("main.fetch_technical_data", return_value=TECH_DATA_OVERBOUGHT)
 @patch("main.analyze_sell_ticker", return_value={"signal": "SELL", "reasoning": "Overbought", "provider_used": "gemini"})
 @patch("main.fetch_fundamental_info", return_value={"trailingPE": 20, "dividendYield": 0.03, "earningsGrowth": 0.1})
-@patch("main.fetch_macro_context", return_value={"spy_trend": "Bullish (+1.0%)", "vix_level": "18.0 (Low volatility)"})
+@patch("main.fetch_macro_context", return_value={"spy_trend_1m": "Bullish (+1.0%)", "spy_trend_1y": "Bearish (-8.5%)", "vix_level": "18.0 (Low volatility)"})
 @patch("main.get_top_sp500_by_fundamentals", return_value=[])
 @patch("main.get_universe", return_value=[])
 async def test_sell_pass_multiple_positions_evaluated(
@@ -247,7 +247,7 @@ async def test_sell_pass_multiple_positions_evaluated(
 @patch("main.fetch_technical_data", return_value=TECH_DATA_OVERBOUGHT)
 @patch("main.analyze_sell_ticker", return_value={"signal": "SELL", "reasoning": "Overbought", "provider_used": "gemini"})
 @patch("main.fetch_fundamental_info", return_value={"sector": "Technology", "fiftyTwoWeekHigh": 200.0, "fiftyTwoWeekLow": 100.0, "trailingPE": 20, "dividendYield": 0.03, "earningsGrowth": 0.1})
-@patch("main.fetch_macro_context", return_value={"spy_trend": "Bullish (+1.0%)", "vix_level": "18.0 (Low volatility)"})
+@patch("main.fetch_macro_context", return_value={"spy_trend_1m": "Bullish (+1.0%)", "spy_trend_1y": "Bearish (-8.5%)", "vix_level": "18.0 (Low volatility)"})
 @patch("main.get_top_sp500_by_fundamentals", return_value=[])
 @patch("main.get_universe", return_value=[])
 async def test_sell_pass_passes_macro_context_to_analyze_sell_ticker(
@@ -261,5 +261,5 @@ async def test_sell_pass_passes_macro_context_to_analyze_sell_ticker(
 
     mock_sell_analyze.assert_called_once()
     call_kwargs = mock_sell_analyze.call_args[1]
-    assert call_kwargs.get("macro_context") == {"spy_trend": "Bullish (+1.0%)", "vix_level": "18.0 (Low volatility)"}
+    assert call_kwargs.get("macro_context") == {"spy_trend_1m": "Bullish (+1.0%)", "spy_trend_1y": "Bearish (-8.5%)", "vix_level": "18.0 (Low volatility)"}
     assert call_kwargs.get("info") is not None

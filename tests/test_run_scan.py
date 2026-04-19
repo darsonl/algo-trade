@@ -44,7 +44,7 @@ def _full_patch(
         patch("main.queries.get_open_positions", return_value=[]),
         patch("main.yf.Ticker"),
         patch("main.create_analyst_client", return_value=MagicMock()),
-        patch("main.fetch_macro_context", return_value={"spy_trend": "Bullish (+1.0%)", "vix_level": "18.0 (Low volatility)"}),
+        patch("main.fetch_macro_context", return_value={"spy_trend_1m": "Bullish (+1.0%)", "spy_trend_1y": "Bearish (-8.5%)", "vix_level": "18.0 (Low volatility)"}),
         patch("main.fetch_fundamental_info", return_value=fund_info),
         patch("main.passes_fundamental_filter", return_value=fundamental_pass),
         patch("main.fetch_news_headlines", return_value=["headline A"]),
@@ -218,7 +218,7 @@ async def test_run_scan_excludes_etfs_from_stock_universe():
         patch("main.yf.Ticker"),
         patch("main.create_analyst_client", return_value=MagicMock()),
         patch("main.create_fallback_client", return_value=None),
-        patch("main.fetch_macro_context", return_value={"spy_trend": "Bullish (+1.0%)", "vix_level": "18.0 (Low volatility)"}),
+        patch("main.fetch_macro_context", return_value={"spy_trend_1m": "Bullish (+1.0%)", "spy_trend_1y": "Bearish (-8.5%)", "vix_level": "18.0 (Low volatility)"}),
         patch("main.fetch_fundamental_info", return_value=fund_info),
         patch("main.passes_fundamental_filter", return_value=True),
         patch("main.fetch_news_headlines", return_value=["headline A"]),
@@ -267,7 +267,7 @@ async def test_run_scan_passes_macro_to_analyze_ticker():
     """analyze_ticker is called with macro_context kwarg containing the fetched macro data."""
     bot = _make_bot()
     config = _make_config()
-    expected_macro = {"spy_trend": "Bullish (+1.0%)", "vix_level": "18.0 (Low volatility)"}
+    expected_macro = {"spy_trend_1m": "Bullish (+1.0%)", "spy_trend_1y": "Bearish (-8.5%)", "vix_level": "18.0 (Low volatility)"}
     with _full_patch() as mocks:
         await run_scan(bot, config)
     call_kwargs = mocks["analyze_ticker"].call_args[1]
@@ -284,4 +284,4 @@ async def test_run_scan_passes_none_macro_to_analyze_ticker_on_fetch_failure():
             await run_scan(bot, config)
     call_kwargs = mocks["analyze_ticker"].call_args[1]
     macro = call_kwargs.get("macro_context")
-    assert macro == {"spy_trend": None, "vix_level": None}
+    assert macro == {"spy_trend_1m": None, "spy_trend_1y": None, "vix_level": None}

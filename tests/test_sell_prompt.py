@@ -67,7 +67,7 @@ def test_parse_hold_signal_from_sell_analysis():
 
 def test_build_sell_prompt_with_macro_context_includes_market_context_block():
     """build_sell_prompt with macro_context dict includes Market Context block."""
-    macro = {"spy_trend": "Bullish (+3.2%)", "vix_level": "18.4 (Low volatility)"}
+    macro = {"spy_trend_1m": "Bullish (+3.2%)", "spy_trend_1y": "Bearish (-8.5%)", "vix_level": "18.4 (Low volatility)"}
     info = {"sector": "Technology", "fiftyTwoWeekHigh": 200.0, "fiftyTwoWeekLow": 100.0}
     prompt = build_sell_prompt(
         "AAPL", 150.0, 180.0, 0.20, 30, 72.5, ["Headline"],
@@ -75,7 +75,8 @@ def test_build_sell_prompt_with_macro_context_includes_market_context_block():
     )
     assert "Market Context:" in prompt
     assert "Sector: Technology" in prompt
-    assert "SPY trend: Bullish (+3.2%)" in prompt
+    assert "SPY trend (1m): Bullish (+3.2%)" in prompt
+    assert "SPY trend (1y): Bearish (-8.5%)" in prompt
     assert "VIX: 18.4 (Low volatility)" in prompt
     assert "52-week range:" in prompt
 
@@ -86,7 +87,8 @@ def test_build_sell_prompt_without_macro_context_omits_spy_vix():
         "AAPL", 150.0, 170.0, 0.133, 30, 72.5, [],
         macro_context=None,
     )
-    assert "SPY trend:" not in prompt
+    assert "SPY trend (1m):" not in prompt
+    assert "SPY trend (1y):" not in prompt
     assert "VIX:" not in prompt
 
 
@@ -99,7 +101,7 @@ def test_build_sell_prompt_backward_compat_no_macro_context_arg():
 
 def test_build_sell_prompt_macro_context_with_none_info_uses_na():
     """build_sell_prompt with macro_context but info=None shows Sector: N/A."""
-    macro = {"spy_trend": "Bullish (+3.2%)", "vix_level": "18.4 (Low volatility)"}
+    macro = {"spy_trend_1m": "Bullish (+3.2%)", "spy_trend_1y": "Bearish (-8.5%)", "vix_level": "18.4 (Low volatility)"}
     prompt = build_sell_prompt(
         "AAPL", 150.0, 170.0, 0.133, 30, 72.5, [],
         macro_context=macro, info=None,
