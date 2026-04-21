@@ -89,7 +89,13 @@ def create_fallback_client(config: Config):
     return openai.OpenAI(api_key=config.analyst_fallback_api_key, base_url=base_url)
 
 
-def build_prompt(ticker: str, info: dict, headlines: list[str], macro_context: dict | None = None) -> str:
+def build_prompt(
+    ticker: str,
+    info: dict,
+    headlines: list[str],
+    macro_context: dict | None = None,
+    fundamental_trend: dict | None = None,  # NEW — Phase 15 SIG-07, SIG-08
+) -> str:
     """Build the analysis prompt for a single ticker."""
     pe = info.get("trailingPE", "N/A")
     div_yield = info.get("dividendYield", "N/A")
@@ -98,6 +104,23 @@ def build_prompt(ticker: str, info: dict, headlines: list[str], macro_context: d
     headlines_block = (
         "\n".join(f"- {h}" for h in headlines) if headlines else "- No recent headlines available."
     )
+
+    # Build fundamentals block with optional P/E direction and EPS trend (D-04, D-05, D-06)
+    fundamentals_lines = [f"- Trailing P/E: {pe}"]
+    if fundamental_trend is not None:
+        pe_direction = fundamental_trend.get("pe_direction", "N/A")
+        fundamentals_lines.append(f"- P/E Direction: {pe_direction}")
+        eps_trend = fundamental_trend.get("eps_trend")
+        if eps_trend:  # truthy: non-None AND non-empty list
+            eps_str = ", ".join(
+                f"{e['quarter']}: ${e['eps']:.2f}" for e in eps_trend
+            )
+            fundamentals_lines.append(f"- EPS trend (last 4Q): {eps_str}")
+    fundamentals_lines += [
+        f"- Dividend Yield: {div_yield}",
+        f"- Earnings Growth: {earnings_growth}",
+    ]
+    fundamentals_block = "Fundamentals:\n" + "\n".join(fundamentals_lines)
 
     # Market Context block: Sector and 52w always present, SPY/VIX only when macro available
     sector = info.get("sector") or "N/A"
@@ -120,10 +143,7 @@ def build_prompt(ticker: str, info: dict, headlines: list[str], macro_context: d
 
 Ticker: {ticker}
 
-Fundamentals:
-- Trailing P/E: {pe}
-- Dividend Yield: {div_yield}
-- Earnings Growth: {earnings_growth}
+{fundamentals_block}
 
 {market_block}
 
@@ -264,6 +284,7 @@ def analyze_ticker(
     client=None,
     fallback_client=None,
     macro_context: dict | None = None,
+    fundamental_trend: dict | None = None,  # NEW — Phase 15 SIG-07, SIG-08
 ) -> dict:
     """
     Call the configured analyst provider to get a BUY/HOLD/SKIP signal.
@@ -274,7 +295,9 @@ def analyze_ticker(
         client = create_analyst_client(config)
 
     model = config.analyst_model or _DEFAULT_MODELS.get(config.analyst_provider, "")
-    prompt = build_prompt(ticker, info, headlines, macro_context=macro_context)
+    # NOTE: fundamental_trend intentionally NOT in cache key — cache path short-circuits
+    # before analyze_ticker in main.py (cache hits skip analyze_ticker entirely).
+    prompt = build_prompt(ticker, info, headlines, macro_context=macro_context, fundamental_trend=fundamental_trend)
 
     if config.analyst_call_delay_s > 0:
         time.sleep(config.analyst_call_delay_s)
