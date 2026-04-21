@@ -116,8 +116,8 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
             # Per D-07: EPS trend fetched via asyncio.to_thread (quarterly_income_stmt is blocking I/O).
             trailing_pe = info.get("trailingPE")
             forward_pe = info.get("forwardPE")
-            if trailing_pe is None or forward_pe is None or trailing_pe == 0:
-                pe_direction = "N/A"  # D-03: graceful N/A, no crash on missing forwardPE or zero trailingPE
+            if trailing_pe is None or forward_pe is None or trailing_pe <= 0:
+                pe_direction = "N/A"  # D-03: graceful N/A, no crash on missing forwardPE or zero/negative trailingPE
             elif abs(forward_pe - trailing_pe) / abs(trailing_pe) < 0.05:
                 pe_direction = "stable"  # D-01: ±5% stable band
             elif forward_pe > trailing_pe:
