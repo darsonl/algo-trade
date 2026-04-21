@@ -1,7 +1,10 @@
+import logging
 import pandas as pd
 import yfinance as yf
 from config import Config
 from tenacity import retry, stop_after_attempt, wait_exponential
+
+logger = logging.getLogger(__name__)
 
 _retry = retry(
     wait=wait_exponential(multiplier=1, min=2, max=30),
@@ -75,5 +78,6 @@ def fetch_eps_data(yf_ticker: yf.Ticker) -> list[dict] | None:
             {"quarter": f"Q{ts.quarter}-{ts.year}", "eps": float(val)}
             for ts, val in quarters
         ]
-    except Exception:
+    except Exception as exc:
+        logger.debug("fetch_eps_data failed: %s", exc, exc_info=True)
         return None
