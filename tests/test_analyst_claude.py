@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import patch, MagicMock
-from analyst.claude_analyst import build_prompt, parse_claude_response, build_etf_prompt, analyze_etf_ticker
+from analyst.claude_analyst import build_prompt, parse_claude_response, build_etf_prompt, analyze_etf_ticker, analyze_ticker
 
 
 # --- build_prompt ---
@@ -461,3 +461,110 @@ def test_build_prompt_includes_confidence_format():
 def test_build_etf_prompt_includes_confidence_format():
     prompt = build_etf_prompt("SPY", [], rsi=60.0)
     assert "CONFIDENCE: <high|medium|low>" in prompt
+
+
+# ---------------------------------------------------------------------------
+# fundamental_trend enrichment tests (SIG-07, SIG-08)
+# ---------------------------------------------------------------------------
+
+def test_build_prompt_with_fundamental_trend_includes_pe_direction_and_eps():
+    """Test A: fundamental_trend with full EPS data renders P/E Direction and all EPS entries."""
+    fundamental_trend = {
+        "pe_direction": "contracting",
+        "eps_trend": [
+            {"quarter": "Q1-2025", "eps": 0.45},
+            {"quarter": "Q2-2025", "eps": 0.52},
+            {"quarter": "Q3-2025", "eps": 0.48},
+            {"quarter": "Q4-2025", "eps": 0.61},
+        ],
+    }
+    prompt = build_prompt("AAPL", {}, [], fundamental_trend=fundamental_trend)
+    assert "P/E Direction: contracting" in prompt
+    assert "EPS trend (last 4Q):" in prompt
+    assert "Q1-2025: $0.45" in prompt
+    assert "Q2-2025: $0.52" in prompt
+    assert "Q3-2025: $0.48" in prompt
+    assert "Q4-2025: $0.61" in prompt
+
+
+def test_build_prompt_fundamental_trend_pe_direction_na():
+    """Test B: fundamental_trend with pe_direction N/A and no eps_trend."""
+    fundamental_trend = {"pe_direction": "N/A", "eps_trend": None}
+    prompt = build_prompt("AAPL", {}, [], fundamental_trend=fundamental_trend)
+    assert "P/E Direction: N/A" in prompt
+    assert "EPS trend" not in prompt
+
+
+def test_build_prompt_fundamental_trend_eps_omitted_when_none():
+    """Test C: eps_trend=None means EPS line is omitted, P/E Direction still present."""
+    fundamental_trend = {"pe_direction": "stable", "eps_trend": None}
+    prompt = build_prompt("AAPL", {}, [], fundamental_trend=fundamental_trend)
+    assert "P/E Direction: stable" in prompt
+    assert "EPS trend" not in prompt
+
+
+def test_build_prompt_fundamental_trend_eps_omitted_when_empty_list():
+    """Test D: eps_trend=[] (empty list) means EPS line is omitted per D-05."""
+    fundamental_trend = {"pe_direction": "expanding", "eps_trend": []}
+    prompt = build_prompt("AAPL", {}, [], fundamental_trend=fundamental_trend)
+    assert "P/E Direction: expanding" in prompt
+    assert "EPS trend" not in prompt
+
+
+def test_build_prompt_eps_chronological_order_preserved():
+    """Test E: Q1 entry appears before Q4 entry in the rendered prompt."""
+    fundamental_trend = {
+        "pe_direction": "contracting",
+        "eps_trend": [
+            {"quarter": "Q1-2025", "eps": 0.40},
+            {"quarter": "Q2-2025", "eps": 0.45},
+            {"quarter": "Q3-2025", "eps": 0.50},
+            {"quarter": "Q4-2025", "eps": 0.55},
+        ],
+    }
+    prompt = build_prompt("AAPL", {}, [], fundamental_trend=fundamental_trend)
+    assert prompt.index("Q1-2025") < prompt.index("Q4-2025")
+
+
+def test_build_prompt_backward_compat_no_fundamental_trend():
+    """Test F: build_prompt called without fundamental_trend kwarg — no crash, no P/E Direction or EPS trend."""
+    prompt = build_prompt("AAPL", {}, ["headline"])
+    assert "P/E Direction" not in prompt
+    assert "EPS trend" not in prompt
+    assert "AAPL" in prompt
+    assert "SIGNAL:" in prompt
+
+
+def test_analyze_ticker_forwards_fundamental_trend_to_build_prompt():
+    """Test G: analyze_ticker receives fundamental_trend kwarg and forwards it to build_prompt."""
+    from config import Config
+
+    config = Config(
+        analyst_provider="gemini",
+        analyst_api_key="test-key",
+        analyst_model="gemini-2.5-flash",
+        analyst_call_delay_s=0,
+        analyst_fallback_provider="",
+        analyst_fallback_api_key="",
+        analyst_fallback_model="",
+    )
+    fundamental_trend = {"pe_direction": "contracting", "eps_trend": None}
+    captured_prompts = []
+
+    def capture_call(client, model, prompt):
+        captured_prompts.append(prompt)
+        return "SIGNAL: BUY\nREASONING: Strong trend confirmed.\nCONFIDENCE: high"
+
+    mock_client = MagicMock()
+    with patch("analyst.claude_analyst._call_api", side_effect=capture_call):
+        result = analyze_ticker(
+            ticker="AAPL",
+            info={},
+            headlines=[],
+            config=config,
+            client=mock_client,
+            fundamental_trend=fundamental_trend,
+        )
+
+    assert len(captured_prompts) == 1
+    assert "P/E Direction: contracting" in captured_prompts[0]
