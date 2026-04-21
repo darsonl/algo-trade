@@ -1,3 +1,4 @@
+import pandas as pd
 import yfinance as yf
 from config import Config
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -46,3 +47,33 @@ def passes_fundamental_filter(info: dict, config: Config) -> bool:
 def fetch_fundamental_info(yf_ticker: yf.Ticker) -> dict:
     """Fetch fundamental data for a ticker via a pre-built yf.Ticker object."""
     return yf_ticker.info
+
+
+def fetch_eps_data(yf_ticker: yf.Ticker) -> list[dict] | None:
+    """Return last 4 quarters of Diluted EPS in chronological order (oldest → newest).
+
+    Returns a list of {"quarter": "Q{1-4}-{YYYY}", "eps": float} dicts (1-4 entries),
+    or None when the statement is unavailable, the "Diluted EPS" row is absent,
+    all values are NaN, or any exception occurs.
+
+    Per D-07 and SIG-08: quarterly_income_stmt columns are newest-first pd.Timestamp
+    objects and must be reversed before extracting chronological order.
+    """
+    try:
+        stmt = yf_ticker.quarterly_income_stmt
+        if stmt is None or stmt.empty:
+            return None
+        if "Diluted EPS" not in stmt.index:
+            return None
+        row = stmt.loc["Diluted EPS"]
+        row_chrono = row.iloc[::-1]  # newest-first → oldest-first
+        valid = [(ts, val) for ts, val in row_chrono.items() if pd.notna(val)]
+        if not valid:
+            return None
+        quarters = valid[-4:]  # up to 4 most recent chronological entries
+        return [
+            {"quarter": f"Q{ts.quarter}-{ts.year}", "eps": float(val)}
+            for ts, val in quarters
+        ]
+    except Exception:
+        return None
