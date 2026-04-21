@@ -15,7 +15,7 @@ from config import Config
 from database.models import initialize_db
 from database import queries
 from screener.universe import get_watchlist, get_top_sp500_by_fundamentals, get_universe, partition_watchlist
-from screener.fundamentals import passes_fundamental_filter, fetch_fundamental_info
+from screener.fundamentals import passes_fundamental_filter, fetch_fundamental_info, fetch_eps_data
 from screener.technicals import passes_technical_filter, fetch_technical_data
 from analyst.news import fetch_news_headlines
 from analyst.claude_analyst import analyze_ticker, create_analyst_client, create_fallback_client, analyze_sell_ticker, analyze_etf_ticker
@@ -111,6 +111,36 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
             if not passes_fundamental_filter(info, config):
                 continue
 
+            # Phase 15 (SIG-07, SIG-08): build fundamental_trend enrichment dict.
+            # Per D-08: P/E direction computed inline from info dict (no separate fetch).
+            # Per D-07: EPS trend fetched via asyncio.to_thread (quarterly_income_stmt is blocking I/O).
+            trailing_pe = info.get("trailingPE")
+            forward_pe = info.get("forwardPE")
+            if trailing_pe is None or forward_pe is None or trailing_pe == 0:
+                pe_direction = "N/A"  # D-03: graceful N/A, no crash on missing forwardPE or zero trailingPE
+            elif abs(forward_pe - trailing_pe) / abs(trailing_pe) < 0.05:
+                pe_direction = "stable"  # D-01: ±5% stable band
+            elif forward_pe > trailing_pe:
+                pe_direction = "expanding"  # D-02: P/E ratio growing
+            else:
+                pe_direction = "contracting"  # D-02: P/E ratio shrinking
+
+            try:
+                eps_trend = await asyncio.to_thread(fetch_eps_data, yf_ticker)
+            except Exception as exc:
+                logger.warning(
+                    "EPS data fetch failed for %s: %s — continuing without EPS trend",
+                    ticker, exc,
+                )
+                eps_trend = None
+
+            fundamental_trend = {
+                "pe_direction": pe_direction,
+                "eps_trend": eps_trend,
+            }
+            logger.debug("fundamental_trend for %s: pe_direction=%s, eps_quarters=%s",
+                         ticker, pe_direction, len(eps_trend) if eps_trend else 0)
+
             headlines = await asyncio.to_thread(
                 fetch_news_headlines, ticker, alpha_vantage_api_key=config.alpha_vantage_api_key
             )
@@ -141,7 +171,8 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
                     continue
                 analysis = await asyncio.to_thread(
                     analyze_ticker, ticker, info, headlines, config,
-                    client, fallback_client, macro_context=macro_context
+                    client, fallback_client, macro_context=macro_context,
+                    fundamental_trend=fundamental_trend  # NEW — Phase 15 SIG-07, SIG-08
                 )
                 queries.increment_analyst_call_count(
                     config.db_path, analysis["provider_used"]
