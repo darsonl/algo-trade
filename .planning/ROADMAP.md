@@ -52,7 +52,7 @@ See `.planning/milestones/v1.2-ROADMAP.md` for full phase details.
 ### v1.3 Risk & Signal Quality (Phases 14-18)
 
 - [x] **Phase 14: Trade History Command** — `/history` slash command showing last 20 closed trades (completed 2026-04-19)
-- [ ] **Phase 15: Fundamental Trend Enrichment** — P/E direction and EPS quarterly trend in Claude BUY prompt
+- [x] **Phase 15: Fundamental Trend Enrichment** — P/E direction and EPS quarterly trend in Claude BUY prompt (completed 2026-04-21)
 - [ ] **Phase 16: Earnings Date Warning** — Next earnings date in BUY embed and Claude prompt
 - [ ] **Phase 17: Limit Buy Orders** — Limit order execution on Approve with config flag and audit trail
 - [ ] **Phase 18: Test Coverage Gaps** — Analyst fallback, config validation, and quota exhaustion tests
@@ -92,7 +92,7 @@ Plans:
   3. When forwardPE is absent from yfinance info, the P/E direction field shows "N/A" rather than crashing
   4. When quarterly_income_stmt returns None or is missing the "Diluted EPS" row, the EPS trend field is omitted gracefully
 **Plans**: 1 plan
-  - [ ] 15-01-PLAN.md — Add fetch_eps_data + thread fundamental_trend through build_prompt/analyze_ticker + wire into main.py buy-scan
+  - [x] 15-01-PLAN.md — Add fetch_eps_data + thread fundamental_trend through build_prompt/analyze_ticker + wire into main.py buy-scan
 
 ### Phase 16: Earnings Date Warning
 **Goal**: Operators and Claude both see upcoming earnings proximity before approving a BUY
@@ -152,7 +152,7 @@ Plans:
 | 13. Portfolio Analytics | v1.2 | 1/1 | Complete | 2026-04-14 |
 | 14. Trade History Command | v1.3 | 1/1 | Complete    | 2026-04-19 |
 | 14.1. SPY 1-year trend signal | v1.3 | 1/1 | Complete    | 2026-04-19 |
-| 15. Fundamental Trend Enrichment | v1.3 | 0/1 | Not started | - |
+| 15. Fundamental Trend Enrichment | v1.3 | 1/1 | Complete    | 2026-04-21 |
 | 16. Earnings Date Warning | v1.3 | 0/? | Not started | - |
 | 17. Limit Buy Orders | v1.3 | 0/? | Not started | - |
 | 18. Test Coverage Gaps | v1.3 | 0/? | Not started | - |
