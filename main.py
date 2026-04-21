@@ -120,10 +120,10 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
                 pe_direction = "N/A"  # D-03: graceful N/A, no crash on missing forwardPE or zero/negative trailingPE
             elif abs(forward_pe - trailing_pe) / abs(trailing_pe) < 0.05:
                 pe_direction = "stable"  # D-01: ±5% stable band
-            elif forward_pe > trailing_pe:
-                pe_direction = "expanding"  # D-02: P/E ratio growing
+            elif forward_pe < trailing_pe:
+                pe_direction = "expanding"   # D-02: earnings growing → multiple contracting
             else:
-                pe_direction = "contracting"  # D-02: P/E ratio shrinking
+                pe_direction = "contracting"  # D-02: earnings shrinking → multiple expanding
 
             try:
                 eps_trend = await asyncio.to_thread(fetch_eps_data, yf_ticker)
