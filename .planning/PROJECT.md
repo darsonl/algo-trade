@@ -64,6 +64,7 @@ The bot must never place a real order without explicit human approval via Discor
 - ✓ Total unrealized P&L aggregate in `/positions` embed footer — v1.2 (PORT-01)
 - ✓ `/stats` slash command: win rate, avg gain %, avg loss % on closed trades — v1.2 (PORT-02)
 - ✓ `/history` slash command: last 20 closed trades with entry/exit/P&L%/date in code-block embed — v1.3 (OPS-02, validated in Phase 14)
+- ✓ P/E direction (expanding/contracting/stable/N/A) + 4-quarter EPS trend injected into Claude BUY prompt — v1.3 (SIG-07, SIG-08, validated in Phase 15)
 
 ### Active
 
@@ -148,4 +149,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-19 — Phase 14.1 complete: spy_trend_1m + spy_trend_1y in fetch_macro_context()*
+*Last updated: 2026-04-21 — Phase 15 complete: P/E direction + EPS trend enrichment (SIG-07, SIG-08) in BUY prompt*
