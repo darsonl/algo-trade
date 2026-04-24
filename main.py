@@ -3,7 +3,7 @@ import asyncio
 import hashlib
 import logging
 import sqlite3
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -141,6 +141,29 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
             logger.debug("fundamental_trend for %s: pe_direction=%s, eps_quarters=%s",
                          ticker, pe_direction, len(eps_trend) if eps_trend else 0)
 
+            # Phase 16 (SIG-05, SIG-06): earnings date from info dict — zero extra HTTP call (D-09).
+            _ts = info.get("earningsTimestamp")
+            if _ts is None:
+                earnings_date_embed = "N/A"
+                earnings_date_prompt = None
+            else:
+                _earnings_dt = datetime.fromtimestamp(_ts, tz=timezone.utc).date()
+                _today = date.today()
+                if _earnings_dt < _today:
+                    # Past earnings — suppress to N/A per D-02
+                    earnings_date_embed = "N/A"
+                    earnings_date_prompt = None
+                else:
+                    _days_until = (_earnings_dt - _today).days
+                    _date_str = _earnings_dt.strftime("%b %d, %Y")
+                    if 0 <= _days_until < 7:
+                        # Within 7 days — warning prefix in embed (D-06), proximity note in prompt (D-08)
+                        earnings_date_embed = f"⚠️ {_date_str}"
+                        earnings_date_prompt = f"{_date_str} (in {_days_until} days — proximity risk)"
+                    else:
+                        earnings_date_embed = _date_str
+                        earnings_date_prompt = _date_str
+
             headlines = await asyncio.to_thread(
                 fetch_news_headlines, ticker, alpha_vantage_api_key=config.alpha_vantage_api_key
             )
@@ -172,7 +195,8 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
                 analysis = await asyncio.to_thread(
                     analyze_ticker, ticker, info, headlines, config,
                     client, fallback_client, macro_context=macro_context,
-                    fundamental_trend=fundamental_trend  # NEW — Phase 15 SIG-07, SIG-08
+                    fundamental_trend=fundamental_trend,  # NEW — Phase 15 SIG-07, SIG-08
+                    earnings_date=earnings_date_prompt,   # NEW — Phase 16 SIG-06
                 )
                 queries.increment_analyst_call_count(
                     config.db_path, analysis["provider_used"]
@@ -214,6 +238,7 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
                 dividend_yield=div_yield,
                 pe_ratio=info.get("trailingPE"),
                 confidence=analysis.get("confidence"),
+                earnings_date=earnings_date_embed,   # NEW — Phase 16 SIG-05
             )
             queries.set_discord_message_id(config.db_path, rec_id, message_id)
             logger.info("Recommended %s", ticker)
