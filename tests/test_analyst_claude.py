@@ -568,3 +568,65 @@ def test_analyze_ticker_forwards_fundamental_trend_to_build_prompt():
 
     assert len(captured_prompts) == 1
     assert "P/E Direction: contracting" in captured_prompts[0]
+
+
+# ---------------------------------------------------------------------------
+# earnings_date prompt injection tests (SIG-06)
+# ---------------------------------------------------------------------------
+
+def test_build_prompt_with_earnings_date_includes_market_context_line():
+    """Test A: build_prompt with earnings_date='Dec 15, 2025' contains '- Next Earnings: Dec 15, 2025'."""
+    prompt = build_prompt("AAPL", {}, [], earnings_date="Dec 15, 2025")
+    assert "- Next Earnings: Dec 15, 2025" in prompt
+
+
+def test_build_prompt_with_earnings_date_none_omits_line():
+    """Test B: build_prompt without earnings_date kwarg does NOT contain 'Next Earnings'. No crash."""
+    prompt = build_prompt("AAPL", {}, [])
+    assert "Next Earnings" not in prompt
+
+
+def test_build_prompt_with_earnings_date_proximity_note():
+    """Test C: build_prompt with proximity note in earnings_date renders full string."""
+    prompt = build_prompt("AAPL", {}, [], earnings_date="Dec 18, 2025 (in 6 days — proximity risk)")
+    assert "- Next Earnings: Dec 18, 2025 (in 6 days — proximity risk)" in prompt
+
+
+def test_build_prompt_earnings_date_in_market_context_block():
+    """Test D: 'Next Earnings' appears AFTER 'Market Context:' in the prompt."""
+    prompt = build_prompt("AAPL", {}, [], earnings_date="Dec 15, 2025")
+    assert prompt.index("Market Context:") < prompt.index("Next Earnings")
+
+
+def test_analyze_ticker_forwards_earnings_date_to_build_prompt():
+    """Test E: analyze_ticker with earnings_date kwarg forwards it to build_prompt (captured via _call_api spy)."""
+    from config import Config
+
+    config = Config(
+        analyst_provider="gemini",
+        analyst_api_key="test-key",
+        analyst_model="gemini-2.5-flash",
+        analyst_call_delay_s=0,
+        analyst_fallback_provider="",
+        analyst_fallback_api_key="",
+        analyst_fallback_model="",
+    )
+    captured_prompts = []
+
+    def capture_call(client, model, prompt):
+        captured_prompts.append(prompt)
+        return "SIGNAL: BUY\nREASONING: Earnings proximity noted.\nCONFIDENCE: medium"
+
+    mock_client = MagicMock()
+    with patch("analyst.claude_analyst._call_api", side_effect=capture_call):
+        analyze_ticker(
+            ticker="AAPL",
+            info={},
+            headlines=[],
+            config=config,
+            client=mock_client,
+            earnings_date="Dec 15, 2025",
+        )
+
+    assert len(captured_prompts) == 1
+    assert "- Next Earnings: Dec 15, 2025" in captured_prompts[0]
