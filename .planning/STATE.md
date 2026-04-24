@@ -20,7 +20,7 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-14)
 
 **Core value:** The bot must never place a real order without explicit human approval via Discord.
-**Current focus:** Phase 14 — Trade History Command (not started)
+**Current focus:** Phase 17 — Limit Buy Orders (not started)
 
 ## Current Position
 

@@ -65,6 +65,7 @@ The bot must never place a real order without explicit human approval via Discor
 - ✓ `/stats` slash command: win rate, avg gain %, avg loss % on closed trades — v1.2 (PORT-02)
 - ✓ `/history` slash command: last 20 closed trades with entry/exit/P&L%/date in code-block embed — v1.3 (OPS-02, validated in Phase 14)
 - ✓ P/E direction (expanding/contracting/stable/N/A) + 4-quarter EPS trend injected into Claude BUY prompt — v1.3 (SIG-07, SIG-08, validated in Phase 15)
+- ✓ Next earnings date in BUY embed ("Next Earnings" field, N/A when absent, ⚠️ prefix within 7 days) + Claude BUY prompt Market Context line — v1.3 (SIG-05, SIG-06, validated in Phase 16)
 
 ### Active
 
@@ -130,6 +131,8 @@ Portfolio analytics live: `/positions` shows total unrealized P&L; `/stats` show
 | `cost_basis` fetched from DB (`avg_cost_usd`), never from Discord payload | Prevents tampering via interaction payload (T-13-02) — v1.2 | ✓ Good |
 | `get_trade_stats()` returns `None` for no-data case | Callers send plain text, not empty embed — v1.2 | ✓ Good |
 | ETF scheduled scan via `configure_scheduler` reuse with `job_id_prefix` kwarg | Keeps scheduling logic in one place, avoids duplication — v1.2 | ✓ Good |
+| Embed builder receives pre-formatted `earnings_date` string; all N/A/⚠️ logic in main.py | Pure renderer pattern: embed has no formatting decisions; caller controls output — v1.3 (Phase 16) | ✓ Good |
+| Past/absent `earningsTimestamp` → "N/A" in embed, omitted from Claude prompt | "N/A" in prompt is non-actionable noise; omission is a cleaner signal for Claude — v1.3 (Phase 16) | ✓ Good |
 
 ## Evolution
 
@@ -149,4 +152,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-21 — Phase 15 complete: P/E direction + EPS trend enrichment (SIG-07, SIG-08) in BUY prompt*
+*Last updated: 2026-04-25 — Phase 16 complete: earnings date warning in BUY embed + Claude prompt (SIG-05, SIG-06)*

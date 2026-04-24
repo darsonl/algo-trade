@@ -103,8 +103,8 @@ Plans:
   2. When earnings are within 7 days, the embed field is visually flagged as a warning
   3. Claude BUY prompt includes the next earnings date so it can factor in proximity risk
   4. ETF scan path skips the earnings date field entirely — no empty or erroring field on ETF embeds
-**Plans**: TBD
-**UI hint**: yes
+**Plans**: 1 plan
+  - [x] 16-01-PLAN.md — Add earnings_date kwarg to embed + prompt; wire earningsTimestamp extraction in main.py buy-scan
 
 ### Phase 17: Limit Buy Orders
 **Goal**: Every approved BUY places a limit order at the signal price instead of a market order, reducing execution slippage risk
@@ -159,4 +159,4 @@ Plans:
 
 ---
 *Roadmap defined: 2026-03-30*
-*Last updated: 2026-04-21 — Phase 15 planned (1 plan)*
+*Last updated: 2026-04-25 — Phase 16 complete: earnings date warning in BUY embed + Claude prompt (SIG-05, SIG-06)*
