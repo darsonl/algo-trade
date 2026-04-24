@@ -179,3 +179,95 @@ def test_etf_embed_hold_signal_is_yellow():
     """Test 6: build_etf_recommendation_embed with signal='HOLD' returns embed with yellow color."""
     embed = make_etf_embed(signal="HOLD")
     assert embed.color == discord.Color.yellow()
+
+
+# --- earnings_date field (SIG-05) ---
+
+def test_embed_earnings_date_shows_future_date():
+    """Test A: build_recommendation_embed with earnings_date='Dec 15, 2025' shows that value in 'Next Earnings' field."""
+    embed = build_recommendation_embed(
+        ticker="AAPL",
+        signal="BUY",
+        reasoning="Strong outlook.",
+        price=175.0,
+        dividend_yield=0.005,
+        pe_ratio=24.0,
+        earnings_date="Dec 15, 2025",
+    )
+    fields = _field_values(embed)
+    assert fields["Next Earnings"] == "Dec 15, 2025"
+
+
+def test_embed_earnings_date_shows_na_when_none():
+    """Test B: build_recommendation_embed with no earnings_date kwarg has NO 'Next Earnings' field (backward compat)."""
+    embed = build_recommendation_embed(
+        ticker="AAPL",
+        signal="BUY",
+        reasoning="Strong outlook.",
+        price=175.0,
+        dividend_yield=0.005,
+        pe_ratio=24.0,
+    )
+    fields = _field_values(embed)
+    assert "Next Earnings" not in fields
+
+
+def test_embed_earnings_date_shows_na_string():
+    """Test C: build_recommendation_embed with earnings_date='N/A' shows 'N/A' in 'Next Earnings' field."""
+    embed = build_recommendation_embed(
+        ticker="AAPL",
+        signal="BUY",
+        reasoning="Strong outlook.",
+        price=175.0,
+        dividend_yield=0.005,
+        pe_ratio=24.0,
+        earnings_date="N/A",
+    )
+    fields = _field_values(embed)
+    assert fields["Next Earnings"] == "N/A"
+
+
+def test_embed_earnings_date_warning_prefix():
+    """Test D: build_recommendation_embed with earnings_date='⚠️ Dec 18, 2025' shows that value in 'Next Earnings' field."""
+    embed = build_recommendation_embed(
+        ticker="AAPL",
+        signal="BUY",
+        reasoning="Strong outlook.",
+        price=175.0,
+        dividend_yield=0.005,
+        pe_ratio=24.0,
+        earnings_date="⚠️ Dec 18, 2025",
+    )
+    fields = _field_values(embed)
+    assert fields["Next Earnings"] == "⚠️ Dec 18, 2025"
+
+
+def test_embed_earnings_date_field_is_inline():
+    """Test E: 'Next Earnings' field has inline=True (per D-05)."""
+    embed = build_recommendation_embed(
+        ticker="AAPL",
+        signal="BUY",
+        reasoning="Strong outlook.",
+        price=175.0,
+        dividend_yield=0.005,
+        pe_ratio=24.0,
+        earnings_date="Dec 15, 2025",
+    )
+    next_earnings_field = next(f for f in embed.fields if f.name == "Next Earnings")
+    assert next_earnings_field.inline is True
+
+
+def test_embed_earnings_date_is_last_field_after_confidence():
+    """Test F: 'Next Earnings' is the last field, 'Confidence' is second-to-last (per D-04)."""
+    embed = build_recommendation_embed(
+        ticker="AAPL",
+        signal="BUY",
+        reasoning="Strong outlook.",
+        price=175.0,
+        dividend_yield=0.005,
+        pe_ratio=24.0,
+        confidence="high",
+        earnings_date="Dec 15, 2025",
+    )
+    assert embed.fields[-1].name == "Next Earnings"
+    assert embed.fields[-2].name == "Confidence"
