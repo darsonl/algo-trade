@@ -17,8 +17,8 @@
 
 ### Signal Intelligence
 
-- [ ] **SIG-05**: BUY embed displays next earnings date field (sourced from `info["earningsTimestamp"]` — no extra HTTP call)
-- [ ] **SIG-06**: Next earnings date included in Claude BUY prompt so it can factor in proximity risk
+- [x] **SIG-05**: BUY embed displays next earnings date field (sourced from `info["earningsTimestamp"]` — no extra HTTP call)
+- [x] **SIG-06**: Next earnings date included in Claude BUY prompt so it can factor in proximity risk
 - [ ] **SIG-07**: P/E direction (expanding / contracting / stable / N/A) included in Claude BUY prompt using `forwardPE` vs `trailingPE` as proxy
 - [ ] **SIG-08**: Quarterly EPS trend (last 4 quarters from `ticker.quarterly_income_stmt`) included in Claude BUY prompt
 

@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.3
 milestone_name: Risk & Signal Quality
 status: executing
-last_updated: "2026-04-21T13:05:57.640Z"
-last_activity: 2026-04-21
+last_updated: "2026-04-24T15:31:59.019Z"
+last_activity: 2026-04-24
 progress:
   total_phases: 6
-  completed_phases: 3
-  total_plans: 3
-  completed_plans: 3
+  completed_phases: 4
+  total_plans: 4
+  completed_plans: 4
   percent: 100
 ---
 
@@ -25,9 +25,9 @@ See: .planning/PROJECT.md (updated 2026-04-14)
 ## Current Position
 
 Phase: 16
-Plan: Not started
-Status: Ready to execute
-Last activity: 2026-04-21
+Plan: 01 Complete
+Status: Phase 16 complete (1/1 plans done)
+Last activity: 2026-04-24
 
 ---
 
@@ -59,7 +59,7 @@ Last activity: 2026-04-21
 | 13 | Portfolio Analytics | ✅ Complete (1/1 plan) |
 | 14 | Trade History Command | 🔄 Not started |
 | 15 | Fundamental Trend Enrichment | 🔄 Not started |
-| 16 | Earnings Date Warning | 🔄 Not started |
+| 16 | Earnings Date Warning | ✅ Complete (1/1 plan) |
 | 17 | Limit Buy Orders | 🔄 Not started |
 | 14.1 | SPY 1-year trend signal | 🔄 Not started |
 | 18 | Test Coverage Gaps | 🔄 Not started |
@@ -140,6 +140,14 @@ Location: .planning/codebase/
 
 - Phase 14.1 inserted after Phase 14: SPY 1-year trend signal (INSERTED)
 
+## Key Decisions (Phase 16)
+
+- `build_recommendation_embed` receives pre-formatted `earnings_date` string from caller — embed builder is a pure renderer; all N/A/date/warning formatting logic lives in `main.py` buy-scan loop only
+- Past timestamps suppressed to "N/A" in embed but omitted entirely from Claude prompt — "N/A" in prompt is a non-actionable signal; omission is cleaner (D-08)
+- ETF and sell paths excluded: `build_etf_recommendation_embed`, `analyze_etf_ticker`, `run_scan_etf`, `analyze_sell_ticker` receive no `earnings_date` argument (SC-4 enforced)
+- 7-day proximity warning uses strictly `< 7` comparison — at exactly 7 days no warning fires (D-07)
+- `earnings_date` extracted inline from existing `info` dict — zero extra HTTP call (D-09)
+
 ## Next Action
 
-Run `/gsd-plan-phase 14` to plan Phase 14 (Trade History Command).
+Run `/gsd-plan-phase 17` to plan Phase 17 (Limit Buy Orders) or the next unstarted phase.
