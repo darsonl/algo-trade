@@ -267,10 +267,11 @@ class TradingBot(discord.Client):
         dividend_yield: float | None,
         pe_ratio: float | None,
         confidence: str | None = None,
+        earnings_date: str | None = None,   # NEW — Phase 16 SIG-05
     ) -> str:
         """Fetch the configured channel, post a recommendation embed with Approve/Reject buttons, and return the message id as a string."""
         channel = await self.fetch_channel(self.config.discord_channel_id)
-        embed = build_recommendation_embed(ticker, signal, reasoning, price, dividend_yield, pe_ratio, confidence=confidence)
+        embed = build_recommendation_embed(ticker, signal, reasoning, price, dividend_yield, pe_ratio, confidence=confidence, earnings_date=earnings_date)
         view = ApproveRejectView(rec_id, ticker, price, self.config)
         msg = await _send_message(channel, embed, view)
         return str(msg.id)

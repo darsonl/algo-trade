@@ -16,6 +16,7 @@ def build_recommendation_embed(
     dividend_yield: float | None,
     pe_ratio: float | None,
     confidence: str | None = None,
+    earnings_date: str | None = None,   # NEW — Phase 16 SIG-05
 ) -> discord.Embed:
     """Build a Discord embed for a BUY/HOLD/SKIP recommendation with price and fundamental fields."""
     if signal not in _SIGNAL_COLORS:
@@ -39,6 +40,8 @@ def build_recommendation_embed(
     )
     if confidence is not None:
         embed.add_field(name="Confidence", value=confidence.capitalize(), inline=True)
+    if earnings_date is not None:
+        embed.add_field(name="Next Earnings", value=earnings_date, inline=True)
     return embed
 
 
