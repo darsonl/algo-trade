@@ -95,6 +95,7 @@ def build_prompt(
     headlines: list[str],
     macro_context: dict | None = None,
     fundamental_trend: dict | None = None,  # NEW — Phase 15 SIG-07, SIG-08
+    earnings_date: str | None = None,        # NEW — Phase 16 SIG-06
 ) -> str:
     """Build the analysis prompt for a single ticker."""
     pe = info.get("trailingPE", "N/A")
@@ -136,6 +137,8 @@ def build_prompt(
         if macro_context.get("vix_level"):
             market_lines.append(f"- VIX: {macro_context['vix_level']}")
     market_lines.append(f"- 52-week range: {pos_52w}")
+    if earnings_date is not None:
+        market_lines.append(f"- Next Earnings: {earnings_date}")
 
     market_block = "Market Context:\n" + "\n".join(market_lines)
 
@@ -285,6 +288,7 @@ def analyze_ticker(
     fallback_client=None,
     macro_context: dict | None = None,
     fundamental_trend: dict | None = None,  # NEW — Phase 15 SIG-07, SIG-08
+    earnings_date: str | None = None,        # NEW — Phase 16 SIG-06
 ) -> dict:
     """
     Call the configured analyst provider to get a BUY/HOLD/SKIP signal.
@@ -297,7 +301,7 @@ def analyze_ticker(
     model = config.analyst_model or _DEFAULT_MODELS.get(config.analyst_provider, "")
     # NOTE: fundamental_trend intentionally NOT in cache key — cache path short-circuits
     # before analyze_ticker in main.py (cache hits skip analyze_ticker entirely).
-    prompt = build_prompt(ticker, info, headlines, macro_context=macro_context, fundamental_trend=fundamental_trend)
+    prompt = build_prompt(ticker, info, headlines, macro_context=macro_context, fundamental_trend=fundamental_trend, earnings_date=earnings_date)
 
     if config.analyst_call_delay_s > 0:
         time.sleep(config.analyst_call_delay_s)
