@@ -18,7 +18,7 @@ from screener.universe import get_watchlist, get_top_sp500_by_fundamentals, get_
 from screener.fundamentals import passes_fundamental_filter, fetch_fundamental_info, fetch_eps_data
 from screener.technicals import passes_technical_filter, fetch_technical_data
 from analyst.news import fetch_news_headlines
-from analyst.claude_analyst import analyze_ticker, create_analyst_client, create_fallback_client, analyze_sell_ticker, analyze_etf_ticker
+from analyst.claude_analyst import analyze_ticker, create_analyst_client, create_fallback_client, create_fallback2_client, analyze_sell_ticker, analyze_etf_ticker
 from screener.macro import fetch_macro_context
 from screener.exit_signals import check_exit_signals
 from discord_bot.bot import TradingBot
@@ -94,6 +94,7 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
 
     client = create_analyst_client(config)
     fallback_client = create_fallback_client(config)
+    fallback2_client = create_fallback2_client(config)
     recommendations_posted = 0
     error_count = 0
     errors_posted = 0
@@ -175,7 +176,7 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
                 logger.debug("Cache hit for %s (hash %s...)", ticker, headline_hash[:8])
                 analysis = cached
             else:
-                # D-11: quota guard — skip if both providers exhausted
+                # D-11: quota guard — skip if all providers exhausted
                 primary_count = queries.get_analyst_call_count_today(
                     config.db_path, config.analyst_provider
                 )
@@ -186,7 +187,18 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
                     if config.analyst_fallback_provider
                     else config.analyst_daily_limit
                 )
-                if primary_count >= config.analyst_daily_limit and fallback_count >= config.analyst_daily_limit:
+                fallback2_count = (
+                    queries.get_analyst_call_count_today(
+                        config.db_path, config.analyst_fallback2_provider
+                    )
+                    if config.analyst_fallback2_provider
+                    else config.analyst_daily_limit
+                )
+                if (
+                    primary_count >= config.analyst_daily_limit
+                    and fallback_count >= config.analyst_daily_limit
+                    and fallback2_count >= config.analyst_daily_limit
+                ):
                     logger.warning(
                         "Daily analyst quota reached for all providers, skipping analysis for %s",
                         ticker,
@@ -197,6 +209,7 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
                     client, fallback_client, macro_context=macro_context,
                     fundamental_trend=fundamental_trend,  # NEW — Phase 15 SIG-07, SIG-08
                     earnings_date=earnings_date_prompt,   # NEW — Phase 16 SIG-06
+                    fallback2_client=fallback2_client,
                 )
                 queries.increment_analyst_call_count(
                     config.db_path, analysis["provider_used"]
@@ -318,7 +331,18 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
                 if config.analyst_fallback_provider
                 else config.analyst_daily_limit
             )
-            if primary_count >= config.analyst_daily_limit and fallback_count >= config.analyst_daily_limit:
+            fallback2_count = (
+                queries.get_analyst_call_count_today(
+                    config.db_path, config.analyst_fallback2_provider
+                )
+                if config.analyst_fallback2_provider
+                else config.analyst_daily_limit
+            )
+            if (
+                primary_count >= config.analyst_daily_limit
+                and fallback_count >= config.analyst_daily_limit
+                and fallback2_count >= config.analyst_daily_limit
+            ):
                 logger.warning(
                     "Daily analyst quota reached for all providers, skipping sell analysis for %s",
                     ticker,
@@ -333,6 +357,7 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
                 signal_line=tech_data.get("signal_line"),
                 macro_context=macro_context,
                 info=sell_info,
+                fallback2_client=fallback2_client,
             )
             queries.increment_analyst_call_count(
                 config.db_path, analysis["provider_used"]
@@ -398,6 +423,7 @@ async def run_scan_etf(bot: TradingBot, config: Config) -> None:
 
     client = create_analyst_client(config)
     fallback_client = create_fallback_client(config)
+    fallback2_client = create_fallback2_client(config)
     recommendations_posted = 0
     error_count = 0
     errors_posted = 0
@@ -446,7 +472,18 @@ async def run_scan_etf(bot: TradingBot, config: Config) -> None:
                     if config.analyst_fallback_provider
                     else config.analyst_daily_limit
                 )
-                if primary_count >= config.analyst_daily_limit and fallback_count >= config.analyst_daily_limit:
+                fallback2_count = (
+                    queries.get_analyst_call_count_today(
+                        config.db_path, config.analyst_fallback2_provider
+                    )
+                    if config.analyst_fallback2_provider
+                    else config.analyst_daily_limit
+                )
+                if (
+                    primary_count >= config.analyst_daily_limit
+                    and fallback_count >= config.analyst_daily_limit
+                    and fallback2_count >= config.analyst_daily_limit
+                ):
                     logger.warning(
                         "Daily analyst quota reached for all providers, skipping analysis for %s",
                         ticker,
@@ -456,7 +493,8 @@ async def run_scan_etf(bot: TradingBot, config: Config) -> None:
                 analysis = await asyncio.to_thread(
                     analyze_etf_ticker, ticker, headlines, tech_data,
                     expense_ratio, config, client, fallback_client,
-                    macro_context=macro_context
+                    macro_context=macro_context,
+                    fallback2_client=fallback2_client,
                 )
                 queries.increment_analyst_call_count(
                     config.db_path, analysis["provider_used"]

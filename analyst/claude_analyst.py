@@ -56,6 +56,7 @@ _VALID_CONFIDENCE = {"high", "medium", "low"}
 _OPENAI_BASE_URLS: dict[str, str] = {
     "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/",
     "github": "https://models.inference.ai.azure.com",
+    "deepseek": "https://api.deepseek.com",
 }
 
 _DEFAULT_MODELS: dict[str, str] = {
@@ -63,6 +64,7 @@ _DEFAULT_MODELS: dict[str, str] = {
     "openai": "gpt-4o-mini",
     "gemini": "gemini-2.5-flash",
     "github": "gpt-4o-mini",
+    "deepseek": "deepseek-chat",
 }
 
 
@@ -87,6 +89,17 @@ def create_fallback_client(config: Config):
         return anthropic.Anthropic(api_key=config.analyst_fallback_api_key)
     base_url = _OPENAI_BASE_URLS.get(provider)
     return openai.OpenAI(api_key=config.analyst_fallback_api_key, base_url=base_url)
+
+
+def create_fallback2_client(config: Config):
+    """Return an SDK client for the second fallback provider, or None if not configured."""
+    provider = config.analyst_fallback2_provider
+    if not provider or not config.analyst_fallback2_api_key:
+        return None
+    if provider == "claude":
+        return anthropic.Anthropic(api_key=config.analyst_fallback2_api_key)
+    base_url = _OPENAI_BASE_URLS.get(provider)
+    return openai.OpenAI(api_key=config.analyst_fallback2_api_key, base_url=base_url)
 
 
 def build_prompt(
@@ -289,11 +302,13 @@ def analyze_ticker(
     macro_context: dict | None = None,
     fundamental_trend: dict | None = None,  # NEW — Phase 15 SIG-07, SIG-08
     earnings_date: str | None = None,        # NEW — Phase 16 SIG-06
+    fallback2_client=None,
 ) -> dict:
     """
     Call the configured analyst provider to get a BUY/HOLD/SKIP signal.
     Returns {"signal": str, "reasoning": str, "provider_used": str}.
     If the primary API call fails and fallback_client is provided, retries with the fallback.
+    If the fallback also fails and fallback2_client is provided, retries with the second fallback.
     """
     if client is None:
         client = create_analyst_client(config)
@@ -319,8 +334,21 @@ def analyze_ticker(
         fallback_model = config.analyst_fallback_model or _DEFAULT_MODELS.get(
             config.analyst_fallback_provider, ""
         )
-        text = _call_api(fallback_client, fallback_model, prompt)
-        provider_used = config.analyst_fallback_provider
+        try:
+            text = _call_api(fallback_client, fallback_model, prompt)
+            provider_used = config.analyst_fallback_provider
+        except Exception as fallback_exc:
+            if fallback2_client is None:
+                raise
+            logger.warning(
+                "Fallback analyst failed for %s (%s), using second fallback provider '%s'",
+                ticker, fallback_exc, config.analyst_fallback2_provider,
+            )
+            fallback2_model = config.analyst_fallback2_model or _DEFAULT_MODELS.get(
+                config.analyst_fallback2_provider, ""
+            )
+            text = _call_api(fallback2_client, fallback2_model, prompt)
+            provider_used = config.analyst_fallback2_provider
 
     result = parse_claude_response(text)
     result["provider_used"] = provider_used
@@ -336,6 +364,7 @@ def analyze_etf_ticker(
     client=None,
     fallback_client=None,
     macro_context: dict | None = None,
+    fallback2_client=None,
 ) -> dict:
     """Call the analyst for an ETF BUY/HOLD/SKIP signal (per D-01, D-03).
     Returns {"signal": str, "reasoning": str, "provider_used": str}.
@@ -373,8 +402,21 @@ def analyze_etf_ticker(
         fallback_model = config.analyst_fallback_model or _DEFAULT_MODELS.get(
             config.analyst_fallback_provider, ""
         )
-        text = _call_api(fallback_client, fallback_model, prompt)
-        provider_used = config.analyst_fallback_provider
+        try:
+            text = _call_api(fallback_client, fallback_model, prompt)
+            provider_used = config.analyst_fallback_provider
+        except Exception as fallback_exc:
+            if fallback2_client is None:
+                raise
+            logger.warning(
+                "Fallback analyst failed for %s ETF analysis (%s), using second fallback provider '%s'",
+                ticker, fallback_exc, config.analyst_fallback2_provider,
+            )
+            fallback2_model = config.analyst_fallback2_model or _DEFAULT_MODELS.get(
+                config.analyst_fallback2_provider, ""
+            )
+            text = _call_api(fallback2_client, fallback2_model, prompt)
+            provider_used = config.analyst_fallback2_provider
 
     result = parse_claude_response(text)
     result["provider_used"] = provider_used
@@ -462,6 +504,7 @@ def analyze_sell_ticker(
     signal_line: float | None = None,
     macro_context: dict | None = None,
     info: dict | None = None,
+    fallback2_client=None,
 ) -> dict:
     """Call the analyst to get a SELL/HOLD signal for an open position.
 
@@ -494,8 +537,21 @@ def analyze_sell_ticker(
         fallback_model = config.analyst_fallback_model or _DEFAULT_MODELS.get(
             config.analyst_fallback_provider, ""
         )
-        text = _call_api(fallback_client, fallback_model, prompt)
-        provider_used = config.analyst_fallback_provider
+        try:
+            text = _call_api(fallback_client, fallback_model, prompt)
+            provider_used = config.analyst_fallback_provider
+        except Exception as fallback_exc:
+            if fallback2_client is None:
+                raise
+            logger.warning(
+                "Fallback analyst failed for %s sell analysis (%s), using second fallback provider '%s'",
+                ticker, fallback_exc, config.analyst_fallback2_provider,
+            )
+            fallback2_model = config.analyst_fallback2_model or _DEFAULT_MODELS.get(
+                config.analyst_fallback2_provider, ""
+            )
+            text = _call_api(fallback2_client, fallback2_model, prompt)
+            provider_used = config.analyst_fallback2_provider
 
     result = parse_claude_response(text)
     result["provider_used"] = provider_used

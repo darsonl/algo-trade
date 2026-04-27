@@ -630,3 +630,123 @@ def test_analyze_ticker_forwards_earnings_date_to_build_prompt():
 
     assert len(captured_prompts) == 1
     assert "- Next Earnings: Dec 15, 2025" in captured_prompts[0]
+
+
+# --- DeepSeek provider tests ---
+
+def test_create_fallback2_client_deepseek_uses_openai_sdk_with_correct_base_url():
+    """create_fallback2_client with provider='deepseek' returns an openai.OpenAI client
+    pointed at https://api.deepseek.com."""
+    from config import Config
+    from analyst.claude_analyst import create_fallback2_client
+    import openai
+
+    config = Config(
+        analyst_provider="gemini",
+        analyst_api_key="test-key",
+        analyst_fallback2_provider="deepseek",
+        analyst_fallback2_api_key="sk-test-deepseek",
+        analyst_fallback2_model="",
+    )
+    client = create_fallback2_client(config)
+    assert isinstance(client, openai.OpenAI)
+    assert "deepseek.com" in str(client.base_url)
+
+
+def test_create_fallback2_client_returns_none_when_unconfigured():
+    """create_fallback2_client returns None when provider or api_key are blank."""
+    from config import Config
+    from analyst.claude_analyst import create_fallback2_client
+
+    config = Config(analyst_provider="gemini", analyst_api_key="key")
+    assert create_fallback2_client(config) is None
+
+
+def test_analyze_etf_ticker_uses_fallback2_when_both_primary_and_fallback_fail():
+    """When primary and fallback both raise, analyze_etf_ticker retries with fallback2_client
+    and sets provider_used to the second fallback provider name."""
+    from analyst.claude_analyst import analyze_etf_ticker
+    from config import Config
+
+    config = Config(
+        analyst_provider="gemini",
+        analyst_api_key="test-key",
+        analyst_model="gemini-2.5-flash",
+        analyst_call_delay_s=0,
+        analyst_fallback_provider="openai",
+        analyst_fallback_api_key="openai-key",
+        analyst_fallback_model="gpt-4o-mini",
+        analyst_fallback2_provider="deepseek",
+        analyst_fallback2_api_key="sk-test",
+        analyst_fallback2_model="deepseek-chat",
+    )
+
+    tech_data = {
+        "rsi": 55.0, "macd_line": 0.1, "signal_line": 0.05,
+        "macd_histogram": 0.05, "price": 500.0, "ma50": 490.0,
+    }
+    primary_client = MagicMock()
+    fallback_client = MagicMock()
+    fallback2_client = MagicMock()
+
+    call_count = {"n": 0}
+
+    def api_side_effect(client, model, prompt):
+        call_count["n"] += 1
+        if call_count["n"] <= 2:
+            raise RuntimeError("provider unavailable")
+        return "SIGNAL: BUY\nREASONING: DeepSeek confirmed bullish momentum."
+
+    with patch("analyst.claude_analyst._call_api", side_effect=api_side_effect):
+        result = analyze_etf_ticker(
+            ticker="SPY",
+            headlines=["Markets rally"],
+            tech_data=tech_data,
+            expense_ratio=0.0009,
+            config=config,
+            client=primary_client,
+            fallback_client=fallback_client,
+            fallback2_client=fallback2_client,
+        )
+
+    assert result["signal"] == "BUY"
+    assert result["provider_used"] == "deepseek"
+    assert call_count["n"] == 3, "Expected three _call_api calls (primary + fallback + fallback2)"
+
+
+def test_analyze_etf_ticker_propagates_when_fallback_fails_and_no_fallback2():
+    """When fallback fails and fallback2_client is None, the exception propagates."""
+    from analyst.claude_analyst import analyze_etf_ticker
+    from config import Config
+    import pytest
+
+    config = Config(
+        analyst_provider="gemini",
+        analyst_api_key="test-key",
+        analyst_model="gemini-2.5-flash",
+        analyst_call_delay_s=0,
+        analyst_fallback_provider="openai",
+        analyst_fallback_api_key="openai-key",
+        analyst_fallback_model="gpt-4o-mini",
+    )
+
+    tech_data = {
+        "rsi": 55.0, "macd_line": 0.1, "signal_line": 0.05,
+        "macd_histogram": 0.05, "price": 500.0, "ma50": 490.0,
+    }
+
+    def always_fail(client, model, prompt):
+        raise RuntimeError("all providers down")
+
+    with patch("analyst.claude_analyst._call_api", side_effect=always_fail):
+        with pytest.raises(RuntimeError, match="all providers down"):
+            analyze_etf_ticker(
+                ticker="SPY",
+                headlines=[],
+                tech_data=tech_data,
+                expense_ratio=0.0009,
+                config=config,
+                client=MagicMock(),
+                fallback_client=MagicMock(),
+                fallback2_client=None,
+            )

@@ -47,6 +47,9 @@ class Config:
     analyst_fallback_provider: str = os.getenv("ANALYST_FALLBACK_PROVIDER", "")
     analyst_fallback_api_key: str = os.getenv("ANALYST_FALLBACK_API_KEY", "")
     analyst_fallback_model: str = os.getenv("ANALYST_FALLBACK_MODEL", "")
+    analyst_fallback2_provider: str = os.getenv("ANALYST_FALLBACK2_PROVIDER", "")
+    analyst_fallback2_api_key: str = os.getenv("ANALYST_FALLBACK2_API_KEY", "")
+    analyst_fallback2_model: str = os.getenv("ANALYST_FALLBACK2_MODEL", "")
 
     min_dividend_yield: float = float(os.getenv("MIN_DIVIDEND_YIELD", "0.02"))
     max_pe_ratio: float = float(os.getenv("MAX_PE_RATIO", "35.0"))
