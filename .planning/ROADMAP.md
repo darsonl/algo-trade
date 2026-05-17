@@ -116,7 +116,11 @@ Plans:
   3. The trades table records limit_price and order_type for every executed buy, enabling audit trail review
   4. The BUY embed Approve button area shows the scan-time price with a timestamp ("as of HH:MM") so the operator can assess staleness
   5. Limit orders default to GTC duration — a late-afternoon approval does not result in a silently unfilled DAY order
-**Plans**: TBD
+**Plans**: 2 plans
+
+Plans:
+- [ ] 17-01-PLAN.md — Foundation: use_limit_buy config, trades schema (limit_price/order_type), build_limit_buy/place_limit_order, 5 order unit tests
+- [ ] 17-02-PLAN.md — Integration: scan_time embed field, ApproveRejectView routing, main.py scan_time capture, 9 bot+embed tests
 
 ### Phase 18: Test Coverage Gaps
 **Goal**: Critical untested execution paths (analyst fallback, config validation, quota exhaustion) are covered by automated tests
@@ -154,9 +158,9 @@ Plans:
 | 14.1. SPY 1-year trend signal | v1.3 | 1/1 | Complete    | 2026-04-19 |
 | 15. Fundamental Trend Enrichment | v1.3 | 1/1 | Complete    | 2026-04-21 |
 | 16. Earnings Date Warning | v1.3 | 1/1 | Complete   | 2026-04-24 |
-| 17. Limit Buy Orders | v1.3 | 0/? | Not started | - |
+| 17. Limit Buy Orders | v1.3 | 0/2 | Not started | - |
 | 18. Test Coverage Gaps | v1.3 | 0/? | Not started | - |
 
 ---
 *Roadmap defined: 2026-03-30*
-*Last updated: 2026-04-25 — Phase 16 complete: earnings date warning in BUY embed + Claude prompt (SIG-05, SIG-06)*
+*Last updated: 2026-05-17 — Phase 17 planned: 2 plans for limit buy orders (RISK-01 through RISK-04)*
