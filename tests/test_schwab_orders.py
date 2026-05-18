@@ -1,5 +1,5 @@
 import pytest
-from schwab_client.orders import build_market_buy, parse_positions
+from schwab_client.orders import build_market_buy, build_limit_buy, parse_positions
 
 
 # --- build_market_buy ---
@@ -91,3 +91,32 @@ def test_parse_positions_handles_multiple_positions():
     assert len(positions) == 2
     symbols = {p["symbol"] for p in positions}
     assert symbols == {"AAPL", "JNJ"}
+
+
+# --- build_limit_buy ---
+
+def test_build_limit_buy_sets_symbol():
+    spec = build_limit_buy("AAPL", 5, "52.34")
+    leg = spec["orderLegCollection"][0]
+    assert leg["instrument"]["symbol"] == "AAPL"
+
+
+def test_build_limit_buy_sets_quantity():
+    spec = build_limit_buy("AAPL", 5, "52.34")
+    leg = spec["orderLegCollection"][0]
+    assert leg["quantity"] == 5
+
+
+def test_build_limit_buy_sets_price_as_string():
+    spec = build_limit_buy("AAPL", 5, "52.34")
+    assert spec["price"] == "52.34"
+
+
+def test_build_limit_buy_order_type_is_limit():
+    spec = build_limit_buy("AAPL", 5, "52.34")
+    assert spec["orderType"] == "LIMIT"
+
+
+def test_build_limit_buy_duration_is_good_till_cancel():
+    spec = build_limit_buy("AAPL", 5, "52.34")
+    assert spec["duration"] == "GOOD_TILL_CANCEL"
