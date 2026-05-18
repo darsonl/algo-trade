@@ -68,13 +68,16 @@ def create_trade(
     order_id: str | None,
     side: str = "buy",
     cost_basis: float | None = None,
+    limit_price: float | None = None,    # NEW — RISK-03
+    order_type: str = "market",          # NEW — RISK-03
 ) -> int:
     """Record an executed trade linked to recommendation_id and return the trade id."""
     conn = get_connection(db_path)
     cursor = conn.execute(
-        """INSERT INTO trades (recommendation_id, ticker, shares, price, order_id, side, cost_basis)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
-        (recommendation_id, ticker, shares, price, order_id, side, cost_basis),
+        """INSERT INTO trades
+               (recommendation_id, ticker, shares, price, order_id, side, cost_basis, limit_price, order_type)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (recommendation_id, ticker, shares, price, order_id, side, cost_basis, limit_price, order_type),
     )
     conn.commit()
     trade_id = cursor.lastrowid
