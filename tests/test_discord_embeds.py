@@ -271,3 +271,53 @@ def test_embed_earnings_date_is_last_field_after_confidence():
     )
     assert embed.fields[-1].name == "Next Earnings"
     assert embed.fields[-2].name == "Confidence"
+
+
+# --- scan_time in Price field (RISK-04) ---
+
+def test_embed_price_field_includes_scan_time_when_provided():
+    """RISK-04 / D-07: scan_time='09:05' appended to Price field as '\\nas of 09:05'."""
+    embed = build_recommendation_embed(
+        ticker="AAPL",
+        signal="BUY",
+        reasoning="Strong fundamentals.",
+        price=175.50,
+        dividend_yield=0.006,
+        pe_ratio=24.5,
+        scan_time="09:05",
+    )
+    fields = _field_values(embed)
+    assert fields["Price"] == "$175.50\nas of 09:05"
+
+
+def test_embed_price_field_plain_when_no_scan_time():
+    """D-08 backward compat: no scan_time kwarg -> Price field is plain '$X.XX'."""
+    embed = build_recommendation_embed(
+        ticker="AAPL",
+        signal="BUY",
+        reasoning="Strong fundamentals.",
+        price=175.50,
+        dividend_yield=0.006,
+        pe_ratio=24.5,
+    )
+    fields = _field_values(embed)
+    assert fields["Price"] == "$175.50"
+
+
+def test_etf_embed_has_no_scan_time_parameter():
+    """Scope guard: build_etf_recommendation_embed has no scan_time param (ETF path excluded)."""
+    # Must succeed without TypeError — ETF embed function signature has no scan_time
+    embed = build_etf_recommendation_embed(
+        ticker="SPY",
+        signal="BUY",
+        reasoning="Strong uptrend.",
+        price=500.0,
+        rsi=55.0,
+        ma50=490.0,
+        expense_ratio=0.0003,
+    )
+    assert embed is not None
+    # Verify it does NOT accept scan_time kwarg
+    import inspect
+    sig = inspect.signature(build_etf_recommendation_embed)
+    assert "scan_time" not in sig.parameters
