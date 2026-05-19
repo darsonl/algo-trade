@@ -98,6 +98,7 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
     recommendations_posted = 0
     error_count = 0
     errors_posted = 0
+    scan_time = datetime.now().strftime("%H:%M")
 
     for ticker in universe:
         if queries.ticker_recommended_today(config.db_path, ticker):
@@ -252,6 +253,7 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
                 pe_ratio=info.get("trailingPE"),
                 confidence=analysis.get("confidence"),
                 earnings_date=earnings_date_embed,   # NEW — Phase 16 SIG-05
+                scan_time=scan_time,                 # NEW — Phase 17 RISK-04
             )
             queries.set_discord_message_id(config.db_path, rec_id, message_id)
             logger.info("Recommended %s", ticker)
