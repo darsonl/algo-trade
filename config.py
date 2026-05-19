@@ -35,6 +35,7 @@ class Config:
     schwab_account_hash: str = os.getenv("SCHWAB_ACCOUNT_HASH", "")
     paper_trading: bool = os.getenv("PAPER_TRADING", "true").lower() == "true"
     dry_run: bool = os.getenv("DRY_RUN", "true").lower() == "true"
+    use_limit_buy: bool = os.getenv("USE_LIMIT_BUY", "true").lower() == "true"
 
     discord_token: str = os.getenv("DISCORD_TOKEN", "")
     discord_channel_id: int = int(os.getenv("DISCORD_CHANNEL_ID", "0"))

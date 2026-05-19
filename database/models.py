@@ -39,6 +39,8 @@ def initialize_db(db_path: str) -> None:
             order_id TEXT,
             side TEXT NOT NULL DEFAULT 'buy',
             executed_at TEXT NOT NULL DEFAULT (datetime('now')),
+            limit_price REAL,
+            order_type TEXT,
             FOREIGN KEY (recommendation_id) REFERENCES recommendations(id)
         );
 
@@ -113,6 +115,16 @@ def initialize_db(db_path: str) -> None:
         pass  # Column already exists
     try:
         conn.execute("ALTER TABLE trades ADD COLUMN cost_basis REAL")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    try:
+        conn.execute("ALTER TABLE trades ADD COLUMN limit_price REAL")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    try:
+        conn.execute("ALTER TABLE trades ADD COLUMN order_type TEXT")
         conn.commit()
     except sqlite3.OperationalError:
         pass  # Column already exists
