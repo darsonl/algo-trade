@@ -6,17 +6,18 @@ from config import Config
 
 # --- helpers ---
 
-def _make_config(dry_run=True, max_usd=500.0, max_portfolio_usd=20000.0, db_path=":memory:"):
+def _make_config(dry_run=True, max_usd=500.0, max_portfolio_usd=20000.0, db_path=":memory:", use_limit_buy=True):
     c = Config()
     c.dry_run = dry_run
     c.max_position_size_usd = max_usd
     c.max_portfolio_usd = max_portfolio_usd
     c.db_path = db_path
+    c.use_limit_buy = use_limit_buy
     return c
 
 
-def _make_view(ticker="AAPL", price=100.0, rec_id=1, dry_run=True, max_usd=500.0, max_portfolio_usd=20000.0):
-    config = _make_config(dry_run=dry_run, max_usd=max_usd, max_portfolio_usd=max_portfolio_usd)
+def _make_view(ticker="AAPL", price=100.0, rec_id=1, dry_run=True, max_usd=500.0, max_portfolio_usd=20000.0, use_limit_buy=True):
+    config = _make_config(dry_run=dry_run, max_usd=max_usd, max_portfolio_usd=max_portfolio_usd, use_limit_buy=use_limit_buy)
     return ApproveRejectView(rec_id=rec_id, ticker=ticker, price=price, config=config)
 
 
@@ -73,7 +74,8 @@ async def test_approve_dry_run_creates_trade_with_none_order_id(mock_queries, mo
 async def test_approve_live_calls_place_order(mock_queries, mock_place_order):
     mock_place_order.return_value = "schwab-order-xyz"
     mock_queries.create_trade.return_value = 1
-    view = _make_view(price=100.0, dry_run=False)
+    # use_limit_buy=False to exercise the market-order (place_order) path
+    view = _make_view(price=100.0, dry_run=False, use_limit_buy=False)
     await _call_approve(view, _make_interaction())
     mock_place_order.assert_called_once_with("AAPL", 5, view.config)
 
@@ -84,7 +86,8 @@ async def test_approve_live_calls_place_order(mock_queries, mock_place_order):
 async def test_approve_live_stores_order_id_in_trade(mock_queries, mock_place_order):
     mock_place_order.return_value = "schwab-order-abc"
     mock_queries.create_trade.return_value = 1
-    view = _make_view(price=100.0, dry_run=False)
+    # use_limit_buy=False so place_order (not place_limit_order) sets the order_id
+    view = _make_view(price=100.0, dry_run=False, use_limit_buy=False)
     await _call_approve(view, _make_interaction())
     call_kwargs = mock_queries.create_trade.call_args[1]
     assert call_kwargs["order_id"] == "schwab-order-abc"
@@ -250,3 +253,104 @@ async def test_approve_exposure_uses_last_price_fallback(mock_queries, mock_plac
     # with avg=1: existing=10. total=510>500 -> blocked either way
     # The test confirms last_price IS used when not None -- the mock sets last_price=15.0
     # and the guard correctly blocked. That's sufficient to confirm last_price was used.
+
+
+# --- limit/market routing in ApproveRejectView.approve (RISK-01, RISK-02, RISK-03) ---
+
+@pytest.mark.asyncio
+@patch("discord_bot.bot.place_limit_order")
+@patch("discord_bot.bot.place_order")
+@patch("discord_bot.bot.queries")
+async def test_approve_limit_live_calls_place_limit_order_not_place_order(
+    mock_queries, mock_place_order, mock_place_limit_order
+):
+    """RISK-01 + RISK-02: use_limit_buy=True, dry_run=False -> place_limit_order called, place_order NOT called."""
+    mock_place_limit_order.return_value = "schwab-limit-001"
+    mock_queries.create_trade.return_value = 1
+    view = _make_view(price=100.0, dry_run=False, use_limit_buy=True)
+    await _call_approve(view, _make_interaction())
+    mock_place_limit_order.assert_called_once_with("AAPL", 5, 100.0, view.config)
+    mock_place_order.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch("discord_bot.bot.place_limit_order")
+@patch("discord_bot.bot.place_order")
+@patch("discord_bot.bot.queries")
+async def test_approve_market_live_calls_place_order_not_place_limit_order(
+    mock_queries, mock_place_order, mock_place_limit_order
+):
+    """RISK-02: use_limit_buy=False, dry_run=False -> place_order called, place_limit_order NOT called."""
+    mock_place_order.return_value = "schwab-market-002"
+    mock_queries.create_trade.return_value = 1
+    view = _make_view(price=100.0, dry_run=False, use_limit_buy=False)
+    await _call_approve(view, _make_interaction())
+    mock_place_order.assert_called_once_with("AAPL", 5, view.config)
+    mock_place_limit_order.assert_not_called()
+
+
+@pytest.mark.asyncio
+@patch("discord_bot.bot.place_limit_order")
+@patch("discord_bot.bot.place_order")
+@patch("discord_bot.bot.queries")
+async def test_approve_limit_live_create_trade_records_limit_kwargs(
+    mock_queries, mock_place_order, mock_place_limit_order
+):
+    """RISK-03 live limit path: create_trade called with limit_price=100.0 and order_type='limit'."""
+    mock_place_limit_order.return_value = "schwab-limit-003"
+    mock_queries.create_trade.return_value = 1
+    view = _make_view(price=100.0, dry_run=False, use_limit_buy=True)
+    await _call_approve(view, _make_interaction())
+    call_kwargs = mock_queries.create_trade.call_args[1]
+    assert call_kwargs["limit_price"] == 100.0
+    assert call_kwargs["order_type"] == "limit"
+
+
+@pytest.mark.asyncio
+@patch("discord_bot.bot.place_limit_order")
+@patch("discord_bot.bot.place_order")
+@patch("discord_bot.bot.queries")
+async def test_approve_dry_run_create_trade_records_market_regardless_of_use_limit_buy(
+    mock_queries, mock_place_order, mock_place_limit_order
+):
+    """D-06: dry_run=True always records order_type='market', limit_price=None regardless of use_limit_buy."""
+    mock_queries.create_trade.return_value = 1
+    view = _make_view(price=100.0, dry_run=True, use_limit_buy=True)
+    await _call_approve(view, _make_interaction())
+    call_kwargs = mock_queries.create_trade.call_args[1]
+    assert call_kwargs["limit_price"] is None
+    assert call_kwargs["order_type"] == "market"
+
+
+@pytest.mark.asyncio
+@patch("discord_bot.bot.place_limit_order")
+@patch("discord_bot.bot.place_order")
+@patch("discord_bot.bot.queries")
+async def test_approve_limit_live_confirmation_message_contains_limit_gtc(
+    mock_queries, mock_place_order, mock_place_limit_order
+):
+    """D-10: use_limit_buy=True, dry_run=False -> confirmation message contains '(limit, GTC)'."""
+    mock_place_limit_order.return_value = "schwab-limit-004"
+    mock_queries.create_trade.return_value = 1
+    view = _make_view(price=100.0, dry_run=False, use_limit_buy=True)
+    interaction = _make_interaction()
+    await _call_approve(view, interaction)
+    msg = interaction.response.send_message.call_args[0][0]
+    assert "(limit, GTC)" in msg
+
+
+@pytest.mark.asyncio
+@patch("discord_bot.bot.place_limit_order")
+@patch("discord_bot.bot.place_order")
+@patch("discord_bot.bot.queries")
+async def test_approve_market_live_confirmation_message_does_not_contain_limit_gtc(
+    mock_queries, mock_place_order, mock_place_limit_order
+):
+    """D-11: use_limit_buy=False, dry_run=False -> confirmation message does NOT contain '(limit, GTC)'."""
+    mock_place_order.return_value = "schwab-market-005"
+    mock_queries.create_trade.return_value = 1
+    view = _make_view(price=100.0, dry_run=False, use_limit_buy=False)
+    interaction = _make_interaction()
+    await _call_approve(view, interaction)
+    msg = interaction.response.send_message.call_args[0][0]
+    assert "(limit, GTC)" not in msg
