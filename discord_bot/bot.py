@@ -10,7 +10,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from config import Config
 from database import queries
 from discord_bot.embeds import build_recommendation_embed, build_positions_embed, build_sell_embed, build_etf_recommendation_embed, build_stats_embed, build_history_embed
-from schwab_client.orders import place_order, place_sell_order
+from schwab_client.orders import place_limit_order, place_order, place_sell_order
 
 logger = logging.getLogger(__name__)
 
@@ -36,12 +36,13 @@ def compute_share_quantity(price: float, max_position_usd: float) -> int:
 class ApproveRejectView(discord.ui.View):
     """Discord UI view with Approve and Reject buttons for a pending buy recommendation."""
 
-    def __init__(self, rec_id: int, ticker: str, price: float, config: Config):
+    def __init__(self, rec_id: int, ticker: str, price: float, config: Config, scan_time: str | None = None):
         super().__init__(timeout=None)
         self.rec_id = rec_id
         self.ticker = ticker
         self.price = price
         self.config = config
+        self.scan_time = scan_time
 
     @discord.ui.button(label="Approve", style=discord.ButtonStyle.success, emoji="✅")
     async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -70,8 +71,15 @@ class ApproveRejectView(discord.ui.View):
             return
 
         order_id = None
+        limit_price_val = None      # D-06: dry-run records market defaults regardless of use_limit_buy
+        order_type_val = "market"   # D-06: see above
         if not self.config.dry_run:
-            order_id = place_order(self.ticker, shares, self.config)
+            if self.config.use_limit_buy:
+                order_id = place_limit_order(self.ticker, shares, self.price, self.config)
+                limit_price_val = self.price
+                order_type_val = "limit"
+            else:
+                order_id = place_order(self.ticker, shares, self.config)
 
         queries.create_trade(
             db_path=self.config.db_path,
@@ -80,15 +88,20 @@ class ApproveRejectView(discord.ui.View):
             shares=shares,
             price=self.price,
             order_id=order_id,
+            limit_price=limit_price_val,
+            order_type=order_type_val,
         )
         # POS-02: track position
         queries.upsert_position(self.config.db_path, self.ticker, shares, self.price)
         queries.update_recommendation_status(self.config.db_path, self.rec_id, "approved")
 
-        label = f"[DRY RUN] " if self.config.dry_run else ""
-        await interaction.response.send_message(
-            f"{label}Approved: buying {shares} share(s) of {self.ticker} at ${self.price:.2f}.",
-        )
+        if self.config.dry_run:
+            msg = f"[DRY RUN] Approved: buying {shares} share(s) of {self.ticker} at ${self.price:.2f}."
+        elif self.config.use_limit_buy:
+            msg = f"Approved: buying {shares} share(s) of {self.ticker} at ${self.price:.2f} (limit, GTC)."
+        else:
+            msg = f"Approved: buying {shares} share(s) of {self.ticker} at ${self.price:.2f}."
+        await interaction.response.send_message(msg)
         self.stop()
 
     @discord.ui.button(label="Reject", style=discord.ButtonStyle.danger, emoji="❌")
@@ -268,11 +281,12 @@ class TradingBot(discord.Client):
         pe_ratio: float | None,
         confidence: str | None = None,
         earnings_date: str | None = None,   # NEW — Phase 16 SIG-05
+        scan_time: str | None = None,       # NEW — Phase 17 RISK-04
     ) -> str:
         """Fetch the configured channel, post a recommendation embed with Approve/Reject buttons, and return the message id as a string."""
         channel = await self.fetch_channel(self.config.discord_channel_id)
-        embed = build_recommendation_embed(ticker, signal, reasoning, price, dividend_yield, pe_ratio, confidence=confidence, earnings_date=earnings_date)
-        view = ApproveRejectView(rec_id, ticker, price, self.config)
+        embed = build_recommendation_embed(ticker, signal, reasoning, price, dividend_yield, pe_ratio, confidence=confidence, earnings_date=earnings_date, scan_time=scan_time)
+        view = ApproveRejectView(rec_id, ticker, price, self.config, scan_time=scan_time)
         msg = await _send_message(channel, embed, view)
         return str(msg.id)
 
