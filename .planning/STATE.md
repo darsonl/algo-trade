@@ -20,14 +20,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-14)
 
 **Core value:** The bot must never place a real order without explicit human approval via Discord.
-**Current focus:** Phase 17 — Limit Buy Orders (not started)
+**Current focus:** Phase 18 — Test Coverage Gaps (next up)
 
 ## Current Position
 
-Phase: 16
-Plan: 01 Complete
-Status: Phase 16 complete (1/1 plans done)
-Last activity: 2026-04-24
+Phase: 17
+Plan: 02 Complete
+Status: Phase 17 complete (2/2 plans done)
+Last activity: 2026-05-21
 
 ---
 
@@ -60,7 +60,7 @@ Last activity: 2026-04-24
 | 14 | Trade History Command | 🔄 Not started |
 | 15 | Fundamental Trend Enrichment | 🔄 Not started |
 | 16 | Earnings Date Warning | ✅ Complete (1/1 plan) |
-| 17 | Limit Buy Orders | 🔄 Not started |
+| 17 | Limit Buy Orders | ✅ Complete (2/2 plans) |
 | 14.1 | SPY 1-year trend signal | 🔄 Not started |
 | 18 | Test Coverage Gaps | 🔄 Not started |
 
@@ -150,4 +150,4 @@ Location: .planning/codebase/
 
 ## Next Action
 
-Run `/gsd-plan-phase 17` to plan Phase 17 (Limit Buy Orders) or the next unstarted phase.
+Run `/gsd-discuss-phase 18` to discuss Phase 18 (Test Coverage Gaps) before planning, or `/gsd-plan-phase 18` to plan directly.

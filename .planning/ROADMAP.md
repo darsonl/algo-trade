@@ -54,7 +54,7 @@ See `.planning/milestones/v1.2-ROADMAP.md` for full phase details.
 - [x] **Phase 14: Trade History Command** — `/history` slash command showing last 20 closed trades (completed 2026-04-19)
 - [x] **Phase 15: Fundamental Trend Enrichment** — P/E direction and EPS quarterly trend in Claude BUY prompt (completed 2026-04-21)
 - [x] **Phase 16: Earnings Date Warning** — Next earnings date in BUY embed and Claude prompt (completed 2026-04-24)
-- [ ] **Phase 17: Limit Buy Orders** — Limit order execution on Approve with config flag and audit trail
+- [x] **Phase 17: Limit Buy Orders** — Limit order execution on Approve with config flag and audit trail (completed 2026-05-21)
 - [ ] **Phase 18: Test Coverage Gaps** — Analyst fallback, config validation, and quota exhaustion tests
 
 ---
@@ -119,8 +119,8 @@ Plans:
 **Plans**: 2 plans
 
 Plans:
-- [ ] 17-01-PLAN.md — Foundation: use_limit_buy config, trades schema (limit_price/order_type), build_limit_buy/place_limit_order, 5 order unit tests
-- [ ] 17-02-PLAN.md — Integration: scan_time embed field, ApproveRejectView routing, main.py scan_time capture, 9 bot+embed tests
+- [x] 17-01-PLAN.md — Foundation: use_limit_buy config, trades schema (limit_price/order_type), build_limit_buy/place_limit_order, 5 order unit tests
+- [x] 17-02-PLAN.md — Integration: scan_time embed field, ApproveRejectView routing, main.py scan_time capture, 9 bot+embed tests
 
 ### Phase 18: Test Coverage Gaps
 **Goal**: Critical untested execution paths (analyst fallback, config validation, quota exhaustion) are covered by automated tests
@@ -158,9 +158,9 @@ Plans:
 | 14.1. SPY 1-year trend signal | v1.3 | 1/1 | Complete    | 2026-04-19 |
 | 15. Fundamental Trend Enrichment | v1.3 | 1/1 | Complete    | 2026-04-21 |
 | 16. Earnings Date Warning | v1.3 | 1/1 | Complete   | 2026-04-24 |
-| 17. Limit Buy Orders | v1.3 | 0/2 | Not started | - |
+| 17. Limit Buy Orders | v1.3 | 2/2 | Complete | 2026-05-21 |
 | 18. Test Coverage Gaps | v1.3 | 0/? | Not started | - |
 
 ---
 *Roadmap defined: 2026-03-30*
-*Last updated: 2026-05-17 — Phase 17 planned: 2 plans for limit buy orders (RISK-01 through RISK-04)*
+*Last updated: 2026-05-21 — Phase 17 complete: limit buy orders (RISK-01 through RISK-04, 2/2 plans, 444 tests)*
