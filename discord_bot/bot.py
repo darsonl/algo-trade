@@ -81,6 +81,10 @@ class ApproveRejectView(discord.ui.View):
             else:
                 order_id = place_order(self.ticker, shares, self.config)
 
+        # WARNING (RISK-05 / Phase 17): GTC limit orders are recorded as positions immediately
+        # on broker acknowledgement, not on fill. If the limit does not fill, has_open_position()
+        # will block re-buys and the sell pass may attempt to sell non-existent shares.
+        # Fill reconciliation is deferred to a future phase.
         queries.create_trade(
             db_path=self.config.db_path,
             recommendation_id=self.rec_id,
@@ -95,12 +99,13 @@ class ApproveRejectView(discord.ui.View):
         queries.upsert_position(self.config.db_path, self.ticker, shares, self.price)
         queries.update_recommendation_status(self.config.db_path, self.rec_id, "approved")
 
+        elapsed = f" (scan at {self.scan_time})" if self.scan_time else ""
         if self.config.dry_run:
-            msg = f"[DRY RUN] Approved: buying {shares} share(s) of {self.ticker} at ${self.price:.2f}."
+            msg = f"[DRY RUN] Approved: buying {shares} share(s) of {self.ticker} at ${self.price:.2f}{elapsed}."
         elif self.config.use_limit_buy:
-            msg = f"Approved: buying {shares} share(s) of {self.ticker} at ${self.price:.2f} (limit, GTC)."
+            msg = f"Approved: buying {shares} share(s) of {self.ticker} at ${self.price:.2f} (limit, GTC{elapsed})."
         else:
-            msg = f"Approved: buying {shares} share(s) of {self.ticker} at ${self.price:.2f}."
+            msg = f"Approved: buying {shares} share(s) of {self.ticker} at ${self.price:.2f}{elapsed}."
         await interaction.response.send_message(msg)
         self.stop()
 
