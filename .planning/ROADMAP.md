@@ -164,7 +164,7 @@ Plans:
 | 15. Fundamental Trend Enrichment | v1.3 | 1/1 | Complete    | 2026-04-21 |
 | 16. Earnings Date Warning | v1.3 | 1/1 | Complete   | 2026-04-24 |
 | 17. Limit Buy Orders | v1.3 | 2/2 | Complete | 2026-05-21 |
-| 18. Test Coverage Gaps | v1.3 | 3/3 | Complete   | 2026-06-06 |
+| 18. Test Coverage Gaps | v1.3 | 3/3 | Complete    | 2026-06-06 |
 
 ---
 *Roadmap defined: 2026-03-30*
