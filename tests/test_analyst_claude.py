@@ -1,6 +1,6 @@
 import pytest
 from unittest.mock import patch, MagicMock
-from analyst.claude_analyst import build_prompt, parse_claude_response, build_etf_prompt, analyze_etf_ticker, analyze_ticker
+from analyst.claude_analyst import build_prompt, parse_claude_response, build_etf_prompt, analyze_etf_ticker, analyze_ticker, analyze_sell_ticker
 from analyst.claude_analyst import _parse_retry_delay, _should_retry
 
 
@@ -903,3 +903,110 @@ def test_analyze_etf_ticker_uses_fallback_on_primary_parse_error():
     assert result["signal"] == "HOLD"
     assert result["provider_used"] == "deepseek"
     assert call_count["n"] == 2
+
+
+# --- analyze_sell_ticker fallback matrix (D-04 priority gap) ---
+
+def test_analyze_sell_ticker_uses_fallback_on_primary_failure():
+    """Primary API raises; fallback returns a valid SELL signal."""
+    config = _make_fallback_config()
+    call_count = {"n": 0}
+
+    def api_side_effect(client, model, prompt):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise RuntimeError("quota exhausted")
+        return "SIGNAL: SELL\nREASONING: Fallback confirmed overbought.\nCONFIDENCE: high"
+
+    with patch("analyst.claude_analyst._call_api", side_effect=api_side_effect):
+        result = analyze_sell_ticker(
+            ticker="AAPL", entry_price=150.0, current_price=170.0, pnl_pct=0.13,
+            hold_days=10, rsi=75.0, headlines=["Headline"], config=config,
+            client=MagicMock(), fallback_client=MagicMock(),
+        )
+
+    assert result["signal"] == "SELL"
+    assert result["provider_used"] == "deepseek"
+    assert call_count["n"] == 2
+
+
+def test_analyze_sell_ticker_uses_fallback_on_primary_parse_error():
+    """Primary returns template-echo (parse error); fallback returns a valid HOLD signal."""
+    config = _make_fallback_config()
+    call_count = {"n": 0}
+
+    def api_side_effect(client, model, prompt):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return "SIGNAL: <SELL|HOLD>\nREASONING: template echo"
+        return "SIGNAL: HOLD\nREASONING: Fallback says hold.\nCONFIDENCE: medium"
+
+    with patch("analyst.claude_analyst._call_api", side_effect=api_side_effect):
+        result = analyze_sell_ticker(
+            ticker="AAPL", entry_price=150.0, current_price=170.0, pnl_pct=0.13,
+            hold_days=10, rsi=75.0, headlines=["Headline"], config=config,
+            client=MagicMock(), fallback_client=MagicMock(),
+        )
+
+    assert result["signal"] == "HOLD"
+    assert result["provider_used"] == "deepseek"
+    assert call_count["n"] == 2
+
+
+def test_analyze_sell_ticker_uses_fallback2_when_both_primary_and_fallback_fail():
+    """Primary and fallback both raise API errors; fallback2 returns a valid SELL signal."""
+    config = _make_fallback_config()
+    call_count = {"n": 0}
+
+    def api_side_effect(client, model, prompt):
+        call_count["n"] += 1
+        if call_count["n"] <= 2:
+            raise RuntimeError("provider down")
+        return "SIGNAL: SELL\nREASONING: fb2 confirmed overbought.\nCONFIDENCE: high"
+
+    with patch("analyst.claude_analyst._call_api", side_effect=api_side_effect):
+        result = analyze_sell_ticker(
+            ticker="AAPL", entry_price=150.0, current_price=170.0, pnl_pct=0.13,
+            hold_days=10, rsi=75.0, headlines=["Headline"], config=config,
+            client=MagicMock(), fallback_client=MagicMock(), fallback2_client=MagicMock(),
+        )
+
+    assert result["signal"] == "SELL"
+    assert result["provider_used"] == "openai"
+    assert call_count["n"] == 3
+
+
+def test_analyze_sell_ticker_uses_fallback2_on_fallback_parse_error():
+    """Primary and fallback both return template-echo (parse errors); fallback2 succeeds."""
+    config = _make_fallback_config()
+    call_count = {"n": 0}
+
+    def api_side_effect(client, model, prompt):
+        call_count["n"] += 1
+        if call_count["n"] <= 2:
+            return "SIGNAL: <SELL|HOLD>\nREASONING: template echo"
+        return "SIGNAL: SELL\nREASONING: fb2 confirmed.\nCONFIDENCE: low"
+
+    with patch("analyst.claude_analyst._call_api", side_effect=api_side_effect):
+        result = analyze_sell_ticker(
+            ticker="AAPL", entry_price=150.0, current_price=170.0, pnl_pct=0.13,
+            hold_days=10, rsi=75.0, headlines=["Headline"], config=config,
+            client=MagicMock(), fallback_client=MagicMock(), fallback2_client=MagicMock(),
+        )
+
+    assert result["signal"] == "SELL"
+    assert result["provider_used"] == "openai"
+    assert call_count["n"] == 3
+
+
+def test_analyze_sell_ticker_propagates_when_no_fallback():
+    """Primary API failure propagates when fallback_client is None."""
+    config = _make_fallback_config()
+
+    with patch("analyst.claude_analyst._call_api", side_effect=RuntimeError("all down")):
+        with pytest.raises(RuntimeError, match="all down"):
+            analyze_sell_ticker(
+                ticker="AAPL", entry_price=150.0, current_price=170.0, pnl_pct=0.13,
+                hold_days=10, rsi=75.0, headlines=["Headline"], config=config,
+                client=MagicMock(), fallback_client=None,
+            )
