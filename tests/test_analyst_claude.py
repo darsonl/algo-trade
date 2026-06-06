@@ -1010,3 +1010,74 @@ def test_analyze_sell_ticker_propagates_when_no_fallback():
                 hold_days=10, rsi=75.0, headlines=["Headline"], config=config,
                 client=MagicMock(), fallback_client=None,
             )
+
+
+# --- analyze_ticker and analyze_etf_ticker missing matrix cells ---
+
+def test_analyze_ticker_uses_fallback_on_primary_failure():
+    """Primary API raises; fallback returns a valid BUY signal."""
+    config = _make_fallback_config()
+    call_count = {"n": 0}
+
+    def api_side_effect(client, model, prompt):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise RuntimeError("quota exhausted")
+        return "SIGNAL: BUY\nREASONING: Fallback confirmed.\nCONFIDENCE: high"
+
+    with patch("analyst.claude_analyst._call_api", side_effect=api_side_effect):
+        result = analyze_ticker(
+            ticker="BLK", info={}, headlines=[], config=config,
+            client=MagicMock(), fallback_client=MagicMock(),
+        )
+
+    assert result["signal"] == "BUY"
+    assert result["provider_used"] == "deepseek"
+    assert call_count["n"] == 2
+
+
+def test_analyze_ticker_uses_fallback2_on_fallback_api_failure():
+    """Primary and fallback both raise API errors; fallback2 returns a valid SKIP signal."""
+    config = _make_fallback_config()
+    call_count = {"n": 0}
+
+    def api_side_effect(client, model, prompt):
+        call_count["n"] += 1
+        if call_count["n"] <= 2:
+            raise RuntimeError("down")
+        return "SIGNAL: SKIP\nREASONING: fb2.\nCONFIDENCE: low"
+
+    with patch("analyst.claude_analyst._call_api", side_effect=api_side_effect):
+        result = analyze_ticker(
+            ticker="BLK", info={}, headlines=[], config=config,
+            client=MagicMock(), fallback_client=MagicMock(), fallback2_client=MagicMock(),
+        )
+
+    assert result["signal"] == "SKIP"
+    assert result["provider_used"] == "openai"
+    assert call_count["n"] == 3
+
+
+def test_analyze_etf_ticker_uses_fallback2_on_fallback_parse_error():
+    """ETF: primary and fallback both return template-echo (parse errors); fallback2 succeeds."""
+    config = _make_fallback_config()
+    tech_data = {"rsi": 60.0, "macd_line": 0.1, "signal_line": 0.05,
+                 "macd_histogram": 0.05, "price": 450.0, "ma50": 440.0}
+    call_count = {"n": 0}
+
+    def api_side_effect(client, model, prompt):
+        call_count["n"] += 1
+        if call_count["n"] <= 2:
+            return "SIGNAL: <BUY|HOLD|SKIP>\nREASONING: template echo"
+        return "SIGNAL: BUY\nREASONING: fb2 confirmed.\nCONFIDENCE: medium"
+
+    with patch("analyst.claude_analyst._call_api", side_effect=api_side_effect):
+        result = analyze_etf_ticker(
+            ticker="SPY", headlines=[], tech_data=tech_data,
+            expense_ratio=0.0009, config=config,
+            client=MagicMock(), fallback_client=MagicMock(), fallback2_client=MagicMock(),
+        )
+
+    assert result["signal"] == "BUY"
+    assert result["provider_used"] == "openai"
+    assert call_count["n"] == 3
