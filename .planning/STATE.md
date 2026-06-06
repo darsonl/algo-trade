@@ -24,10 +24,10 @@ See: .planning/PROJECT.md (updated 2026-04-14)
 
 ## Current Position
 
-Phase: 17
-Plan: 02 Complete
-Status: Phase 17 complete (2/2 plans done)
-Last activity: 2026-05-21
+Phase: 18
+Plan: none yet
+Status: Phase 18 context gathered (CONTEXT.md ready for planning)
+Last activity: 2026-06-06
 
 ---
 
@@ -150,4 +150,4 @@ Location: .planning/codebase/
 
 ## Next Action
 
-Run `/gsd-discuss-phase 18` to discuss Phase 18 (Test Coverage Gaps) before planning, or `/gsd-plan-phase 18` to plan directly.
+Phase 18 discussed — `18-CONTEXT.md` captured. Run `/gsd-plan-phase 18` to create the plan, then `/gsd-execute-phase 18`.
