@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v1.3
 milestone_name: Risk & Signal Quality
-status: verifying
-last_updated: "2026-06-06T14:35:54.839Z"
-last_activity: 2026-06-06
+status: shipped
+last_updated: "2026-06-07T00:00:00.000Z"
+last_activity: 2026-06-07
 progress:
   total_phases: 6
   completed_phases: 6
@@ -17,25 +17,40 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-04-14)
+See: .planning/PROJECT.md (updated 2026-06-07)
 
 **Core value:** The bot must never place a real order without explicit human approval via Discord.
-**Current focus:** Phase 18 — Test Coverage Gaps
+**Current focus:** Planning next milestone (v1.3 shipped 2026-06-07)
 
 ## Current Position
 
-Phase: 18
-Plan: Not started
-Status: Phase complete — ready for verification
-Last activity: 2026-06-06
+Phase: — (between milestones)
+Plan: —
+Status: ✅ Milestone v1.3 shipped — run `/gsd-new-milestone` to start the next cycle
+Last activity: 2026-06-07
 
 ---
 
 ## Milestone
 
-**Milestone v1.3:** Risk & Signal Quality
+**Milestone v1.3:** Risk & Signal Quality — ✅ SHIPPED 2026-06-07
 **Started:** 2026-04-18
-**Phases:** 14–18 (5 phases)
+**Phases:** 14, 14.1, 15, 16, 17, 18 (6 phases, 9 plans)
+**Tag:** v1.3
+
+---
+
+## Deferred Items
+
+Items acknowledged and deferred at milestone close on 2026-06-07:
+
+| Category | Item | Status |
+|----------|------|--------|
+| uat_gap | Phase 17 17-HUMAN-UAT.md (3 pending scenarios) | partial |
+| verification_gap | Phase 17 17-VERIFICATION.md | human_needed |
+
+Both relate to limit buy orders (RISK-01..04): code-complete and unit-tested, but live/paper
+Schwab limit-order placement needs operator confirmation. `USE_LIMIT_BUY` defaults off until then.
 
 ---
 
@@ -57,12 +72,12 @@ Last activity: 2026-06-06
 | 11 | Confidence Scoring | ✅ Complete (2/2 plans) |
 | 12 | ETF Polish | ✅ Complete (2/2 plans) |
 | 13 | Portfolio Analytics | ✅ Complete (1/1 plan) |
-| 14 | Trade History Command | 🔄 Not started |
-| 15 | Fundamental Trend Enrichment | 🔄 Not started |
+| 14 | Trade History Command | ✅ Complete (1/1 plan) |
+| 14.1 | SPY 1-year trend signal | ✅ Complete (1/1 plan) |
+| 15 | Fundamental Trend Enrichment | ✅ Complete (1/1 plan) |
 | 16 | Earnings Date Warning | ✅ Complete (1/1 plan) |
-| 17 | Limit Buy Orders | ✅ Complete (2/2 plans) |
-| 14.1 | SPY 1-year trend signal | 🔄 Not started |
-| 18 | Test Coverage Gaps | 📋 Planned (3 plans, ready to execute) |
+| 17 | Limit Buy Orders | ✅ Complete (2/2 plans) — live UAT deferred |
+| 18 | Test Coverage Gaps | ✅ Complete (3/3 plans) |
 
 ---
 
@@ -150,4 +165,6 @@ Location: .planning/codebase/
 
 ## Next Action
 
-Phase 18 planned — 3 plans in 1 parallel wave, verified by plan-checker (1 blocker found and fixed). Run `/gsd-execute-phase 18` to execute.
+✅ Milestone v1.3 (Risk & Signal Quality) shipped and tagged 2026-06-07. `/clear`, then run `/gsd-new-milestone` to start the next cycle (questioning → research → requirements → roadmap).
+
+Outstanding before/after next milestone: complete Phase 17 limit-buy live UAT (3 scenarios) and flip `USE_LIMIT_BUY` default back on once confirmed (see Deferred Items).

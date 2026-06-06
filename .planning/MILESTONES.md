@@ -1,5 +1,27 @@
 # Milestones
 
+## v1.3 Risk & Signal Quality (Shipped: 2026-06-07)
+
+**Phases completed:** 6 phases (14, 14.1, 15, 16, 17, 18), 9 plans
+**Timeline:** ~49 days (2026-04-18 → 2026-06-06), 100 commits (19 feat)
+**Codebase:** 116 files changed, +12,554/−955 lines; 9,963 Python LOC
+**Tests:** 470 green (+98 from v1.2)
+
+**Key accomplishments:**
+
+1. Limit buy orders — `build_limit_buy`/`place_limit_order` place GTC limit orders at signal price on Approve; `USE_LIMIT_BUY` config flag; `limit_price`/`order_type` audit columns; scan-time price with "as of HH:MM" staleness in the BUY embed (RISK-01..04)
+2. Fundamental trend enrichment — `fetch_eps_data` adds P/E direction (expanding/contracting/stable/N/A) and 4-quarter chronological EPS trend to the Claude BUY prompt; graceful N/A on missing `forwardPE` or `quarterly_income_stmt` (SIG-07, SIG-08)
+3. Earnings date warning — "Next Earnings" field in BUY embed (⚠️ within 7 days, N/A when absent) sourced from `info["earningsTimestamp"]` at zero extra HTTP cost, plus prompt injection; ETF path excluded (SIG-05, SIG-06)
+4. Trade history command — `/history` shows the last 20 closed trades (ticker, entry, exit, P&L%, date) via a sell-side-only SELECT that avoids cartesian duplicates (OPS-02)
+5. SPY 1-year trend signal (Phase 14.1, inserted) — added a structural 1-year SPY trend alongside the 1-month momentum signal across all BUY/SELL/ETF prompts
+6. Test coverage gaps closed — full analyst fallback matrix across all 3 analyst functions (incl. parse-error convergence and the analyze_sell_ticker blind spot), `Config.validate()` suite (both provider branches + happy path + USE_LIMIT_BUY mapping), and quota-exhaustion skip on both buy and sell paths (TEST-09, TEST-10, TEST-11)
+
+**Known deferred items at close:** 2 (see STATE.md Deferred Items) — Phase 17 limit-buy live/paper UAT (3 pending scenarios) and Phase 17 human verification. Code is complete and unit-tested; `USE_LIMIT_BUY` defaults off pending live confirmation.
+
+**Archive:** `.planning/milestones/v1.3-ROADMAP.md`, `.planning/milestones/v1.3-REQUIREMENTS.md`
+
+---
+
 ## v1.2 Signal Quality & Portfolio Analytics (Shipped: 2026-04-14)
 
 **Phases completed:** 5 phases, 8 plans, 16 tasks

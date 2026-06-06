@@ -5,7 +5,7 @@
 - ✅ **v1.0 MVP** — Phases 1-6 (shipped 2026-04-06)
 - ✅ **v1.1 ETF + Async** — Phases 7-8 (shipped 2026-04-11)
 - ✅ **v1.2 Signal Quality & Portfolio Analytics** — Phases 9-13 (shipped 2026-04-14)
-- 🔄 **v1.3 Risk & Signal Quality** — Phases 14-18 (active)
+- ✅ **v1.3 Risk & Signal Quality** — Phases 14-18 (shipped 2026-06-07)
 
 ---
 
@@ -49,95 +49,19 @@ See `.planning/milestones/v1.2-ROADMAP.md` for full phase details.
 
 </details>
 
-### v1.3 Risk & Signal Quality (Phases 14-18)
+<details>
+<summary>✅ v1.3 Risk & Signal Quality (Phases 14-18) — SHIPPED 2026-06-07</summary>
 
-- [x] **Phase 14: Trade History Command** — `/history` slash command showing last 20 closed trades (completed 2026-04-19)
-- [x] **Phase 15: Fundamental Trend Enrichment** — P/E direction and EPS quarterly trend in Claude BUY prompt (completed 2026-04-21)
-- [x] **Phase 16: Earnings Date Warning** — Next earnings date in BUY embed and Claude prompt (completed 2026-04-24)
-- [x] **Phase 17: Limit Buy Orders** — Limit order execution on Approve with config flag and audit trail (completed 2026-05-21)
-- [x] **Phase 18: Test Coverage Gaps** — Analyst fallback, config validation, and quota exhaustion tests (completed 2026-06-06)
+- [x] Phase 14: Trade History Command (1/1 plan) — completed 2026-04-19
+- [x] Phase 14.1: SPY 1-year trend signal (1/1 plan) — completed 2026-04-19
+- [x] Phase 15: Fundamental Trend Enrichment (1/1 plan) — completed 2026-04-21
+- [x] Phase 16: Earnings Date Warning (1/1 plan) — completed 2026-04-24
+- [x] Phase 17: Limit Buy Orders (2/2 plans) — completed 2026-05-21 (live UAT deferred)
+- [x] Phase 18: Test Coverage Gaps (3/3 plans) — completed 2026-06-06
 
----
+See `.planning/milestones/v1.3-ROADMAP.md` for full phase details.
 
-## Phase Details
-
-### Phase 14: Trade History Command
-**Goal**: Operators can review the full closed-trade history from Discord without leaving the app
-**Depends on**: Phase 13 (trades table with cost_basis column present since v1.2)
-**Requirements**: OPS-02
-**Success Criteria** (what must be TRUE):
-  1. Operator runs `/history` and sees an embed listing up to the last 20 closed trades
-  2. Each row shows ticker, entry price, exit price, P&L%, and sell date
-  3. When no closed trades exist, the command responds with "No closed trades yet." (not an empty embed)
-  4. The query uses a sell-side-only SELECT — no JOIN that would duplicate rows for multi-trade tickers
-**Plans**: TBD
-
-### Phase 14.1: SPY 1-year trend signal (INSERTED)
-
-**Goal:** Add a 1-year SPY trend signal alongside the existing 1-month signal, giving Claude two temporal perspectives (momentum + structural trend) across all BUY/SELL/ETF prompts
-**Requirements**: N/A (signal quality improvement, no formal requirement ID)
-**Depends on:** Phase 14
-**Plans:** 1/1 plans complete
-
-Plans:
-- [x] 14.1-01-PLAN.md — Update macro.py producer, claude_analyst.py consumers, main.py fallbacks, and all tests
-
-### Phase 15: Fundamental Trend Enrichment
-**Goal**: Claude BUY prompt includes P/E direction and EPS trend so signal quality reflects valuation trajectory
-**Depends on**: Phase 14
-**Requirements**: SIG-07, SIG-08
-**Success Criteria** (what must be TRUE):
-  1. Claude BUY prompt contains a P/E direction label (expanding / contracting / stable / N/A) derived from trailingPE vs forwardPE
-  2. Claude BUY prompt contains the last 4 quarters of EPS values in chronological order
-  3. When forwardPE is absent from yfinance info, the P/E direction field shows "N/A" rather than crashing
-  4. When quarterly_income_stmt returns None or is missing the "Diluted EPS" row, the EPS trend field is omitted gracefully
-**Plans**: 1 plan
-  - [x] 15-01-PLAN.md — Add fetch_eps_data + thread fundamental_trend through build_prompt/analyze_ticker + wire into main.py buy-scan
-
-### Phase 16: Earnings Date Warning
-**Goal**: Operators and Claude both see upcoming earnings proximity before approving a BUY
-**Depends on**: Phase 15 (fetch_fundamental_info already extended)
-**Requirements**: SIG-05, SIG-06
-**Success Criteria** (what must be TRUE):
-  1. BUY embed displays a "Next Earnings" field showing the date (or "N/A" when absent)
-  2. When earnings are within 7 days, the embed field is visually flagged as a warning
-  3. Claude BUY prompt includes the next earnings date so it can factor in proximity risk
-  4. ETF scan path skips the earnings date field entirely — no empty or erroring field on ETF embeds
-**Plans**: 1 plan
-  - [x] 16-01-PLAN.md — Add earnings_date kwarg to embed + prompt; wire earningsTimestamp extraction in main.py buy-scan
-
-### Phase 17: Limit Buy Orders
-**Goal**: Every approved BUY places a limit order at the signal price instead of a market order, reducing execution slippage risk
-**Depends on**: Phase 16
-**Requirements**: RISK-01, RISK-02, RISK-03, RISK-04
-**Success Criteria** (what must be TRUE):
-  1. Approving a BUY recommendation calls `equity_buy_limit` with price as a formatted string (not a raw float) when USE_LIMIT_BUY=true
-  2. Setting USE_LIMIT_BUY=false in .env falls back to the existing market order path
-  3. The trades table records limit_price and order_type for every executed buy, enabling audit trail review
-  4. The BUY embed Approve button area shows the scan-time price with a timestamp ("as of HH:MM") so the operator can assess staleness
-  5. Limit orders default to GTC duration — a late-afternoon approval does not result in a silently unfilled DAY order
-**Plans**: 2 plans
-
-Plans:
-- [x] 17-01-PLAN.md — Foundation: use_limit_buy config, trades schema (limit_price/order_type), build_limit_buy/place_limit_order, 5 order unit tests
-- [x] 17-02-PLAN.md — Integration: scan_time embed field, ApproveRejectView routing, main.py scan_time capture, 9 bot+embed tests
-
-### Phase 18: Test Coverage Gaps
-**Goal**: Critical untested execution paths (analyst fallback, config validation, quota exhaustion) are covered by automated tests
-**Depends on**: Phase 17 (all prior phases stable before writing integration tests)
-**Requirements**: TEST-09, TEST-10, TEST-11
-**Success Criteria** (what must be TRUE):
-  1. A primary API failure triggers the fallback provider and a corresponding test asserts the fallback was called
-  2. A parse error ALSO triggers the fallback provider (both failure types converge on the same fallback chain — reversed 2026-06-06, see note below) and a test asserts fallback is called on parse errors too
-  3. Config.validate() raises ValueError for each missing required env var and a test covers this for each field (both ANALYST_PROVIDER branches), plus a test that a fully-valid config passes
-  4. Setting USE_LIMIT_BUY in the test environment maps correctly to use_limit_buy: unset → False (the default as of 2026-06-06), =false → False, =true → True
-  5. When ALL configured providers (primary + both fallbacks) have exhausted daily quota, neither the buy path (run_scan → analyze_ticker) nor the sell path (run_scan → analyze_sell_ticker) calls the analyst, and tests assert both skip paths
-
-> **Spec reversal note (2026-06-06):** SC#2 originally read "a parse error does NOT trigger the fallback provider and a test asserts this distinction." That was reversed in commit `1cb80f6` — Gemini's free model returns unparseable (template-echo) output, so a parse error now falls through the same `primary → fallback → fallback2` chain as an API error. SC#1 and SC#2 no longer test a fork; they test two paths that converge. SC#5 originally said "both providers" — corrected to all three (primary + fallback + fallback2), matching the D-11 guard at `main.py:199-201`.
-**Plans**: 3 plans (Wave 1 — all parallel, disjoint test files)
-- [x] 18-01-PLAN.md — Analyst fallback matrix across all 3 analyst functions (sell-path priority gap) — TEST-09
-- [x] 18-02-PLAN.md — Config.validate() suite + USE_LIMIT_BUY mapping (new tests/test_config.py) — TEST-10
-- [x] 18-03-PLAN.md — Quota exhaustion buy + sell paths (all 3 providers over limit) — TEST-11
+</details>
 
 ---
 
@@ -159,13 +83,13 @@ Plans:
 | 11. Confidence Scoring | v1.2 | 2/2 | Complete | 2026-04-12 |
 | 12. ETF Polish | v1.2 | 2/2 | Complete | 2026-04-13 |
 | 13. Portfolio Analytics | v1.2 | 1/1 | Complete | 2026-04-14 |
-| 14. Trade History Command | v1.3 | 1/1 | Complete    | 2026-04-19 |
-| 14.1. SPY 1-year trend signal | v1.3 | 1/1 | Complete    | 2026-04-19 |
-| 15. Fundamental Trend Enrichment | v1.3 | 1/1 | Complete    | 2026-04-21 |
-| 16. Earnings Date Warning | v1.3 | 1/1 | Complete   | 2026-04-24 |
+| 14. Trade History Command | v1.3 | 1/1 | Complete | 2026-04-19 |
+| 14.1. SPY 1-year trend signal | v1.3 | 1/1 | Complete | 2026-04-19 |
+| 15. Fundamental Trend Enrichment | v1.3 | 1/1 | Complete | 2026-04-21 |
+| 16. Earnings Date Warning | v1.3 | 1/1 | Complete | 2026-04-24 |
 | 17. Limit Buy Orders | v1.3 | 2/2 | Complete | 2026-05-21 |
-| 18. Test Coverage Gaps | v1.3 | 3/3 | Complete    | 2026-06-06 |
+| 18. Test Coverage Gaps | v1.3 | 3/3 | Complete | 2026-06-06 |
 
 ---
 *Roadmap defined: 2026-03-30*
-*Last updated: 2026-05-21 — Phase 17 complete: limit buy orders (RISK-01 through RISK-04, 2/2 plans, 444 tests)*
+*Last updated: 2026-06-07 — Phase 18 complete; milestone v1.3 shipped (470 tests)*

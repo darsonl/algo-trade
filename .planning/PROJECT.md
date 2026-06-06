@@ -8,16 +8,22 @@ An automated stock and ETF screener that uses Claude AI to generate BUY and SELL
 
 The bot must never place a real order without explicit human approval via Discord.
 
-## Current Milestone: v1.3 Risk & Signal Quality
+## Current State
 
-**Goal:** Harden trade execution with limit orders, enrich Claude signals with earnings and fundamental trend data, add trade history visibility, and close critical test gaps.
+**Shipped v1.3 Risk & Signal Quality** (2026-06-07) — 6 phases (14, 14.1, 15, 16, 17, 18), 9 plans, 470 tests green. Delivered limit buy orders with audit trail, earnings-date warnings, P/E + EPS fundamental-trend enrichment, the `/history` command, a 1-year SPY signal, and closed the analyst-fallback / config-validation / quota-exhaustion test gaps.
 
-**Target features:**
-- Limit buy orders at signal price (configurable `USE_LIMIT_BUY`, default true)
-- Earnings date warning field in Discord BUY embed
-- P/E direction (expanding/contracting) + EPS quarterly trend in Claude BUY prompt
-- `/history` Discord slash command: last 20 closed trades with entry/exit/P&L
-- Test coverage: analyst fallback logic, config validation, run_scan quota exhaustion path
+**Deferred at close:** Phase 17 limit-buy live UAT (3 scenarios) + human verification — code-complete and unit-tested, but live/paper Schwab limit-order placement awaits operator confirmation. `USE_LIMIT_BUY` ships defaulted off until then.
+
+## Next Milestone Goals
+
+*(v1.4 not yet defined — run `/gsd-new-milestone`)*
+
+Candidate directions carried forward from v1.3 Future Requirements:
+- Limit order cancel/expiry notification (detect unfilled GTC orders at next scan start)
+- Stop-loss / take-profit auto-SELL triggers
+- `/history` filtering and pagination
+- Real-time fill status polling via Schwab API
+- Complete Phase 17 live UAT and re-enable `USE_LIMIT_BUY` by default
 
 ## Requirements
 
@@ -91,9 +97,11 @@ The bot must never place a real order without explicit human approval via Discor
 
 ## Context
 
-Shipped v1.2 with 372 tests green across 3 milestones, 13 phases, 29 plans.
+Shipped v1.3 with 470 tests green across 4 milestones, 19 phases, 38 plans (~9,963 Python LOC).
 
 Tech stack: Python 3.x, discord.py, yfinance, anthropic SDK, schwab-py, APScheduler, SQLite.
+
+Trade execution hardened in v1.3: approved BUYs place GTC limit orders at the scan-time signal price (`build_limit_buy`/`place_limit_order`), with `limit_price`/`order_type` audit columns and an "as of HH:MM" staleness stamp in the embed — gated behind `USE_LIMIT_BUY` (defaults off pending live UAT). Claude BUY prompts now also carry P/E direction, 4-quarter EPS trend, and next-earnings proximity.
 
 Key fragility: yfinance is an unofficial scraper — silent empty returns are a known risk. All blocking yfinance calls are off the event loop (Phase 8 sweep), eliminating gateway disconnect risk.
 
@@ -135,6 +143,10 @@ Portfolio analytics live: `/positions` shows total unrealized P&L; `/stats` show
 | ETF scheduled scan via `configure_scheduler` reuse with `job_id_prefix` kwarg | Keeps scheduling logic in one place, avoids duplication — v1.2 | ✓ Good |
 | Embed builder receives pre-formatted `earnings_date` string; all N/A/⚠️ logic in main.py | Pure renderer pattern: embed has no formatting decisions; caller controls output — v1.3 (Phase 16) | ✓ Good |
 | Past/absent `earningsTimestamp` → "N/A" in embed, omitted from Claude prompt | "N/A" in prompt is non-actionable noise; omission is a cleaner signal for Claude — v1.3 (Phase 16) | ✓ Good |
+| Limit orders default to GTC (not DAY) | DAY + late-afternoon approval = silent unfill that locks the DB recommendation — v1.3 (Phase 17) | ✓ Good |
+| `equity_buy_limit` price passed as formatted string `f"{price:.2f}"` | Raw float triggers yfinance/schwab-py DeprecationWarning, future TypeError — v1.3 (Phase 17) | ✓ Good |
+| `USE_LIMIT_BUY` uses `.lower() == "true"` parse, default off | `bool("false")` is `True` in Python; default off until live UAT confirms limit fills — v1.3 (Phase 17) | ⚠️ Revisit — re-enable after live UAT |
+| Parse errors converge on the analyst fallback chain (not a fork) | Gemini free model returns unparseable template-echo output; parse error treated like API failure — v1.3 (Phase 18) | ✓ Good |
 
 ## Evolution
 
@@ -154,4 +166,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-06-06 — Phase 18 complete: test coverage gaps closed (TEST-09..11); milestone v1.3 phases all complete (14–18)*
+*Last updated: 2026-06-07 after v1.3 milestone — Risk & Signal Quality shipped (6 phases, 9 plans, 470 tests); limit-buy live UAT deferred*

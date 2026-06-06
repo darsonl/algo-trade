@@ -148,14 +148,63 @@
 
 ---
 
+## Milestone: v1.3 — Risk & Signal Quality
+
+**Shipped:** 2026-06-07
+**Phases:** 6 (14, 14.1, 15, 16, 17, 18) | **Plans:** 9 | **Timeline:** ~49 days (2026-04-18 → 2026-06-06) | **Commits:** 100
+
+### What Was Built
+
+- Limit buy orders: `build_limit_buy`/`place_limit_order` (GTC, formatted-string price), `USE_LIMIT_BUY` flag, `limit_price`/`order_type` audit columns, scan-time "as of HH:MM" staleness in the BUY embed (RISK-01..04)
+- Fundamental trend enrichment: `fetch_eps_data` → P/E direction + 4-quarter EPS trend in the Claude BUY prompt (SIG-07, SIG-08)
+- Earnings date warning: "Next Earnings" embed field (⚠️ within 7 days) + prompt injection, zero extra HTTP cost; ETF path excluded (SIG-05, SIG-06)
+- `/history` slash command: last 20 closed trades via sell-side-only SELECT (OPS-02)
+- SPY 1-year structural trend signal alongside the 1-month momentum signal (Phase 14.1, inserted)
+- Test coverage gaps closed: analyst fallback matrix across all 3 functions, Config.validate() suite, quota-exhaustion skip on buy + sell (TEST-09..11)
+- 470 tests green (+98 from v1.2)
+
+### What Worked
+
+- **Spec reversal handled cleanly mid-phase**: when Gemini's free model proved to return unparseable template-echo output, SC#2 was reversed (parse errors now converge on the fallback chain) and documented inline in ROADMAP/REQUIREMENTS with the commit ref — the decision trail survived into the archive
+- **Pre-formatted-string-at-caller pattern (Phase 16)**: keeping all N/A/⚠️ formatting in main.py and making the embed a pure renderer kept the embed builder decision-free and trivially testable — extend to all future embed fields
+- **Decimal insertion again proved frictionless**: Phase 14.1 dropped in cleanly after 14 with no renumbering churn
+- **Schema discipline held**: `limit_price`/`order_type` added via additive CREATE TABLE + ALTER TABLE migration — no production break
+
+### What Was Inefficient
+
+- **Longest milestone by far (~49 days) for 9 plans**: a 27-day gap between Phase 16 (2026-04-24) and Phase 17 (2026-05-21) — limit orders stalled on the real-world need for live/paper verification, which never got scheduled. Risk work that needs human UAT should be planned with the UAT session booked up front, not discovered as a blocker at close
+- **Requirements unchecked AGAIN (4th time)**: live REQUIREMENTS.md still had `[ ]` on RISK-01..04, SIG-07/08, OPS-02 at close despite PROJECT.md listing them Validated — the persistent gap flagged in v1.0/v1.1/v1.2 recurred; the archive checkboxes had to be hand-corrected
+- **`gsd-sdk` CLI unavailable at close**: `milestone.complete` could not run, so archival ordering safety (archive detailed ROADMAP before collapsing) had to be enforced manually — exactly the v1.0 "pre-flight ordering error" risk; got it right this time by archiving first
+
+### Patterns Established
+
+- **GTC over DAY for any non-instant order**: a DAY order + late approval = silent unfill that locks the DB recommendation; default GTC and let the operator manage expiry
+- **Formatted-string prices to brokerage APIs**: raw floats trigger DeprecationWarning today, TypeError tomorrow — always `f"{price:.2f}"`
+- **Document spec reversals at the requirement, with commit ref**: SC changes mid-flight stay traceable when noted inline in ROADMAP/REQUIREMENTS rather than only in git
+- **Default risky features off until live-verified**: `USE_LIMIT_BUY` ships off; flip on after UAT — safer than shipping on with unverified fills
+
+### Key Lessons
+
+1. **Book the human-UAT session when planning any feature that needs it** — Phase 17 stalled ~27 days because live limit-order verification was never scheduled; for risk/execution features, the UAT slot is part of the plan, not an afterthought
+2. **Requirements-checked-off is now a 4-milestone failure** — manual discipline has not worked once; this genuinely needs a phase-completion automation that ticks REQ-IDs from SUMMARY.md
+3. **When the GSD CLI is missing, archive-before-collapse must be done by hand** — the detailed ROADMAP must be copied to the milestone archive before the live ROADMAP is collapsed, or the archive captures the collapsed (detail-lost) form
+4. **A milestone can ship with deferred human-UAT** — code-complete + unit-tested + explicit deferred-items record is a legitimate close; don't block the milestone on a live session, but record the debt honestly and keep the risky default off
+
+### Cost Observations
+
+- Sessions: ~10 across the span (sparse — long mid-milestone gap)
+- Notable: Phase 18 (test gaps) ran as 3 parallel disjoint-file plans in one wave — clean parallelization with zero merge conflict; the disjoint-test-file split is the template for future coverage phases
+
+---
+
 ## Cross-Milestone Trends
 
-| Metric | v1.0 | v1.1 | v1.2 |
-|--------|------|------|------|
-| Phases | 7 | 2 | 5 |
-| Plans | 17 | 4 | 8 |
-| Tests | 222 | 252 | 372 |
-| Days | 9 | 5 | 3 |
-| Commits | 81 | 32 | 57 |
-| Req completion rate | 48/48 (40 unchecked) | 10/10 (0 checked) | 10/10 (7 unchecked) |
-| Requirements-checked-off discipline | ❌ | ❌ | ❌ — 3rd milestone; needs automation |
+| Metric | v1.0 | v1.1 | v1.2 | v1.3 |
+|--------|------|------|------|------|
+| Phases | 7 | 2 | 5 | 6 |
+| Plans | 17 | 4 | 8 | 9 |
+| Tests | 222 | 252 | 372 | 470 |
+| Days | 9 | 5 | 3 | 49 |
+| Commits | 81 | 32 | 57 | 100 |
+| Req completion rate | 48/48 (40 unchecked) | 10/10 (0 checked) | 10/10 (7 unchecked) | 12/12 (6 unchecked) |
+| Requirements-checked-off discipline | ❌ | ❌ | ❌ | ❌ — 4th milestone; manual discipline confirmed failed, needs automation |
