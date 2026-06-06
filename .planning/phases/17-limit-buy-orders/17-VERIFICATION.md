@@ -5,13 +5,13 @@ status: human_needed
 score: 5/5 must-haves verified
 re_verification: false
 human_verification:
-  - test: "Enable USE_LIMIT_BUY=true (default) and PAPER_TRADING=true, trigger a scan in paper-trading mode, click Approve on a BUY embed"
+  - test: "Set USE_LIMIT_BUY=true (opt-in; default is false as of 2026-06-06) and PAPER_TRADING=true, trigger a scan in paper-trading mode, click Approve on a BUY embed"
     expected: "Schwab paper-trading endpoint receives a limit order with orderType=LIMIT and duration=GOOD_TILL_CANCEL at the scan-time price formatted as a 2-decimal string; confirmation message reads 'Approved: buying N share(s) of TICKER at $X.XX (limit, GTC).'"
     why_human: "place_limit_order calls the real Schwab API through schwab-py; unit tests mock the HTTP layer and cannot confirm the JSON spec is accepted by the broker endpoint or that GTC duration persists through schwab-py's build() serialization in a live call"
-  - test: "Post a BUY recommendation embed in Discord (USE_LIMIT_BUY=true, scan running) and observe the Price field"
+  - test: "Post a BUY recommendation embed in Discord (USE_LIMIT_BUY=true opt-in, scan running) and observe the Price field"
     expected: "Price field renders as two lines: '$X.XX' on the first line and 'as of HH:MM' on the second line within the same embed field"
     why_human: "Discord renders embed field values with newlines differently depending on client version and mobile vs desktop; unit tests assert the string contains the newline but cannot verify the visual rendering in Discord's UI"
-  - test: "Set USE_LIMIT_BUY=false in .env, restart bot, trigger scan, click Approve on a BUY embed"
+  - test: "Leave USE_LIMIT_BUY unset (or =false) — the default path as of 2026-06-06 — restart bot, trigger scan, click Approve on a BUY embed"
     expected: "Confirmation message reads 'Approved: buying N share(s) of TICKER at $X.XX.' (no '(limit, GTC)' parenthetical); Schwab receives a market order, not a limit order"
     why_human: "Fallback to market order path needs to be confirmed against the live Schwab API; tests mock place_order but cannot verify the market-order JSON spec is sent instead of a limit spec at the broker"
 ---
@@ -78,7 +78,7 @@ human_verification:
 | Behavior | Command | Result | Status |
 |----------|---------|--------|--------|
 | Full test suite — all 444 tests pass | `pytest -q --tb=short` | `444 passed, 1 warning in 32.85s` | PASS |
-| use_limit_buy defaults True from env | Import check via plan-documented pattern | `config.py:38` — `.lower() == "true"` with default `"true"` | PASS |
+| use_limit_buy defaults True from env | Import check via plan-documented pattern | `config.py:38` — `.lower() == "true"` with default `"true"` | PASS at verification (2026-05-19); default reversed to `"false"` on 2026-06-06 — now opt-in (see frontmatter note) |
 | Duration.GOOD_TILL_CANCEL in build_limit_buy | grep confirmed | `orders.py:30` — exactly 1 occurrence in build_limit_buy body | PASS |
 | scan_time captured before ticker loop | Line-number comparison | `main.py:101` (scan_time) < `main.py:103` (`for ticker in universe:`) | PASS |
 | ETF scope guard — no scan_time in ETF path | grep on embeds.py | `scan_time` appears only 3 lines: param (20), if-check (32), append (33) — all in build_recommendation_embed, not build_etf_recommendation_embed | PASS |
@@ -107,7 +107,7 @@ Specifically checked: no `TODO/FIXME/HACK` in modified files; no `return null/re
 
 #### 1. Live GTC Limit Order Placement (Paper Trading)
 
-**Test:** Enable USE_LIMIT_BUY=true (default) and PAPER_TRADING=true in .env. Start the bot, trigger a scan, wait for a BUY recommendation to appear in Discord, click Approve.
+**Test:** Set USE_LIMIT_BUY=true (opt-in; default is `false` as of 2026-06-06) and PAPER_TRADING=true in .env. Start the bot, trigger a scan, wait for a BUY recommendation to appear in Discord, click Approve.
 **Expected:** Schwab paper-trading endpoint receives a limit order with orderType=LIMIT and duration=GOOD_TILL_CANCEL at the scan-time price formatted as a 2-decimal string (e.g. "52.34"). Confirmation message reads "Approved: buying N share(s) of TICKER at $X.XX (limit, GTC)."
 **Why human:** Unit tests mock the HTTP layer at `_call_place_order`. The schwab-py spec serialization and broker acceptance of the GTC duration field cannot be confirmed without a real API round-trip. A malformed spec would be rejected at the broker level, not caught by mocks.
 

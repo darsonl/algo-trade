@@ -13,6 +13,7 @@ updated: 2026-05-19T00:00:00Z
 ## Tests
 
 ### 1. Live GTC limit order placement via Schwab paper trading
+note: USE_LIMIT_BUY now defaults to `false` (reversed 2026-06-06) — this test requires explicitly opting in.
 expected: When USE_LIMIT_BUY=true and DRY_RUN=false, clicking Discord Approve places a GTC limit order (not market) at the scan-time price via the Schwab paper-trading API. The order appears in Schwab with duration=GOOD_TILL_CANCEL and the correct limit price.
 result: [pending]
 
@@ -21,6 +22,7 @@ expected: The BUY recommendation embed shows the Price field with a line break: 
 result: [pending]
 
 ### 3. USE_LIMIT_BUY=false market fallback in live environment
+note: This is now the DEFAULT path (USE_LIMIT_BUY defaults to `false` as of 2026-06-06) — exercised when the flag is unset or explicitly false.
 expected: When USE_LIMIT_BUY=false in .env and DRY_RUN=false, clicking Discord Approve places a market order (not limit), and the confirmation message does NOT contain "(limit, GTC)".
 result: [pending]
 

@@ -6,7 +6,9 @@
 <domain>
 ## Phase Boundary
 
-Replace market buy execution with limit buy at the scan-time price. When `USE_LIMIT_BUY=true` (default), Approve calls `equity_buy_limit` (GTC) instead of `equity_buy_market`. The `trades` table gains `limit_price` and `order_type` columns for audit trail. The BUY embed Price field gains an "as of HH:MM" staleness timestamp so the operator can assess price age before approving.
+Replace market buy execution with limit buy at the scan-time price. When `USE_LIMIT_BUY=true`, Approve calls `equity_buy_limit` (GTC) instead of `equity_buy_market`. The `trades` table gains `limit_price` and `order_type` columns for audit trail. The BUY embed Price field gains an "as of HH:MM" staleness timestamp so the operator can assess price age before approving.
+
+> **[SUPERSEDED 2026-06-06]** The default was reversed: `USE_LIMIT_BUY` now defaults to `false`, so limit-order execution is **opt-in** until the live limit-order UAT (see VERIFICATION) passes. The phase goal "every approved BUY places a limit order" therefore now holds only when the operator explicitly enables the flag; the out-of-the-box path remains a market order. See D-02 below.
 
 Scope excludes: sell path, ETF scan path, confirmation on GTC unfill, any cancel/expiry notification (deferred to REQUIREMENTS.md Future Requirements).
 
@@ -17,8 +19,8 @@ Scope excludes: sell path, ETF scan path, confirmation on GTC unfill, any cancel
 
 ### Config
 
-- **D-01:** Add `use_limit_buy: bool = os.getenv("USE_LIMIT_BUY", "true").lower() == "true"` to the `Config` dataclass — follows the `dry_run` / `paper_trading` pattern exactly.
-- **D-02:** `USE_LIMIT_BUY` defaults to `true` — operator must explicitly opt out via `.env`.
+- **D-01:** Add `use_limit_buy: bool = os.getenv("USE_LIMIT_BUY", "true").lower() == "true"` to the `Config` dataclass — follows the `dry_run` / `paper_trading` pattern exactly. *(Default later reversed to `"false"` — see D-02.)*
+- **D-02:** ~~`USE_LIMIT_BUY` defaults to `true` — operator must explicitly opt out via `.env`.~~ **[SUPERSEDED 2026-06-06]** `USE_LIMIT_BUY` now defaults to `false` — operator must explicitly opt **in** via `.env`. Rationale: keep the conservative market-order path as the out-of-the-box default until the live limit-order UAT is confirmed against the Schwab broker endpoint; limit execution is enabled deliberately rather than silently on first run.
 
 ### Order Execution
 
