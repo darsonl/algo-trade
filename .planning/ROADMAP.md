@@ -128,10 +128,12 @@ Plans:
 **Requirements**: TEST-09, TEST-10, TEST-11
 **Success Criteria** (what must be TRUE):
   1. A primary API failure triggers the fallback provider and a corresponding test asserts the fallback was called
-  2. A parse error does NOT trigger the fallback provider and a test asserts this distinction
-  3. Config.validate() raises ValueError for each missing required env var and a test covers this for each field
-  4. Setting USE_LIMIT_BUY=false in the test environment sets use_limit_buy=False on the Config object
-  5. When both providers have exhausted daily quota, run_scan does not call analyze_ticker and a test asserts the skip path
+  2. A parse error ALSO triggers the fallback provider (both failure types converge on the same fallback chain — reversed 2026-06-06, see note below) and a test asserts fallback is called on parse errors too
+  3. Config.validate() raises ValueError for each missing required env var and a test covers this for each field (both ANALYST_PROVIDER branches), plus a test that a fully-valid config passes
+  4. Setting USE_LIMIT_BUY in the test environment maps correctly to use_limit_buy: unset → False (the default as of 2026-06-06), =false → False, =true → True
+  5. When ALL configured providers (primary + both fallbacks) have exhausted daily quota, neither the buy path (run_scan → analyze_ticker) nor the sell path (run_scan → analyze_sell_ticker) calls the analyst, and tests assert both skip paths
+
+> **Spec reversal note (2026-06-06):** SC#2 originally read "a parse error does NOT trigger the fallback provider and a test asserts this distinction." That was reversed in commit `1cb80f6` — Gemini's free model returns unparseable (template-echo) output, so a parse error now falls through the same `primary → fallback → fallback2` chain as an API error. SC#1 and SC#2 no longer test a fork; they test two paths that converge. SC#5 originally said "both providers" — corrected to all three (primary + fallback + fallback2), matching the D-11 guard at `main.py:199-201`.
 **Plans**: TBD
 
 ---
