@@ -137,7 +137,7 @@ Plans:
 **Plans**: 3 plans (Wave 1 — all parallel, disjoint test files)
 - [x] 18-01-PLAN.md — Analyst fallback matrix across all 3 analyst functions (sell-path priority gap) — TEST-09
 - [ ] 18-02-PLAN.md — Config.validate() suite + USE_LIMIT_BUY mapping (new tests/test_config.py) — TEST-10
-- [ ] 18-03-PLAN.md — Quota exhaustion buy + sell paths (all 3 providers over limit) — TEST-11
+- [x] 18-03-PLAN.md — Quota exhaustion buy + sell paths (all 3 providers over limit) — TEST-11
 
 ---
 
@@ -164,7 +164,7 @@ Plans:
 | 15. Fundamental Trend Enrichment | v1.3 | 1/1 | Complete    | 2026-04-21 |
 | 16. Earnings Date Warning | v1.3 | 1/1 | Complete   | 2026-04-24 |
 | 17. Limit Buy Orders | v1.3 | 2/2 | Complete | 2026-05-21 |
-| 18. Test Coverage Gaps | v1.3 | 1/3 | In Progress|  |
+| 18. Test Coverage Gaps | v1.3 | 2/3 | In Progress|  |
 
 ---
 *Roadmap defined: 2026-03-30*

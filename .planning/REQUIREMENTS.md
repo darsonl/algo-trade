@@ -30,7 +30,7 @@
 
 - [x] **TEST-09**: Analyst fallback provider logic tested — primary API failure triggers fallback; parse errors ALSO trigger fallback (reversed 2026-06-06 — Gemini free model returns unparseable output; see CLAUDE.md fallback note and commit `1cb80f6`). Both failure types converge on the `primary → fallback → fallback2` chain.
 - [ ] **TEST-10**: Config `validate()` tested — missing required env vars raise `ValueError` (both `ANALYST_PROVIDER` branches); a fully-valid config passes; `USE_LIMIT_BUY` maps correctly (unset → `False` default, `=false` → `False`, `=true` → `True`)
-- [ ] **TEST-11**: `run_scan` quota exhaustion path tested — when ALL configured providers (primary + both fallbacks) hit the daily limit, neither `analyze_ticker` (buy) nor `analyze_sell_ticker` (sell) is called
+- [x] **TEST-11**: `run_scan` quota exhaustion path tested — when ALL configured providers (primary + both fallbacks) hit the daily limit, neither `analyze_ticker` (buy) nor `analyze_sell_ticker` (sell) is called
 
 ---
 
