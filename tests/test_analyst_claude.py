@@ -1,6 +1,7 @@
 import pytest
 from unittest.mock import patch, MagicMock
 from analyst.claude_analyst import build_prompt, parse_claude_response, build_etf_prompt, analyze_etf_ticker, analyze_ticker
+from analyst.claude_analyst import _parse_retry_delay, _should_retry
 
 
 # --- build_prompt ---
@@ -658,7 +659,8 @@ def test_create_fallback2_client_returns_none_when_unconfigured():
     from config import Config
     from analyst.claude_analyst import create_fallback2_client
 
-    config = Config(analyst_provider="gemini", analyst_api_key="key")
+    config = Config(analyst_provider="gemini", analyst_api_key="key",
+                    analyst_fallback2_provider="", analyst_fallback2_api_key="")
     assert create_fallback2_client(config) is None
 
 
@@ -749,4 +751,155 @@ def test_analyze_etf_ticker_propagates_when_fallback_fails_and_no_fallback2():
                 client=MagicMock(),
                 fallback_client=MagicMock(),
                 fallback2_client=None,
+
             )
+
+
+# --- _parse_retry_delay and _should_retry ---
+
+def _make_exc(body):
+    """Build a minimal exception with a .response whose .json() returns body."""
+    exc = Exception("fake")
+    exc.response = MagicMock()
+    exc.response.json.return_value = body
+    return exc
+
+
+_GEMINI_429_LIST = [{"error": {"details": [
+    {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "33s"},
+]}}]
+
+_ANTHROPIC_429_DICT = {"error": {"details": [
+    {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "20s"},
+]}}
+
+_GEMINI_DAY_QUOTA = [{"error": {"details": [
+    {"@type": "type.googleapis.com/google.rpc.QuotaFailure", "violations": [
+        {"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"},
+        {"quotaId": "GenerateRequestsPerMinutePerProjectPerModel-FreeTier", "quotaValue": "5"},
+    ]},
+    {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "18s"},
+]}}]
+
+_GEMINI_MINUTE_ONLY = [{"error": {"details": [
+    {"@type": "type.googleapis.com/google.rpc.QuotaFailure", "violations": [
+        {"quotaId": "GenerateRequestsPerMinutePerProjectPerModel-FreeTier", "quotaValue": "5"},
+    ]},
+    {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "33s"},
+]}}]
+
+
+def test_parse_retry_delay_gemini_list_format():
+    assert _parse_retry_delay(_make_exc(_GEMINI_429_LIST)) == 33.0
+
+
+def test_parse_retry_delay_anthropic_dict_format():
+    assert _parse_retry_delay(_make_exc(_ANTHROPIC_429_DICT)) == 20.0
+
+
+def test_should_retry_per_day_quota_returns_false():
+    assert _should_retry(_make_exc(_GEMINI_DAY_QUOTA)) is False
+
+
+def test_should_retry_per_minute_quota_returns_true():
+    assert _should_retry(_make_exc(_GEMINI_MINUTE_ONLY)) is True
+
+
+# --- parse-error fallback tests ---
+
+def _make_fallback_config():
+    from config import Config
+    return Config(
+        analyst_provider="gemini",
+        analyst_api_key="test-key",
+        analyst_model="gemini-2.5-flash",
+        analyst_call_delay_s=0,
+        analyst_fallback_provider="deepseek",
+        analyst_fallback_api_key="sk-test",
+        analyst_fallback_model="deepseek-chat",
+        analyst_fallback2_provider="openai",
+        analyst_fallback2_api_key="openai-key",
+        analyst_fallback2_model="gpt-4o-mini",
+    )
+
+
+def test_analyze_ticker_uses_fallback_on_primary_parse_error():
+    """Primary returns a garbled response (template echo); fallback returns a valid signal."""
+    config = _make_fallback_config()
+    call_count = {"n": 0}
+
+    def api_side_effect(client, model, prompt):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return "SIGNAL: <BUY|HOLD|SKIP>\nREASONING: template echo"
+        return "SIGNAL: BUY\nREASONING: Fallback confirmed strong trend.\nCONFIDENCE: high"
+
+    with patch("analyst.claude_analyst._call_api", side_effect=api_side_effect):
+        result = analyze_ticker(
+            ticker="BLK", info={}, headlines=[], config=config,
+            client=MagicMock(), fallback_client=MagicMock(),
+        )
+
+    assert result["signal"] == "BUY"
+    assert result["provider_used"] == "deepseek"
+    assert call_count["n"] == 2
+
+
+def test_analyze_ticker_uses_fallback2_on_fallback_parse_error():
+    """Primary and fallback both return garbled responses; fallback2 returns a valid signal."""
+    config = _make_fallback_config()
+    call_count = {"n": 0}
+
+    def api_side_effect(client, model, prompt):
+        call_count["n"] += 1
+        if call_count["n"] <= 2:
+            return "SIGNAL: <BUY|HOLD|SKIP>\nREASONING: template echo"
+        return "SIGNAL: SKIP\nREASONING: Fallback2 confirmed.\nCONFIDENCE: low"
+
+    with patch("analyst.claude_analyst._call_api", side_effect=api_side_effect):
+        result = analyze_ticker(
+            ticker="BLK", info={}, headlines=[], config=config,
+            client=MagicMock(), fallback_client=MagicMock(), fallback2_client=MagicMock(),
+        )
+
+    assert result["signal"] == "SKIP"
+    assert result["provider_used"] == "openai"
+    assert call_count["n"] == 3
+
+
+def test_analyze_ticker_parse_error_propagates_when_no_fallback():
+    """Primary parse error propagates if fallback_client is None."""
+    config = _make_fallback_config()
+
+    with patch("analyst.claude_analyst._call_api", return_value="SIGNAL: <BUY|HOLD|SKIP>\nREASONING: bad"):
+        with pytest.raises(ValueError, match="signal"):
+            analyze_ticker(
+                ticker="BLK", info={}, headlines=[], config=config,
+                client=MagicMock(), fallback_client=None,
+            )
+
+
+def test_analyze_etf_ticker_uses_fallback_on_primary_parse_error():
+    """ETF: primary returns garbled response; fallback returns valid signal."""
+    from analyst.claude_analyst import analyze_etf_ticker
+    config = _make_fallback_config()
+    tech_data = {"rsi": 60.0, "macd_line": 0.1, "signal_line": 0.05,
+                 "macd_histogram": 0.05, "price": 450.0, "ma50": 440.0}
+    call_count = {"n": 0}
+
+    def api_side_effect(client, model, prompt):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return "SIGNAL: <BUY|HOLD|SKIP>\nREASONING: template echo"
+        return "SIGNAL: HOLD\nREASONING: Fallback confirmed neutral trend.\nCONFIDENCE: medium"
+
+    with patch("analyst.claude_analyst._call_api", side_effect=api_side_effect):
+        result = analyze_etf_ticker(
+            ticker="SPY", headlines=[], tech_data=tech_data,
+            expense_ratio=0.0009, config=config,
+            client=MagicMock(), fallback_client=MagicMock(),
+        )
+
+    assert result["signal"] == "HOLD"
+    assert result["provider_used"] == "deepseek"
+    assert call_count["n"] == 2

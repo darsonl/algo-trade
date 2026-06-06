@@ -15,7 +15,10 @@ def _parse_retry_delay(exc) -> float | None:
     if not (exc and hasattr(exc, "response")):
         return None
     try:
-        details = exc.response.json()["error"]["details"]
+        data = exc.response.json()
+        if isinstance(data, list):  # Gemini wraps body in a list; Anthropic does not
+            data = data[0]
+        details = data["error"]["details"]
         detail = next((d for d in details if "retryDelay" in d), None)
         if detail is None:
             return None
@@ -28,7 +31,19 @@ def _parse_retry_delay(exc) -> float | None:
 
 
 def _should_retry(exc) -> bool:
-    """Return False when daily quota is exhausted (retryDelay > 60s) — don't retry."""
+    """Return False when daily quota is exhausted or retryDelay > 60s — don't retry."""
+    if exc and hasattr(exc, "response"):
+        try:
+            data = exc.response.json()
+            if isinstance(data, list):
+                data = data[0]
+            for detail in data["error"]["details"]:
+                if "QuotaFailure" in detail.get("@type", ""):
+                    for v in detail.get("violations", []):
+                        if "PerDay" in v.get("quotaId", ""):
+                            return False  # daily quota gone — skip retries, go to fallback
+        except Exception:
+            pass
     delay = _parse_retry_delay(exc)
     if delay is not None and delay > 60:
         return False
@@ -307,8 +322,7 @@ def analyze_ticker(
     """
     Call the configured analyst provider to get a BUY/HOLD/SKIP signal.
     Returns {"signal": str, "reasoning": str, "provider_used": str}.
-    If the primary API call fails and fallback_client is provided, retries with the fallback.
-    If the fallback also fails and fallback2_client is provided, retries with the second fallback.
+    Falls back through fallback_client → fallback2_client on either API errors or parse errors.
     """
     if client is None:
         client = create_analyst_client(config)
@@ -321,37 +335,52 @@ def analyze_ticker(
     if config.analyst_call_delay_s > 0:
         time.sleep(config.analyst_call_delay_s)
 
-    provider_used = config.analyst_provider
+    fallback_model = config.analyst_fallback_model or _DEFAULT_MODELS.get(config.analyst_fallback_provider, "")
+    fallback2_model = config.analyst_fallback2_model or _DEFAULT_MODELS.get(config.analyst_fallback2_provider, "")
+
     try:
         text = _call_api(client, model, prompt)
-    except Exception as api_exc:
+        result = parse_claude_response(text)
+        result["provider_used"] = config.analyst_provider
+        return result
+    except ValueError as exc:
+        if fallback_client is None:
+            raise
+        logger.warning(
+            "Primary parse error for %s (%s), trying fallback provider '%s'",
+            ticker, exc, config.analyst_fallback_provider,
+        )
+    except Exception as exc:
         if fallback_client is None:
             raise
         logger.warning(
             "Primary analyst failed for %s (%s), using fallback provider '%s'",
-            ticker, api_exc, config.analyst_fallback_provider,
+            ticker, exc, config.analyst_fallback_provider,
         )
-        fallback_model = config.analyst_fallback_model or _DEFAULT_MODELS.get(
-            config.analyst_fallback_provider, ""
-        )
-        try:
-            text = _call_api(fallback_client, fallback_model, prompt)
-            provider_used = config.analyst_fallback_provider
-        except Exception as fallback_exc:
-            if fallback2_client is None:
-                raise
-            logger.warning(
-                "Fallback analyst failed for %s (%s), using second fallback provider '%s'",
-                ticker, fallback_exc, config.analyst_fallback2_provider,
-            )
-            fallback2_model = config.analyst_fallback2_model or _DEFAULT_MODELS.get(
-                config.analyst_fallback2_provider, ""
-            )
-            text = _call_api(fallback2_client, fallback2_model, prompt)
-            provider_used = config.analyst_fallback2_provider
 
+    try:
+        text = _call_api(fallback_client, fallback_model, prompt)
+        result = parse_claude_response(text)
+        result["provider_used"] = config.analyst_fallback_provider
+        return result
+    except ValueError as exc:
+        if fallback2_client is None:
+            raise
+        logger.warning(
+            "Fallback parse error for %s (%s), trying second fallback provider '%s'",
+            ticker, exc, config.analyst_fallback2_provider,
+        )
+    except Exception as exc:
+        if fallback2_client is None:
+            raise
+        logger.warning(
+            "Fallback analyst failed for %s (%s), using second fallback provider '%s'",
+            ticker, exc, config.analyst_fallback2_provider,
+        )
+
+    text = _call_api(fallback2_client, fallback2_model, prompt)
     result = parse_claude_response(text)
-    result["provider_used"] = provider_used
+    result["provider_used"] = config.analyst_fallback2_provider
     return result
 
 
@@ -368,6 +397,7 @@ def analyze_etf_ticker(
 ) -> dict:
     """Call the analyst for an ETF BUY/HOLD/SKIP signal (per D-01, D-03).
     Returns {"signal": str, "reasoning": str, "provider_used": str}.
+    Falls back through fallback_client → fallback2_client on either API errors or parse errors.
     """
     if client is None:
         client = create_analyst_client(config)
@@ -389,37 +419,52 @@ def analyze_etf_ticker(
     if config.analyst_call_delay_s > 0:
         time.sleep(config.analyst_call_delay_s)
 
-    provider_used = config.analyst_provider
+    fallback_model = config.analyst_fallback_model or _DEFAULT_MODELS.get(config.analyst_fallback_provider, "")
+    fallback2_model = config.analyst_fallback2_model or _DEFAULT_MODELS.get(config.analyst_fallback2_provider, "")
+
     try:
         text = _call_api(client, model, prompt)
-    except Exception as api_exc:
+        result = parse_claude_response(text)
+        result["provider_used"] = config.analyst_provider
+        return result
+    except ValueError as exc:
+        if fallback_client is None:
+            raise
+        logger.warning(
+            "Primary parse error for %s ETF analysis (%s), trying fallback provider '%s'",
+            ticker, exc, config.analyst_fallback_provider,
+        )
+    except Exception as exc:
         if fallback_client is None:
             raise
         logger.warning(
             "Primary analyst failed for %s ETF analysis (%s), using fallback provider '%s'",
-            ticker, api_exc, config.analyst_fallback_provider,
+            ticker, exc, config.analyst_fallback_provider,
         )
-        fallback_model = config.analyst_fallback_model or _DEFAULT_MODELS.get(
-            config.analyst_fallback_provider, ""
-        )
-        try:
-            text = _call_api(fallback_client, fallback_model, prompt)
-            provider_used = config.analyst_fallback_provider
-        except Exception as fallback_exc:
-            if fallback2_client is None:
-                raise
-            logger.warning(
-                "Fallback analyst failed for %s ETF analysis (%s), using second fallback provider '%s'",
-                ticker, fallback_exc, config.analyst_fallback2_provider,
-            )
-            fallback2_model = config.analyst_fallback2_model or _DEFAULT_MODELS.get(
-                config.analyst_fallback2_provider, ""
-            )
-            text = _call_api(fallback2_client, fallback2_model, prompt)
-            provider_used = config.analyst_fallback2_provider
 
+    try:
+        text = _call_api(fallback_client, fallback_model, prompt)
+        result = parse_claude_response(text)
+        result["provider_used"] = config.analyst_fallback_provider
+        return result
+    except ValueError as exc:
+        if fallback2_client is None:
+            raise
+        logger.warning(
+            "Fallback parse error for %s ETF analysis (%s), trying second fallback provider '%s'",
+            ticker, exc, config.analyst_fallback2_provider,
+        )
+    except Exception as exc:
+        if fallback2_client is None:
+            raise
+        logger.warning(
+            "Fallback analyst failed for %s ETF analysis (%s), using second fallback provider '%s'",
+            ticker, exc, config.analyst_fallback2_provider,
+        )
+
+    text = _call_api(fallback2_client, fallback2_model, prompt)
     result = parse_claude_response(text)
-    result["provider_used"] = provider_used
+    result["provider_used"] = config.analyst_fallback2_provider
     return result
 
 
@@ -509,6 +554,7 @@ def analyze_sell_ticker(
     """Call the analyst to get a SELL/HOLD signal for an open position.
 
     Reuses the same _call_api + fallback pipeline as analyze_ticker (per D-03).
+    Falls back through fallback_client → fallback2_client on either API errors or parse errors.
     Returns {"signal": str, "reasoning": str, "provider_used": str}.
     """
     if client is None:
@@ -524,35 +570,50 @@ def analyze_sell_ticker(
     if config.analyst_call_delay_s > 0:
         time.sleep(config.analyst_call_delay_s)
 
-    provider_used = config.analyst_provider
+    fallback_model = config.analyst_fallback_model or _DEFAULT_MODELS.get(config.analyst_fallback_provider, "")
+    fallback2_model = config.analyst_fallback2_model or _DEFAULT_MODELS.get(config.analyst_fallback2_provider, "")
+
     try:
         text = _call_api(client, model, prompt)
-    except Exception as api_exc:
+        result = parse_claude_response(text)
+        result["provider_used"] = config.analyst_provider
+        return result
+    except ValueError as exc:
+        if fallback_client is None:
+            raise
+        logger.warning(
+            "Primary parse error for %s sell analysis (%s), trying fallback provider '%s'",
+            ticker, exc, config.analyst_fallback_provider,
+        )
+    except Exception as exc:
         if fallback_client is None:
             raise
         logger.warning(
             "Primary analyst failed for %s sell analysis (%s), using fallback provider '%s'",
-            ticker, api_exc, config.analyst_fallback_provider,
+            ticker, exc, config.analyst_fallback_provider,
         )
-        fallback_model = config.analyst_fallback_model or _DEFAULT_MODELS.get(
-            config.analyst_fallback_provider, ""
-        )
-        try:
-            text = _call_api(fallback_client, fallback_model, prompt)
-            provider_used = config.analyst_fallback_provider
-        except Exception as fallback_exc:
-            if fallback2_client is None:
-                raise
-            logger.warning(
-                "Fallback analyst failed for %s sell analysis (%s), using second fallback provider '%s'",
-                ticker, fallback_exc, config.analyst_fallback2_provider,
-            )
-            fallback2_model = config.analyst_fallback2_model or _DEFAULT_MODELS.get(
-                config.analyst_fallback2_provider, ""
-            )
-            text = _call_api(fallback2_client, fallback2_model, prompt)
-            provider_used = config.analyst_fallback2_provider
 
+    try:
+        text = _call_api(fallback_client, fallback_model, prompt)
+        result = parse_claude_response(text)
+        result["provider_used"] = config.analyst_fallback_provider
+        return result
+    except ValueError as exc:
+        if fallback2_client is None:
+            raise
+        logger.warning(
+            "Fallback parse error for %s sell analysis (%s), trying second fallback provider '%s'",
+            ticker, exc, config.analyst_fallback2_provider,
+        )
+    except Exception as exc:
+        if fallback2_client is None:
+            raise
+        logger.warning(
+            "Fallback analyst failed for %s sell analysis (%s), using second fallback provider '%s'",
+            ticker, exc, config.analyst_fallback2_provider,
+        )
+
+    text = _call_api(fallback2_client, fallback2_model, prompt)
     result = parse_claude_response(text)
-    result["provider_used"] = provider_used
+    result["provider_used"] = config.analyst_fallback2_provider
     return result
