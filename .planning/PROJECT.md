@@ -66,6 +66,8 @@ The bot must never place a real order without explicit human approval via Discor
 - ✓ `/history` slash command: last 20 closed trades with entry/exit/P&L%/date in code-block embed — v1.3 (OPS-02, validated in Phase 14)
 - ✓ P/E direction (expanding/contracting/stable/N/A) + 4-quarter EPS trend injected into Claude BUY prompt — v1.3 (SIG-07, SIG-08, validated in Phase 15)
 - ✓ Next earnings date in BUY embed ("Next Earnings" field, N/A when absent, ⚠️ prefix within 7 days) + Claude BUY prompt Market Context line — v1.3 (SIG-05, SIG-06, validated in Phase 16)
+- ✓ Limit buy order execution on Approve (GTC, scan-time price, `limit_price`/`order_type` audit columns, "as of HH:MM" embed timestamp); `USE_LIMIT_BUY` opt-in (default off as of 2026-06-06) — v1.3 (RISK-01..04, validated in Phase 17)
+- ✓ Test coverage for analyst fallback matrix (API + parse errors converge on fallback chain), `Config.validate()` (both provider branches + happy path), and quota exhaustion skip on both buy/sell paths — v1.3 (TEST-09, TEST-10, TEST-11, validated in Phase 18)
 
 ### Active
 
@@ -152,4 +154,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-25 — Phase 16 complete: earnings date warning in BUY embed + Claude prompt (SIG-05, SIG-06)*
+*Last updated: 2026-06-06 — Phase 18 complete: test coverage gaps closed (TEST-09..11); milestone v1.3 phases all complete (14–18)*
