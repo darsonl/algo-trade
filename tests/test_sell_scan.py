@@ -200,6 +200,45 @@ async def test_sell_pass_no_positions_skips_sell_evaluation(
 
 
 @pytest.mark.asyncio
+@patch("main.queries.get_analyst_call_count_today", return_value=18)  # all providers at daily limit
+@patch("main.fetch_news_headlines", return_value=["Headline 1"])
+@patch("main.fetch_technical_data", return_value=TECH_DATA_OVERBOUGHT)
+@patch("main.analyze_sell_ticker")  # must NOT be called — quota guard fires first
+@patch("main.fetch_fundamental_info", return_value={"trailingPE": 20, "dividendYield": 0.03, "earningsGrowth": 0.1})
+@patch("main.fetch_macro_context", return_value={"spy_trend_1m": "Bullish (+1.0%)", "spy_trend_1y": "Bearish (-8.5%)", "vix_level": "18.0 (Low volatility)"})
+@patch("main.get_top_sp500_by_fundamentals", return_value=[])
+@patch("main.get_universe", return_value=[])
+async def test_sell_pass_skips_analyze_sell_ticker_when_all_providers_exhausted(
+    mock_universe, mock_sp500, mock_macro, mock_fund, mock_sell_analyze,
+    mock_tech, mock_news, mock_count, config, mock_bot, db_path
+):
+    """When all three providers are at/over the daily limit, analyze_sell_ticker is NOT called.
+
+    Uses TECH_DATA_OVERBOUGHT (RSI=75, MACD bearish) so check_exit_signals fires and the
+    quota guard is actually reached — not skipped before the guard (false green via TECH_DATA_NORMAL).
+    All three provider slots set non-empty so the guard evaluates the genuine three-way AND
+    rather than the unset-provider shortcut.
+
+    Mirrors test_sell_pass_posts_sell_recommendation (positive harness proving analyze_sell_ticker
+    IS reached when not exhausted), making the assert_not_called() assertion non-vacuous.
+    """
+    # Set all three provider slots non-empty — no unset-provider shortcut (false-green guard).
+    config.analyst_provider = "gemini"
+    config.analyst_fallback_provider = "deepseek"
+    config.analyst_fallback2_provider = "openai"
+    config.analyst_daily_limit = 18
+
+    # Seed a position so the sell pass has something to evaluate.
+    create_position(db_path, "AAPL", 10, 150.0)
+
+    await run_scan(mock_bot, config)
+
+    # Quota guard must have fired — neither analysis nor recommendation should be posted.
+    mock_sell_analyze.assert_not_called()
+    mock_bot.send_sell_recommendation.assert_not_called()
+
+
+@pytest.mark.asyncio
 @patch("main.fetch_news_headlines", return_value=["Headline"])
 @patch("main.fetch_technical_data", return_value=TECH_DATA_OVERBOUGHT)
 @patch("main.analyze_sell_ticker", return_value={"signal": "SELL", "reasoning": "Overbought", "provider_used": "gemini"})
