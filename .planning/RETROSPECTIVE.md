@@ -206,5 +206,5 @@
 | Tests | 222 | 252 | 372 | 470 |
 | Days | 9 | 5 | 3 | 49 |
 | Commits | 81 | 32 | 57 | 100 |
-| Req completion rate | 48/48 (40 unchecked) | 10/10 (0 checked) | 10/10 (7 unchecked) | 12/12 (6 unchecked) |
+| Req completion rate | 48/48 (40 unchecked) | 10/10 (0 checked) | 10/10 (7 unchecked) | 12/12 (7 unchecked) |
 | Requirements-checked-off discipline | ❌ | ❌ | ❌ | ❌ — 4th milestone; manual discipline confirmed failed, needs automation |
