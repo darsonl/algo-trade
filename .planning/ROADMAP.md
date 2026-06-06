@@ -134,7 +134,10 @@ Plans:
   5. When ALL configured providers (primary + both fallbacks) have exhausted daily quota, neither the buy path (run_scan → analyze_ticker) nor the sell path (run_scan → analyze_sell_ticker) calls the analyst, and tests assert both skip paths
 
 > **Spec reversal note (2026-06-06):** SC#2 originally read "a parse error does NOT trigger the fallback provider and a test asserts this distinction." That was reversed in commit `1cb80f6` — Gemini's free model returns unparseable (template-echo) output, so a parse error now falls through the same `primary → fallback → fallback2` chain as an API error. SC#1 and SC#2 no longer test a fork; they test two paths that converge. SC#5 originally said "both providers" — corrected to all three (primary + fallback + fallback2), matching the D-11 guard at `main.py:199-201`.
-**Plans**: TBD
+**Plans**: 3 plans (Wave 1 — all parallel, disjoint test files)
+- [ ] 18-01-PLAN.md — Analyst fallback matrix across all 3 analyst functions (sell-path priority gap) — TEST-09
+- [ ] 18-02-PLAN.md — Config.validate() suite + USE_LIMIT_BUY mapping (new tests/test_config.py) — TEST-10
+- [ ] 18-03-PLAN.md — Quota exhaustion buy + sell paths (all 3 providers over limit) — TEST-11
 
 ---
 
@@ -161,7 +164,7 @@ Plans:
 | 15. Fundamental Trend Enrichment | v1.3 | 1/1 | Complete    | 2026-04-21 |
 | 16. Earnings Date Warning | v1.3 | 1/1 | Complete   | 2026-04-24 |
 | 17. Limit Buy Orders | v1.3 | 2/2 | Complete | 2026-05-21 |
-| 18. Test Coverage Gaps | v1.3 | 0/? | Not started | - |
+| 18. Test Coverage Gaps | v1.3 | 0/3 | Planned | - |
 
 ---
 *Roadmap defined: 2026-03-30*
