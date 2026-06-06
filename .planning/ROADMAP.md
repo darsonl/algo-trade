@@ -55,7 +55,7 @@ See `.planning/milestones/v1.2-ROADMAP.md` for full phase details.
 - [x] **Phase 15: Fundamental Trend Enrichment** — P/E direction and EPS quarterly trend in Claude BUY prompt (completed 2026-04-21)
 - [x] **Phase 16: Earnings Date Warning** — Next earnings date in BUY embed and Claude prompt (completed 2026-04-24)
 - [x] **Phase 17: Limit Buy Orders** — Limit order execution on Approve with config flag and audit trail (completed 2026-05-21)
-- [ ] **Phase 18: Test Coverage Gaps** — Analyst fallback, config validation, and quota exhaustion tests
+- [x] **Phase 18: Test Coverage Gaps** — Analyst fallback, config validation, and quota exhaustion tests (completed 2026-06-06)
 
 ---
 
@@ -136,7 +136,7 @@ Plans:
 > **Spec reversal note (2026-06-06):** SC#2 originally read "a parse error does NOT trigger the fallback provider and a test asserts this distinction." That was reversed in commit `1cb80f6` — Gemini's free model returns unparseable (template-echo) output, so a parse error now falls through the same `primary → fallback → fallback2` chain as an API error. SC#1 and SC#2 no longer test a fork; they test two paths that converge. SC#5 originally said "both providers" — corrected to all three (primary + fallback + fallback2), matching the D-11 guard at `main.py:199-201`.
 **Plans**: 3 plans (Wave 1 — all parallel, disjoint test files)
 - [x] 18-01-PLAN.md — Analyst fallback matrix across all 3 analyst functions (sell-path priority gap) — TEST-09
-- [ ] 18-02-PLAN.md — Config.validate() suite + USE_LIMIT_BUY mapping (new tests/test_config.py) — TEST-10
+- [x] 18-02-PLAN.md — Config.validate() suite + USE_LIMIT_BUY mapping (new tests/test_config.py) — TEST-10
 - [x] 18-03-PLAN.md — Quota exhaustion buy + sell paths (all 3 providers over limit) — TEST-11
 
 ---
@@ -164,7 +164,7 @@ Plans:
 | 15. Fundamental Trend Enrichment | v1.3 | 1/1 | Complete    | 2026-04-21 |
 | 16. Earnings Date Warning | v1.3 | 1/1 | Complete   | 2026-04-24 |
 | 17. Limit Buy Orders | v1.3 | 2/2 | Complete | 2026-05-21 |
-| 18. Test Coverage Gaps | v1.3 | 2/3 | In Progress|  |
+| 18. Test Coverage Gaps | v1.3 | 3/3 | Complete   | 2026-06-06 |
 
 ---
 *Roadmap defined: 2026-03-30*
