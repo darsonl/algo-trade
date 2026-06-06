@@ -164,6 +164,63 @@ async def test_run_scan_cache_miss_calls_analyze_ticker_and_caches():
 
 
 # ---------------------------------------------------------------------------
+# Quota exhaustion tests (TEST-11 / D-03)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_run_scan_skips_analyze_ticker_when_all_providers_exhausted():
+    """When all three providers are at/over the daily limit, analyze_ticker is NOT called.
+
+    Guards: all three provider slots configured non-empty (no unset-provider shortcut),
+    and get_cached_analysis returns None (cache miss) so the quota guard is actually reached.
+    This mirrors test_run_scan_cache_miss_calls_analyze_ticker_and_caches — the positive
+    harness that proves analyze_ticker IS reached when not exhausted — making the
+    assert_not_called() assertion here meaningful (non-vacuous).
+    """
+    from unittest.mock import AsyncMock, MagicMock, patch
+    from main import run_scan
+
+    bot = MagicMock()
+    bot.send_recommendation = AsyncMock(return_value="msg_1")
+    bot.send_ops_alert = AsyncMock()
+
+    config = Config()
+    config.db_path = ":memory:"
+    # All three provider slots are non-empty — no unset-provider shortcut that would
+    # trip the guard "for free" without actually exercising the three-way AND.
+    config.analyst_provider = "gemini"
+    config.analyst_fallback_provider = "deepseek"
+    config.analyst_fallback2_provider = "openai"
+    config.analyst_daily_limit = 18
+
+    # Prove all three slots are set before run_scan (documents the false-green guard).
+    assert config.analyst_provider == "gemini"
+    assert config.analyst_fallback_provider == "deepseek"
+    assert config.analyst_fallback2_provider == "openai"
+
+    with patch("main.get_top_sp500_by_fundamentals", return_value=[]):
+        with patch("main.get_universe", return_value=["AAPL"]):
+            with patch("main.partition_watchlist", return_value=(["AAPL"], [])):
+                with patch("main.queries.ticker_recommended_today", return_value=False):
+                    with patch("main.queries.has_open_position", return_value=False):
+                        with patch("main.queries.expire_stale_recommendations"):
+                            with patch("main.queries.get_open_positions", return_value=[]):
+                                with patch("main.yf.Ticker"):
+                                    with patch("main.fetch_fundamental_info", return_value={"trailingPE": 20.0, "dividendYield": 0.03, "earningsGrowth": 0.1}):
+                                        with patch("main.passes_fundamental_filter", return_value=True):
+                                            with patch("main.fetch_news_headlines", return_value=["headline B"]):
+                                                with patch("main.queries.get_cached_analysis", return_value=None):
+                                                    # All three providers return the daily limit — guard fires.
+                                                    with patch("main.queries.get_analyst_call_count_today", return_value=18):
+                                                        with patch("main.queries.increment_analyst_call_count") as mock_increment:
+                                                            with patch("main.analyze_ticker") as mock_analyze:
+                                                                await run_scan(bot, config)
+                                                                # The quota guard must have fired — analyze_ticker skipped.
+                                                                mock_analyze.assert_not_called()
+                                                                mock_increment.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # run_scan_etf tests
 # ---------------------------------------------------------------------------
 
