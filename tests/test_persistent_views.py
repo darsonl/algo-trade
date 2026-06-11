@@ -49,21 +49,24 @@ def config(db_path):
 
 # --- deterministic custom_ids: the real regression guard ---
 
-def test_buy_view_has_deterministic_custom_ids(config):
+@pytest.mark.asyncio
+async def test_buy_view_has_deterministic_custom_ids(config):
     view = ApproveRejectView(rec_id=42, ticker="AAPL", price=100.0, config=config)
     assert view.approve.custom_id == "approve:42"
     assert view.reject.custom_id == "reject:42"
     assert view.is_persistent()
 
 
-def test_sell_view_has_deterministic_custom_ids(config):
+@pytest.mark.asyncio
+async def test_sell_view_has_deterministic_custom_ids(config):
     view = SellApproveRejectView(7, "AAPL", 10.0, 170.0, config)
     assert view.approve.custom_id == "sell_approve:7"
     assert view.reject.custom_id == "sell_reject:7"
     assert view.is_persistent()
 
 
-def test_buy_and_sell_custom_ids_do_not_collide(config):
+@pytest.mark.asyncio
+async def test_buy_and_sell_custom_ids_do_not_collide(config):
     buy = ApproveRejectView(rec_id=5, ticker="AAPL", price=100.0, config=config)
     sell = SellApproveRejectView(5, "AAPL", 10.0, 170.0, config)
     ids = {
@@ -75,7 +78,8 @@ def test_buy_and_sell_custom_ids_do_not_collide(config):
 
 # --- build_view_for_recommendation reconstructs the right view from a stored row ---
 
-def test_build_view_returns_buy_view_for_buy_row(config, db_path):
+@pytest.mark.asyncio
+async def test_build_view_returns_buy_view_for_buy_row(config, db_path):
     rec_id = create_recommendation(db_path, "AAPL", "BUY", "Strong", 100.0, 0.02, 20.0)
     rec = get_recommendation(db_path, rec_id)
     view = build_view_for_recommendation(rec, config)
@@ -85,7 +89,8 @@ def test_build_view_returns_buy_view_for_buy_row(config, db_path):
     assert view.price == 100.0
 
 
-def test_build_view_returns_sell_view_with_shares_from_position(config, db_path):
+@pytest.mark.asyncio
+async def test_build_view_returns_sell_view_with_shares_from_position(config, db_path):
     rec_id = create_recommendation(db_path, "AAPL", "SELL", "Overbought", 170.0, None, None)
     create_position(db_path, "AAPL", 13, 150.0)
     rec = get_recommendation(db_path, rec_id)
@@ -133,7 +138,8 @@ async def test_reconstructed_sell_view_callback_updates_db(config, db_path):
 
 # --- startup re-registration binds a view per pending rec that has a message id ---
 
-def test_register_persistent_views_adds_pending(config, db_path):
+@pytest.mark.asyncio
+async def test_register_persistent_views_adds_pending(config, db_path):
     buy_id = create_recommendation(db_path, "AAPL", "BUY", "Strong", 100.0, 0.02, 20.0)
     set_discord_message_id(db_path, buy_id, "111")
     sell_id = create_recommendation(db_path, "MSFT", "SELL", "Overbought", 200.0, None, None)

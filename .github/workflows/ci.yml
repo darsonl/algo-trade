@@ -32,6 +32,13 @@ jobs:
         run: ruff check .
 
       - name: Run tests
+        env:
+          # The analyst SDK clients (openai / anthropic) validate a non-empty api_key at
+          # construction. Tests mock the actual analyst CALLS, but run_scan still constructs
+          # clients up front, so hand them throwaway keys. No real API calls are made — no
+          # secrets are needed.
+          ANTHROPIC_API_KEY: ci-dummy-key
+          ANALYST_API_KEY: ci-dummy-key
+          ANALYST_FALLBACK_API_KEY: ci-dummy-key
+          ANALYST_FALLBACK2_API_KEY: ci-dummy-key
         run: pytest -q
-        # Tests are hermetic — they mock yfinance, Schwab, Discord, and the analyst
-        # APIs — so no secrets / .env are needed in CI.
