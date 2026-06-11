@@ -2,10 +2,16 @@ import sqlite3
 
 
 def get_connection(db_path: str) -> sqlite3.Connection:
-    """Open a SQLite connection to db_path with WAL mode and Row factory enabled."""
+    """Open a SQLite connection to db_path with WAL mode and Row factory enabled.
+
+    Sets busy_timeout so a connection waits (up to 5s) for a competing writer to
+    release its lock instead of immediately raising "database is locked" — defensive
+    hardening for the case where a DB write runs off the event-loop thread.
+    """
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
 

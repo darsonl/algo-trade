@@ -60,6 +60,36 @@ def configure_scheduler(
         )
 
 
+def all_providers_exhausted(config: Config) -> bool:
+    """Return True only when every configured analyst provider is at/over its daily quota.
+
+    An unconfigured fallback slot counts as exhausted (treated as at-limit) so the
+    result reflects only providers that could actually serve a call today (D-11).
+    """
+    primary_count = queries.get_analyst_call_count_today(
+        config.db_path, config.analyst_provider
+    )
+    fallback_count = (
+        queries.get_analyst_call_count_today(
+            config.db_path, config.analyst_fallback_provider
+        )
+        if config.analyst_fallback_provider
+        else config.analyst_daily_limit
+    )
+    fallback2_count = (
+        queries.get_analyst_call_count_today(
+            config.db_path, config.analyst_fallback2_provider
+        )
+        if config.analyst_fallback2_provider
+        else config.analyst_daily_limit
+    )
+    return (
+        primary_count >= config.analyst_daily_limit
+        and fallback_count >= config.analyst_daily_limit
+        and fallback2_count >= config.analyst_daily_limit
+    )
+
+
 # ---------------------------------------------------------------------------
 # Scan pipeline
 # ---------------------------------------------------------------------------
@@ -178,28 +208,7 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
                 analysis = cached
             else:
                 # D-11: quota guard — skip if all providers exhausted
-                primary_count = queries.get_analyst_call_count_today(
-                    config.db_path, config.analyst_provider
-                )
-                fallback_count = (
-                    queries.get_analyst_call_count_today(
-                        config.db_path, config.analyst_fallback_provider
-                    )
-                    if config.analyst_fallback_provider
-                    else config.analyst_daily_limit
-                )
-                fallback2_count = (
-                    queries.get_analyst_call_count_today(
-                        config.db_path, config.analyst_fallback2_provider
-                    )
-                    if config.analyst_fallback2_provider
-                    else config.analyst_daily_limit
-                )
-                if (
-                    primary_count >= config.analyst_daily_limit
-                    and fallback_count >= config.analyst_daily_limit
-                    and fallback2_count >= config.analyst_daily_limit
-                ):
+                if all_providers_exhausted(config):
                     logger.warning(
                         "Daily analyst quota reached for all providers, skipping analysis for %s",
                         ticker,
@@ -323,28 +332,7 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
             )
 
             # D-11: quota guard for sell analyst call
-            primary_count = queries.get_analyst_call_count_today(
-                config.db_path, config.analyst_provider
-            )
-            fallback_count = (
-                queries.get_analyst_call_count_today(
-                    config.db_path, config.analyst_fallback_provider
-                )
-                if config.analyst_fallback_provider
-                else config.analyst_daily_limit
-            )
-            fallback2_count = (
-                queries.get_analyst_call_count_today(
-                    config.db_path, config.analyst_fallback2_provider
-                )
-                if config.analyst_fallback2_provider
-                else config.analyst_daily_limit
-            )
-            if (
-                primary_count >= config.analyst_daily_limit
-                and fallback_count >= config.analyst_daily_limit
-                and fallback2_count >= config.analyst_daily_limit
-            ):
+            if all_providers_exhausted(config):
                 logger.warning(
                     "Daily analyst quota reached for all providers, skipping sell analysis for %s",
                     ticker,
@@ -464,28 +452,7 @@ async def run_scan_etf(bot: TradingBot, config: Config) -> None:
                 analysis = cached
             else:
                 # Quota guard (same pattern as run_scan buy pass)
-                primary_count = queries.get_analyst_call_count_today(
-                    config.db_path, config.analyst_provider
-                )
-                fallback_count = (
-                    queries.get_analyst_call_count_today(
-                        config.db_path, config.analyst_fallback_provider
-                    )
-                    if config.analyst_fallback_provider
-                    else config.analyst_daily_limit
-                )
-                fallback2_count = (
-                    queries.get_analyst_call_count_today(
-                        config.db_path, config.analyst_fallback2_provider
-                    )
-                    if config.analyst_fallback2_provider
-                    else config.analyst_daily_limit
-                )
-                if (
-                    primary_count >= config.analyst_daily_limit
-                    and fallback_count >= config.analyst_daily_limit
-                    and fallback2_count >= config.analyst_daily_limit
-                ):
+                if all_providers_exhausted(config):
                     logger.warning(
                         "Daily analyst quota reached for all providers, skipping analysis for %s",
                         ticker,

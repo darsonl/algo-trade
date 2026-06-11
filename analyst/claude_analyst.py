@@ -307,6 +307,80 @@ def _call_api(client, model: str, prompt: str) -> str:
     return response.choices[0].message.content
 
 
+def _run_with_fallbacks(
+    prompt: str,
+    config: Config,
+    client,
+    fallback_client,
+    fallback2_client,
+    ticker: str,
+    log_context: str = "",
+) -> dict:
+    """Run a built prompt through the primary → fallback → fallback2 analyst chain.
+
+    Tries each configured client in turn. Both API-level failures (any Exception,
+    e.g. quota/rate-limit/network) and parse errors (ValueError from
+    parse_claude_response, e.g. a template-echo response) advance to the next
+    client. The failure only propagates once no further fallback client is
+    configured. Returns {"signal", "reasoning", "confidence", "provider_used"}.
+
+    `log_context` is an optional phrase (e.g. "ETF analysis", "sell analysis")
+    inserted into the warning logs to distinguish the call site.
+    """
+    model = config.analyst_model or _DEFAULT_MODELS.get(config.analyst_provider, "")
+    fallback_model = config.analyst_fallback_model or _DEFAULT_MODELS.get(config.analyst_fallback_provider, "")
+    fallback2_model = config.analyst_fallback2_model or _DEFAULT_MODELS.get(config.analyst_fallback2_provider, "")
+    suffix = f" {log_context}" if log_context else ""
+
+    # --- Primary provider ---
+    try:
+        text = _call_api(client, model, prompt)
+        result = parse_claude_response(text)
+        result["provider_used"] = config.analyst_provider
+        return result
+    except ValueError as exc:
+        if fallback_client is None:
+            raise
+        logger.warning(
+            "Primary parse error for %s%s (%s), trying fallback provider '%s'",
+            ticker, suffix, exc, config.analyst_fallback_provider,
+        )
+    except Exception as exc:
+        if fallback_client is None:
+            raise
+        logger.warning(
+            "Primary analyst failed for %s%s (%s), using fallback provider '%s'",
+            ticker, suffix, exc, config.analyst_fallback_provider,
+        )
+
+    # --- First fallback provider ---
+    try:
+        text = _call_api(fallback_client, fallback_model, prompt)
+        result = parse_claude_response(text)
+        result["provider_used"] = config.analyst_fallback_provider
+        return result
+    except ValueError as exc:
+        if fallback2_client is None:
+            raise
+        logger.warning(
+            "Fallback parse error for %s%s (%s), trying second fallback provider '%s'",
+            ticker, suffix, exc, config.analyst_fallback2_provider,
+        )
+    except Exception as exc:
+        if fallback2_client is None:
+            raise
+        logger.warning(
+            "Fallback analyst failed for %s%s (%s), using second fallback provider '%s'",
+            ticker, suffix, exc, config.analyst_fallback2_provider,
+        )
+
+    # --- Second fallback provider (failure propagates from here) ---
+    text = _call_api(fallback2_client, fallback2_model, prompt)
+    result = parse_claude_response(text)
+    result["provider_used"] = config.analyst_fallback2_provider
+    return result
+
+
 def analyze_ticker(
     ticker: str,
     info: dict,
@@ -327,7 +401,6 @@ def analyze_ticker(
     if client is None:
         client = create_analyst_client(config)
 
-    model = config.analyst_model or _DEFAULT_MODELS.get(config.analyst_provider, "")
     # NOTE: fundamental_trend intentionally NOT in cache key — cache path short-circuits
     # before analyze_ticker in main.py (cache hits skip analyze_ticker entirely).
     prompt = build_prompt(ticker, info, headlines, macro_context=macro_context, fundamental_trend=fundamental_trend, earnings_date=earnings_date)
@@ -335,53 +408,9 @@ def analyze_ticker(
     if config.analyst_call_delay_s > 0:
         time.sleep(config.analyst_call_delay_s)
 
-    fallback_model = config.analyst_fallback_model or _DEFAULT_MODELS.get(config.analyst_fallback_provider, "")
-    fallback2_model = config.analyst_fallback2_model or _DEFAULT_MODELS.get(config.analyst_fallback2_provider, "")
-
-    try:
-        text = _call_api(client, model, prompt)
-        result = parse_claude_response(text)
-        result["provider_used"] = config.analyst_provider
-        return result
-    except ValueError as exc:
-        if fallback_client is None:
-            raise
-        logger.warning(
-            "Primary parse error for %s (%s), trying fallback provider '%s'",
-            ticker, exc, config.analyst_fallback_provider,
-        )
-    except Exception as exc:
-        if fallback_client is None:
-            raise
-        logger.warning(
-            "Primary analyst failed for %s (%s), using fallback provider '%s'",
-            ticker, exc, config.analyst_fallback_provider,
-        )
-
-    try:
-        text = _call_api(fallback_client, fallback_model, prompt)
-        result = parse_claude_response(text)
-        result["provider_used"] = config.analyst_fallback_provider
-        return result
-    except ValueError as exc:
-        if fallback2_client is None:
-            raise
-        logger.warning(
-            "Fallback parse error for %s (%s), trying second fallback provider '%s'",
-            ticker, exc, config.analyst_fallback2_provider,
-        )
-    except Exception as exc:
-        if fallback2_client is None:
-            raise
-        logger.warning(
-            "Fallback analyst failed for %s (%s), using second fallback provider '%s'",
-            ticker, exc, config.analyst_fallback2_provider,
-        )
-
-    text = _call_api(fallback2_client, fallback2_model, prompt)
-    result = parse_claude_response(text)
-    result["provider_used"] = config.analyst_fallback2_provider
-    return result
+    return _run_with_fallbacks(
+        prompt, config, client, fallback_client, fallback2_client, ticker,
+    )
 
 
 def analyze_etf_ticker(
@@ -402,7 +431,6 @@ def analyze_etf_ticker(
     if client is None:
         client = create_analyst_client(config)
 
-    model = config.analyst_model or _DEFAULT_MODELS.get(config.analyst_provider, "")
     prompt = build_etf_prompt(
         ticker,
         headlines,
@@ -419,53 +447,10 @@ def analyze_etf_ticker(
     if config.analyst_call_delay_s > 0:
         time.sleep(config.analyst_call_delay_s)
 
-    fallback_model = config.analyst_fallback_model or _DEFAULT_MODELS.get(config.analyst_fallback_provider, "")
-    fallback2_model = config.analyst_fallback2_model or _DEFAULT_MODELS.get(config.analyst_fallback2_provider, "")
-
-    try:
-        text = _call_api(client, model, prompt)
-        result = parse_claude_response(text)
-        result["provider_used"] = config.analyst_provider
-        return result
-    except ValueError as exc:
-        if fallback_client is None:
-            raise
-        logger.warning(
-            "Primary parse error for %s ETF analysis (%s), trying fallback provider '%s'",
-            ticker, exc, config.analyst_fallback_provider,
-        )
-    except Exception as exc:
-        if fallback_client is None:
-            raise
-        logger.warning(
-            "Primary analyst failed for %s ETF analysis (%s), using fallback provider '%s'",
-            ticker, exc, config.analyst_fallback_provider,
-        )
-
-    try:
-        text = _call_api(fallback_client, fallback_model, prompt)
-        result = parse_claude_response(text)
-        result["provider_used"] = config.analyst_fallback_provider
-        return result
-    except ValueError as exc:
-        if fallback2_client is None:
-            raise
-        logger.warning(
-            "Fallback parse error for %s ETF analysis (%s), trying second fallback provider '%s'",
-            ticker, exc, config.analyst_fallback2_provider,
-        )
-    except Exception as exc:
-        if fallback2_client is None:
-            raise
-        logger.warning(
-            "Fallback analyst failed for %s ETF analysis (%s), using second fallback provider '%s'",
-            ticker, exc, config.analyst_fallback2_provider,
-        )
-
-    text = _call_api(fallback2_client, fallback2_model, prompt)
-    result = parse_claude_response(text)
-    result["provider_used"] = config.analyst_fallback2_provider
-    return result
+    return _run_with_fallbacks(
+        prompt, config, client, fallback_client, fallback2_client, ticker,
+        log_context="ETF analysis",
+    )
 
 
 def build_sell_prompt(
@@ -560,7 +545,6 @@ def analyze_sell_ticker(
     if client is None:
         client = create_analyst_client(config)
 
-    model = config.analyst_model or _DEFAULT_MODELS.get(config.analyst_provider, "")
     prompt = build_sell_prompt(
         ticker, entry_price, current_price, pnl_pct, hold_days, rsi, headlines,
         macd_line=macd_line, signal_line=signal_line,
@@ -570,50 +554,7 @@ def analyze_sell_ticker(
     if config.analyst_call_delay_s > 0:
         time.sleep(config.analyst_call_delay_s)
 
-    fallback_model = config.analyst_fallback_model or _DEFAULT_MODELS.get(config.analyst_fallback_provider, "")
-    fallback2_model = config.analyst_fallback2_model or _DEFAULT_MODELS.get(config.analyst_fallback2_provider, "")
-
-    try:
-        text = _call_api(client, model, prompt)
-        result = parse_claude_response(text)
-        result["provider_used"] = config.analyst_provider
-        return result
-    except ValueError as exc:
-        if fallback_client is None:
-            raise
-        logger.warning(
-            "Primary parse error for %s sell analysis (%s), trying fallback provider '%s'",
-            ticker, exc, config.analyst_fallback_provider,
-        )
-    except Exception as exc:
-        if fallback_client is None:
-            raise
-        logger.warning(
-            "Primary analyst failed for %s sell analysis (%s), using fallback provider '%s'",
-            ticker, exc, config.analyst_fallback_provider,
-        )
-
-    try:
-        text = _call_api(fallback_client, fallback_model, prompt)
-        result = parse_claude_response(text)
-        result["provider_used"] = config.analyst_fallback_provider
-        return result
-    except ValueError as exc:
-        if fallback2_client is None:
-            raise
-        logger.warning(
-            "Fallback parse error for %s sell analysis (%s), trying second fallback provider '%s'",
-            ticker, exc, config.analyst_fallback2_provider,
-        )
-    except Exception as exc:
-        if fallback2_client is None:
-            raise
-        logger.warning(
-            "Fallback analyst failed for %s sell analysis (%s), using second fallback provider '%s'",
-            ticker, exc, config.analyst_fallback2_provider,
-        )
-
-    text = _call_api(fallback2_client, fallback2_model, prompt)
-    result = parse_claude_response(text)
-    result["provider_used"] = config.analyst_fallback2_provider
-    return result
+    return _run_with_fallbacks(
+        prompt, config, client, fallback_client, fallback2_client, ticker,
+        log_context="sell analysis",
+    )
