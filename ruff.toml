@@ -1,0 +1,20 @@
+# ruff.toml — lenient starting point; tighten over time.
+#
+# This is the project's first linter config, added alongside CI. To avoid turning a
+# never-linted codebase into a wall of pre-existing findings, we start by enforcing
+# only pyflakes (`F`) — the rules that catch real bugs (unused imports, unused
+# variables, undefined names, f-string mistakes). Pure-style rules (E501 line length,
+# E741 ambiguous names) and import sorting (I) are deferred; run
+# `ruff check --fix --select I,E` when you're ready to adopt them.
+
+line-length = 100
+exclude = [".claude", ".planning", ".worktrees", "logs", "docs"]
+
+[lint]
+select = ["F"]
+
+[lint.per-file-ignores]
+# Tests intentionally keep some unused imports (fixtures, re-exports) and assign locals
+# they don't read (e.g. `mocks` from a context manager). Don't gate CI on those.
+"tests/**" = ["F401", "F841"]
+"test_discord_live.py" = ["F401"]
