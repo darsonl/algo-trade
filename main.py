@@ -107,9 +107,12 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
         sp500 = []
 
     universe = get_universe(watchlist_path, extra_tickers=sp500)
-    # Filter ETFs out of stock scan universe
+    # Filter ETFs out of stock scan universe. partition_watchlist already fetches each
+    # ticker's .info (the heaviest yfinance call) to read quoteType; capture it in
+    # info_by_ticker so the loop below can reuse it instead of fetching .info twice.
+    info_by_ticker: dict = {}
     try:
-        stocks_only, _etfs = await asyncio.to_thread(partition_watchlist, universe)  # P8-audit: already wrapped (Phase 7)
+        stocks_only, _etfs = await asyncio.to_thread(partition_watchlist, universe, info_by_ticker)  # P8-audit: already wrapped (Phase 7)
         universe = stocks_only
     except Exception as exc:
         logger.warning("partition_watchlist failed: %s — using full universe", exc)
@@ -139,7 +142,11 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
 
         try:
             yf_ticker = yf.Ticker(ticker)
-            info = await asyncio.to_thread(fetch_fundamental_info, yf_ticker)
+            # Reuse the .info already fetched by partition_watchlist; fetch only on a miss
+            # (e.g. the ticker hit the allowlist fallback and was never fetched).
+            info = info_by_ticker.get(ticker)
+            if info is None:
+                info = await asyncio.to_thread(fetch_fundamental_info, yf_ticker)
             if not passes_fundamental_filter(info, config):
                 continue
 
@@ -400,8 +407,10 @@ async def run_scan_etf(bot: TradingBot, config: Config) -> None:
     etf_watchlist_path = str(Path(__file__).parent / "etf_watchlist.txt")
     etf_tickers = get_watchlist(etf_watchlist_path)
 
-    # D-08 / ASYNC-03: wrap partition_watchlist in asyncio.to_thread
-    _stocks, etfs = await asyncio.to_thread(partition_watchlist, etf_tickers)  # P8-audit: already wrapped (Phase 7)
+    # D-08 / ASYNC-03: wrap partition_watchlist in asyncio.to_thread.
+    # Capture .info per ticker so the loop reuses it instead of re-fetching for expense ratio.
+    info_by_ticker: dict = {}
+    _stocks, etfs = await asyncio.to_thread(partition_watchlist, etf_tickers, info_by_ticker)  # P8-audit: already wrapped (Phase 7)
     logger.info("ETF universe: %d tickers", len(etfs))
 
     # Fetch macro context once for all ETFs (D-02)
@@ -431,8 +440,10 @@ async def run_scan_etf(bot: TradingBot, config: Config) -> None:
             # Fetch technical data (no fundamental filter for ETFs)
             tech_data = await asyncio.to_thread(fetch_technical_data, yf_ticker)
 
-            # Fetch expense ratio from yfinance info
-            info = await asyncio.to_thread(fetch_fundamental_info, yf_ticker)
+            # Fetch expense ratio from yfinance info (reuse partition_watchlist's .info; fetch on miss)
+            info = info_by_ticker.get(ticker)
+            if info is None:
+                info = await asyncio.to_thread(fetch_fundamental_info, yf_ticker)
             expense_ratio = info.get("netExpenseRatio")
             if expense_ratio is None:
                 logger.debug("Expense ratio unavailable for %s", ticker)

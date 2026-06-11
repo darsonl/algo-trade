@@ -57,6 +57,11 @@ def _full_patch(
         patch("main.passes_technical_filter", return_value=technical_pass),
         patch("main.queries.create_recommendation", return_value=rec_id),
         patch("main.queries.set_discord_message_id"),
+        # Mock partition so the scan-loop tests don't run the real partition_watchlist
+        # over the mocked yf.Ticker (which would populate info_by_ticker with a MagicMock
+        # .info and bypass the patched fetch_fundamental_info). Appended last to keep the
+        # positional mock indices below stable.
+        patch("main.partition_watchlist", return_value=(list(universe), [])),
     ]
 
     with ExitStack() as stack:
