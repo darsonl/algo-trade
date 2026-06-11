@@ -75,7 +75,7 @@ _OPENAI_BASE_URLS: dict[str, str] = {
 }
 
 _DEFAULT_MODELS: dict[str, str] = {
-    "claude": "claude-opus-4-6",
+    "claude": "claude-opus-4-8",
     "openai": "gpt-4o-mini",
     "gemini": "gemini-2.5-flash",
     "github": "gpt-4o-mini",
