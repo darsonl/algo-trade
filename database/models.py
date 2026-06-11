@@ -1,4 +1,5 @@
 import sqlite3
+from contextlib import contextmanager
 
 
 def get_connection(db_path: str) -> sqlite3.Connection:
@@ -13,6 +14,24 @@ def get_connection(db_path: str) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
     return conn
+
+
+@contextmanager
+def get_cursor(db_path: str):
+    """Yield a connection that commits on clean exit and ALWAYS closes.
+
+    Replaces the repeated open / commit / close dance in queries.py and fixes the
+    connection leak in that pattern: if a statement raised between open and close, the
+    old code skipped conn.close(). Here close() runs in `finally`, and commit() runs
+    only on a clean exit (an exception closes without committing and re-propagates).
+    Reads are fine too — commit() on a read-only connection is a harmless no-op.
+    """
+    conn = get_connection(db_path)
+    try:
+        yield conn
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def initialize_db(db_path: str) -> None:

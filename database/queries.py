@@ -1,5 +1,5 @@
 import sqlite3
-from database.models import get_connection
+from database.models import get_cursor
 
 
 def create_recommendation(
@@ -15,48 +15,39 @@ def create_recommendation(
     confidence: str | None = None,
 ) -> int:
     """Insert a new recommendation row and return its auto-assigned id."""
-    conn = get_connection(db_path)
-    cursor = conn.execute(
-        """INSERT INTO recommendations
-               (ticker, signal, reasoning, price, dividend_yield, pe_ratio, earnings_growth, asset_type, confidence)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (ticker, signal, reasoning, price, dividend_yield, pe_ratio, earnings_growth, asset_type, confidence),
-    )
-    conn.commit()
-    rec_id = cursor.lastrowid
-    conn.close()
-    return rec_id
+    with get_cursor(db_path) as conn:
+        cursor = conn.execute(
+            """INSERT INTO recommendations
+                   (ticker, signal, reasoning, price, dividend_yield, pe_ratio, earnings_growth, asset_type, confidence)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (ticker, signal, reasoning, price, dividend_yield, pe_ratio, earnings_growth, asset_type, confidence),
+        )
+        return cursor.lastrowid
 
 
 def get_recommendation(db_path: str, rec_id: int) -> sqlite3.Row | None:
     """Return the recommendations row for rec_id, or None if not found."""
-    conn = get_connection(db_path)
-    row = conn.execute(
-        "SELECT * FROM recommendations WHERE id = ?", (rec_id,)
-    ).fetchone()
-    conn.close()
-    return row
+    with get_cursor(db_path) as conn:
+        return conn.execute(
+            "SELECT * FROM recommendations WHERE id = ?", (rec_id,)
+        ).fetchone()
 
 
 def update_recommendation_status(db_path: str, rec_id: int, status: str) -> None:
     """Set the status column of recommendation rec_id to status."""
-    conn = get_connection(db_path)
-    conn.execute(
-        "UPDATE recommendations SET status = ? WHERE id = ?", (status, rec_id)
-    )
-    conn.commit()
-    conn.close()
+    with get_cursor(db_path) as conn:
+        conn.execute(
+            "UPDATE recommendations SET status = ? WHERE id = ?", (status, rec_id)
+        )
 
 
 def set_discord_message_id(db_path: str, rec_id: int, message_id: str) -> None:
     """Store the Discord message id against recommendation rec_id."""
-    conn = get_connection(db_path)
-    conn.execute(
-        "UPDATE recommendations SET discord_message_id = ? WHERE id = ?",
-        (message_id, rec_id),
-    )
-    conn.commit()
-    conn.close()
+    with get_cursor(db_path) as conn:
+        conn.execute(
+            "UPDATE recommendations SET discord_message_id = ? WHERE id = ?",
+            (message_id, rec_id),
+        )
 
 
 def create_trade(
@@ -72,17 +63,14 @@ def create_trade(
     order_type: str = "market",          # NEW — RISK-03
 ) -> int:
     """Record an executed trade linked to recommendation_id and return the trade id."""
-    conn = get_connection(db_path)
-    cursor = conn.execute(
-        """INSERT INTO trades
-               (recommendation_id, ticker, shares, price, order_id, side, cost_basis, limit_price, order_type)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-        (recommendation_id, ticker, shares, price, order_id, side, cost_basis, limit_price, order_type),
-    )
-    conn.commit()
-    trade_id = cursor.lastrowid
-    conn.close()
-    return trade_id
+    with get_cursor(db_path) as conn:
+        cursor = conn.execute(
+            """INSERT INTO trades
+                   (recommendation_id, ticker, shares, price, order_id, side, cost_basis, limit_price, order_type)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (recommendation_id, ticker, shares, price, order_id, side, cost_basis, limit_price, order_type),
+        )
+        return cursor.lastrowid
 
 
 def get_trade_stats(db_path: str) -> dict | None:
@@ -92,12 +80,11 @@ def get_trade_stats(db_path: str) -> dict | None:
     or None when no qualifying rows exist (side='sell' AND cost_basis IS NOT NULL).
     Pre-migration rows with cost_basis IS NULL are silently excluded per D-10.
     """
-    conn = get_connection(db_path)
-    rows = conn.execute(
-        """SELECT price, cost_basis FROM trades
-           WHERE side = 'sell' AND cost_basis IS NOT NULL""",
-    ).fetchall()
-    conn.close()
+    with get_cursor(db_path) as conn:
+        rows = conn.execute(
+            """SELECT price, cost_basis FROM trades
+               WHERE side = 'sell' AND cost_basis IS NOT NULL""",
+        ).fetchall()
     if not rows:
         return None
     total = len(rows)
@@ -133,15 +120,14 @@ def get_closed_trades(db_path: str, limit: int = 20) -> list[dict]:
     Returns a list of plain dicts with keys: ticker, price (exit price), cost_basis (entry price),
     executed_at (ISO timestamp string). Empty list when no qualifying rows exist.
     """
-    conn = get_connection(db_path)
-    rows = conn.execute(
-        """SELECT ticker, price, cost_basis, executed_at FROM trades
-           WHERE side = 'sell' AND cost_basis IS NOT NULL
-           ORDER BY executed_at DESC
-           LIMIT ?""",
-        (limit,),
-    ).fetchall()
-    conn.close()
+    with get_cursor(db_path) as conn:
+        rows = conn.execute(
+            """SELECT ticker, price, cost_basis, executed_at FROM trades
+               WHERE side = 'sell' AND cost_basis IS NOT NULL
+               ORDER BY executed_at DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
     return [
         {
             "ticker": row["ticker"],
@@ -155,47 +141,41 @@ def get_closed_trades(db_path: str, limit: int = 20) -> list[dict]:
 
 def get_pending_recommendations(db_path: str) -> list[sqlite3.Row]:
     """Return all pending recommendations ordered newest first."""
-    conn = get_connection(db_path)
-    rows = conn.execute(
-        "SELECT * FROM recommendations WHERE status = 'pending' ORDER BY created_at DESC"
-    ).fetchall()
-    conn.close()
-    return rows
+    with get_cursor(db_path) as conn:
+        return conn.execute(
+            "SELECT * FROM recommendations WHERE status = 'pending' ORDER BY created_at DESC"
+        ).fetchall()
 
 
 def ticker_recommended_today(db_path: str, ticker: str) -> bool:
     """Return True if ticker has a non-expired, non-rejected recommendation created today (UTC date)."""
-    conn = get_connection(db_path)
-    row = conn.execute(
-        """SELECT id FROM recommendations
-           WHERE ticker = ? AND date(created_at) = date('now')
-           AND status NOT IN ('expired', 'rejected')""",
-        (ticker,),
-    ).fetchone()
-    conn.close()
+    with get_cursor(db_path) as conn:
+        row = conn.execute(
+            """SELECT id FROM recommendations
+               WHERE ticker = ? AND date(created_at) = date('now')
+               AND status NOT IN ('expired', 'rejected')""",
+            (ticker,),
+        ).fetchone()
     return row is not None
 
 
 def expire_stale_recommendations(db_path: str) -> None:
     """Set status='expired' on all pending recommendations whose expires_at is in the past."""
-    conn = get_connection(db_path)
-    conn.execute(
-        """UPDATE recommendations
-           SET status = 'expired'
-           WHERE status = 'pending' AND expires_at < datetime('now')"""
-    )
-    conn.commit()
-    conn.close()
+    with get_cursor(db_path) as conn:
+        conn.execute(
+            """UPDATE recommendations
+               SET status = 'expired'
+               WHERE status = 'pending' AND expires_at < datetime('now')"""
+        )
 
 
 def get_cached_analysis(db_path: str, ticker: str, headline_hash: str) -> dict | None:
     """Return {signal, reasoning, confidence} if a cached result exists for (ticker, headline_hash), else None."""
-    conn = get_connection(db_path)
-    row = conn.execute(
-        "SELECT signal, reasoning, confidence FROM analyst_cache WHERE ticker = ? AND headline_hash = ?",
-        (ticker, headline_hash),
-    ).fetchone()
-    conn.close()
+    with get_cursor(db_path) as conn:
+        row = conn.execute(
+            "SELECT signal, reasoning, confidence FROM analyst_cache WHERE ticker = ? AND headline_hash = ?",
+            (ticker, headline_hash),
+        ).fetchone()
     if row is None:
         return None
     return {"signal": row["signal"], "reasoning": row["reasoning"], "confidence": row["confidence"]}
@@ -206,14 +186,12 @@ def set_cached_analysis(
     confidence: str | None = None,
 ) -> None:
     """Upsert an analyst result keyed by (ticker, headline_hash)."""
-    conn = get_connection(db_path)
-    conn.execute(
-        """INSERT OR REPLACE INTO analyst_cache (ticker, headline_hash, signal, reasoning, confidence)
-           VALUES (?, ?, ?, ?, ?)""",
-        (ticker, headline_hash, signal, reasoning, confidence),
-    )
-    conn.commit()
-    conn.close()
+    with get_cursor(db_path) as conn:
+        conn.execute(
+            """INSERT OR REPLACE INTO analyst_cache (ticker, headline_hash, signal, reasoning, confidence)
+               VALUES (?, ?, ?, ?, ?)""",
+            (ticker, headline_hash, signal, reasoning, confidence),
+        )
 
 
 # --- Position CRUD ---
@@ -225,23 +203,20 @@ def create_position(db_path: str, ticker: str, shares: float, avg_cost_usd: floa
     If a row for ticker already exists (from a prior closed position), the conflict clause
     resets shares, avg_cost_usd, entry_date, and status back to 'open'. Returns the row id.
     """
-    conn = get_connection(db_path)
-    cursor = conn.execute(
-        """INSERT INTO positions (ticker, shares, avg_cost_usd, entry_date, status)
-           VALUES (?, ?, ?, date('now'), 'open')
-           ON CONFLICT(ticker) DO UPDATE SET
-               shares=excluded.shares,
-               avg_cost_usd=excluded.avg_cost_usd,
-               entry_date=date('now'),
-               status='open',
-               last_price=NULL,
-               last_updated=NULL""",
-        (ticker, shares, avg_cost_usd),
-    )
-    conn.commit()
-    pos_id = cursor.lastrowid
-    conn.close()
-    return pos_id
+    with get_cursor(db_path) as conn:
+        cursor = conn.execute(
+            """INSERT INTO positions (ticker, shares, avg_cost_usd, entry_date, status)
+               VALUES (?, ?, ?, date('now'), 'open')
+               ON CONFLICT(ticker) DO UPDATE SET
+                   shares=excluded.shares,
+                   avg_cost_usd=excluded.avg_cost_usd,
+                   entry_date=date('now'),
+                   status='open',
+                   last_price=NULL,
+                   last_updated=NULL""",
+            (ticker, shares, avg_cost_usd),
+        )
+        return cursor.lastrowid
 
 
 def update_position(db_path: str, ticker: str, new_shares: float, buy_price: float) -> None:
@@ -251,48 +226,41 @@ def update_position(db_path: str, ticker: str, new_shares: float, buy_price: flo
         (existing_shares * existing_avg + new_shares * buy_price) / (existing_shares + new_shares)
     Only updates rows where status='open'.
     """
-    conn = get_connection(db_path)
-    conn.execute(
-        """UPDATE positions
-           SET shares = shares + ?,
-               avg_cost_usd = (shares * avg_cost_usd + ? * ?) / (shares + ?)
-           WHERE ticker = ? AND status = 'open'""",
-        (new_shares, new_shares, buy_price, new_shares, ticker),
-    )
-    conn.commit()
-    conn.close()
+    with get_cursor(db_path) as conn:
+        conn.execute(
+            """UPDATE positions
+               SET shares = shares + ?,
+                   avg_cost_usd = (shares * avg_cost_usd + ? * ?) / (shares + ?)
+               WHERE ticker = ? AND status = 'open'""",
+            (new_shares, new_shares, buy_price, new_shares, ticker),
+        )
 
 
 def get_open_positions(db_path: str) -> list[sqlite3.Row]:
     """Return all rows from positions where status='open', ordered by entry_date ascending."""
-    conn = get_connection(db_path)
-    rows = conn.execute(
-        "SELECT * FROM positions WHERE status = 'open' ORDER BY entry_date ASC"
-    ).fetchall()
-    conn.close()
-    return rows
+    with get_cursor(db_path) as conn:
+        return conn.execute(
+            "SELECT * FROM positions WHERE status = 'open' ORDER BY entry_date ASC"
+        ).fetchall()
 
 
 def has_open_position(db_path: str, ticker: str) -> bool:
     """Return True if an open position for ticker exists, False otherwise."""
-    conn = get_connection(db_path)
-    row = conn.execute(
-        "SELECT id FROM positions WHERE ticker = ? AND status = 'open'",
-        (ticker,),
-    ).fetchone()
-    conn.close()
+    with get_cursor(db_path) as conn:
+        row = conn.execute(
+            "SELECT id FROM positions WHERE ticker = ? AND status = 'open'",
+            (ticker,),
+        ).fetchone()
     return row is not None
 
 
 def close_position(db_path: str, ticker: str) -> None:
     """Set status='closed' on the open position for ticker."""
-    conn = get_connection(db_path)
-    conn.execute(
-        "UPDATE positions SET status = 'closed' WHERE ticker = ? AND status = 'open'",
-        (ticker,),
-    )
-    conn.commit()
-    conn.close()
+    with get_cursor(db_path) as conn:
+        conn.execute(
+            "UPDATE positions SET status = 'closed' WHERE ticker = ? AND status = 'open'",
+            (ticker,),
+        )
 
 
 def upsert_position(db_path: str, ticker: str, shares: float, price: float) -> None:
@@ -309,24 +277,20 @@ def upsert_position(db_path: str, ticker: str, shares: float, price: float) -> N
 
 def set_sell_blocked(db_path: str, ticker: str) -> None:
     """Set sell_blocked=True on the open position for ticker (per D-04)."""
-    conn = get_connection(db_path)
-    conn.execute(
-        "UPDATE positions SET sell_blocked = 1 WHERE ticker = ? AND status = 'open'",
-        (ticker,),
-    )
-    conn.commit()
-    conn.close()
+    with get_cursor(db_path) as conn:
+        conn.execute(
+            "UPDATE positions SET sell_blocked = 1 WHERE ticker = ? AND status = 'open'",
+            (ticker,),
+        )
 
 
 def reset_sell_blocked(db_path: str, ticker: str) -> None:
     """Reset sell_blocked=False on the open position for ticker (per D-04)."""
-    conn = get_connection(db_path)
-    conn.execute(
-        "UPDATE positions SET sell_blocked = 0 WHERE ticker = ? AND status = 'open'",
-        (ticker,),
-    )
-    conn.commit()
-    conn.close()
+    with get_cursor(db_path) as conn:
+        conn.execute(
+            "UPDATE positions SET sell_blocked = 0 WHERE ticker = ? AND status = 'open'",
+            (ticker,),
+        )
 
 
 # --- Analyst quota tracking (D-11) ---
@@ -339,12 +303,11 @@ def get_analyst_call_count_today(db_path: str, provider: str) -> int:
     """
     from datetime import date
     today = date.today().isoformat()
-    conn = get_connection(db_path)
-    row = conn.execute(
-        "SELECT count FROM analyst_calls WHERE date = ? AND provider = ?",
-        (today, provider),
-    ).fetchone()
-    conn.close()
+    with get_cursor(db_path) as conn:
+        row = conn.execute(
+            "SELECT count FROM analyst_calls WHERE date = ? AND provider = ?",
+            (today, provider),
+        ).fetchone()
     return row["count"] if row else 0
 
 
@@ -356,11 +319,9 @@ def increment_analyst_call_count(db_path: str, provider: str) -> None:
     """
     from datetime import date
     today = date.today().isoformat()
-    conn = get_connection(db_path)
-    conn.execute(
-        """INSERT INTO analyst_calls (date, provider, count) VALUES (?, ?, 1)
-           ON CONFLICT(date, provider) DO UPDATE SET count = count + 1""",
-        (today, provider),
-    )
-    conn.commit()
-    conn.close()
+    with get_cursor(db_path) as conn:
+        conn.execute(
+            """INSERT INTO analyst_calls (date, provider, count) VALUES (?, ?, 1)
+               ON CONFLICT(date, provider) DO UPDATE SET count = count + 1""",
+            (today, provider),
+        )
