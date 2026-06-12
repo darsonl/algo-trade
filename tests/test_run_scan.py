@@ -293,3 +293,16 @@ async def test_run_scan_passes_none_macro_to_analyze_ticker_on_fetch_failure():
     call_kwargs = mocks["analyze_ticker"].call_args[1]
     macro = call_kwargs.get("macro_context")
     assert macro == {"spy_trend_1m": None, "spy_trend_1y": None, "vix_level": None}
+
+
+@pytest.mark.asyncio
+async def test_run_scan_passes_on_attempt_that_increments_quota():
+    """run_scan wires analyze_ticker's on_attempt callback to increment_analyst_call_count."""
+    bot = _make_bot()
+    config = _make_config()
+    with _full_patch() as mocks:
+        await run_scan(bot, config)
+        on_attempt = mocks["analyze_ticker"].call_args.kwargs["on_attempt"]
+        with patch("main.queries.increment_analyst_call_count") as mock_inc:
+            on_attempt("gemini")
+        mock_inc.assert_called_once_with(":memory:", "gemini")
