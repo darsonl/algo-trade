@@ -301,6 +301,7 @@ class TradingBot(discord.Client):
         self.tree = app_commands.CommandTree(self)
         self._scan_callback = None  # Set by main.py after construction
         self._scan_etf_callback = None  # Set by main.py after construction
+        self._reconcile_callback = None  # Set by main.py after construction
 
     async def setup_hook(self):
         """Register and sync the /scan and /positions slash commands on bot startup."""
@@ -337,6 +338,13 @@ class TradingBot(discord.Client):
                 name="history",
                 description="Show the last 20 closed trades",
                 callback=self._history_command,
+            )
+        )
+        self.tree.add_command(
+            app_commands.Command(
+                name="reconcile",
+                description="Compare bot positions against the Schwab account",
+                callback=self._reconcile_command,
             )
         )
         await self.tree.sync()
@@ -383,6 +391,16 @@ class TradingBot(discord.Client):
             pass
         if self._scan_etf_callback is not None:
             asyncio.create_task(self._scan_etf_callback())
+
+    async def _reconcile_command(self, interaction: discord.Interaction):
+        """Handle /reconcile: compare DB positions against Schwab and report the result."""
+        if self._reconcile_callback is None:
+            await interaction.response.send_message("Reconciliation is not configured.")
+            return
+        # Defer: the Schwab account fetch can exceed Discord's 3s interaction window.
+        await interaction.response.defer()
+        result = await self._reconcile_callback()
+        await interaction.followup.send(result)
 
     async def _positions_command(self, interaction: discord.Interaction):
         """Handle /positions slash command: show open holdings with P&L."""

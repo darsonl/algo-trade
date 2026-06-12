@@ -97,6 +97,7 @@ async def test_run_scan_cache_hit_skips_analyze_ticker():
 
     config = Config()
     config.db_path = ":memory:"
+    config.dry_run = True  # keep reconciliation skipped — live mode would call Schwab
 
     cached = {"signal": "BUY", "reasoning": "Cached reasoning."}
 
@@ -132,6 +133,7 @@ async def test_run_scan_cache_miss_calls_analyze_ticker_and_caches():
 
     config = Config()
     config.db_path = ":memory:"
+    config.dry_run = True  # keep reconciliation skipped — live mode would call Schwab
 
     analysis_result = {"signal": "BUY", "reasoning": "Fresh analysis.", "provider_used": "gemini"}
 
@@ -186,6 +188,7 @@ async def test_run_scan_skips_analyze_ticker_when_all_providers_exhausted():
 
     config = Config()
     config.db_path = ":memory:"
+    config.dry_run = True  # keep reconciliation skipped — live mode would call Schwab
     # All three provider slots are non-empty — no unset-provider shortcut that would
     # trip the guard "for free" without actually exercising the three-way AND.
     config.analyst_provider = "gemini"
@@ -237,6 +240,7 @@ def _make_etf_config():
     """Config with in-memory DB and default quota settings."""
     config = Config()
     config.db_path = ":memory:"
+    config.dry_run = True  # keep reconciliation skipped — live mode would call Schwab
     config.analyst_provider = "gemini"
     config.analyst_fallback_provider = None
     config.analyst_daily_limit = 18
@@ -374,6 +378,7 @@ async def test_run_scan_passes_confidence_to_recommendation():
 
     config = Config()
     config.db_path = ":memory:"
+    config.dry_run = True  # keep reconciliation skipped — live mode would call Schwab
 
     analysis_result = {
         "signal": "BUY",
@@ -429,6 +434,7 @@ async def test_run_scan_passes_none_confidence_when_missing():
 
     config = Config()
     config.db_path = ":memory:"
+    config.dry_run = True  # keep reconciliation skipped — live mode would call Schwab
 
     # analysis_result without confidence key (older path)
     analysis_result = {

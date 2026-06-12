@@ -21,6 +21,8 @@ from analyst.news import fetch_news_headlines
 from analyst.claude_analyst import analyze_ticker, create_analyst_client, create_fallback_client, create_fallback2_client, analyze_sell_ticker, analyze_etf_ticker
 from screener.macro import fetch_macro_context
 from screener.exit_signals import check_exit_signals
+from schwab_client.orders import get_positions
+from schwab_client.reconcile import diff_positions, format_reconciliation_report
 from discord_bot.bot import TradingBot
 
 logger = logging.getLogger(__name__)
@@ -102,6 +104,46 @@ def all_providers_exhausted(config: Config) -> bool:
         and fallback_count >= config.analyst_daily_limit
         and fallback2_count >= config.analyst_daily_limit
     )
+
+
+# ---------------------------------------------------------------------------
+# Position reconciliation (RISK-05)
+# ---------------------------------------------------------------------------
+
+async def run_reconciliation(bot: TradingBot, config: Config, alert_on_discrepancy: bool = True) -> str:
+    """Compare DB open positions against the Schwab account and report drift.
+
+    Report-only: never mutates positions — correcting real-money state is a
+    human decision, consistent with the approval flow for trades. Returns a
+    human-readable summary string. When discrepancies are found, posts them as
+    an ops alert unless alert_on_discrepancy=False (the /reconcile command
+    passes False because it displays the returned summary itself).
+    """
+    if config.dry_run:
+        msg = "Reconciliation skipped: DRY_RUN mode (positions are simulated, broker comparison is meaningless)."
+        logger.info(msg)
+        return msg
+
+    try:
+        broker_positions = await asyncio.to_thread(get_positions, config)
+    except Exception as exc:
+        msg = f"Reconciliation failed: could not fetch Schwab positions ({exc})."
+        logger.warning(msg)
+        return msg
+
+    db_rows = await asyncio.to_thread(queries.get_open_positions, config.db_path)
+    diff = diff_positions([dict(r) for r in db_rows], broker_positions)
+    report = format_reconciliation_report(diff)
+
+    if report is None:
+        msg = f"Reconciliation clean: {len(db_rows)} open position(s) match Schwab."
+        logger.info(msg)
+        return msg
+
+    logger.warning("Position reconciliation discrepancies:\n%s", report)
+    if alert_on_discrepancy:
+        await bot.send_ops_alert(report)
+    return report
 
 
 # ---------------------------------------------------------------------------
@@ -320,6 +362,13 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
         await bot.send_ops_alert("Scan complete: 0 recommendations posted.")
     else:
         logger.info("Scan complete. %d recommendation(s) posted.", recommendations_posted)
+
+    # --- Position reconciliation (RISK-05): surface DB/broker drift before the
+    # sell pass acts on positions that may not exist at the broker ---
+    try:
+        await run_reconciliation(bot, config)
+    except Exception as exc:
+        logger.warning("Reconciliation error: %s — continuing with sell pass", exc)
 
     # --- Sell pass: evaluate open positions for exit signals ---
     open_positions = queries.get_open_positions(config.db_path)
@@ -605,6 +654,7 @@ def main() -> None:
     bot = TradingBot(config)
     bot._scan_callback = lambda: run_scan(bot, config)
     bot._scan_etf_callback = lambda: run_scan_etf(bot, config)
+    bot._reconcile_callback = lambda: run_reconciliation(bot, config, alert_on_discrepancy=False)
     scheduler = BackgroundScheduler()
 
     @bot.event

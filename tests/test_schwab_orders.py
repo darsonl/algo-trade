@@ -120,3 +120,17 @@ def test_build_limit_buy_order_type_is_limit():
 def test_build_limit_buy_duration_is_good_till_cancel():
     spec = build_limit_buy("AAPL", 5, "52.34")
     assert spec["duration"] == "GOOD_TILL_CANCEL"
+
+
+def test_parse_positions_extracts_asset_type():
+    data = _make_account_response([_make_position("AAPL")])
+    positions = parse_positions(data)
+    assert positions[0]["asset_type"] == "EQUITY"
+
+
+def test_parse_positions_asset_type_defaults_to_empty():
+    pos = _make_position("AAPL")
+    del pos["instrument"]["assetType"]
+    data = _make_account_response([pos])
+    positions = parse_positions(data)
+    assert positions[0]["asset_type"] == ""
