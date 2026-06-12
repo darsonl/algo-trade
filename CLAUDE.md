@@ -74,6 +74,7 @@ python main.py
 | `database/queries.py` | CRUD for recommendations/trades, expiration, dupe check |
 | `schwab_client/auth.py` | OAuth2 via `schwab-py`, token stored at `schwab_token.json` |
 | `schwab_client/orders.py` | Market buy order construction, position parsing |
+| `schwab_client/reconcile.py` | Pure DB-vs-broker position diff (`diff_positions`) + report formatting |
 
 ### Key Design Decisions
 
@@ -87,6 +88,7 @@ python main.py
 - **Analyst quota tracking**: `analyst_calls` table tracks daily call counts per provider. `analyze_ticker` is guarded by a quota check; cache hits bypass both guard and increment. Configured via `ANALYST_DAILY_LIMIT` (default 18) to respect Gemini free-tier limits.
 - **ETF bypass**: ETFs are partitioned out of the stock scan by `partition_watchlist()` using `yfinance quoteType`. They run through `run_scan_etf()` which skips `passes_fundamental_filter` entirely and uses `build_etf_prompt` (no earnings/P/E context).
 - **sell_blocked flag**: After a rejected sell, `sell_blocked=True` prevents re-triggering the sell signal for the same position on the same day. Auto-resets when RSI drops back below threshold.
+- **Position reconciliation (report-only)**: `run_reconciliation()` in `main.py` compares DB open positions against the Schwab account (RISK-05: positions are recorded on order acknowledgement, not fill). Runs before each scan's sell pass and via `/reconcile`. It NEVER mutates positions — discrepancies (phantom / untracked / mismatched) are posted as ops alerts for human correction. Skipped entirely when `DRY_RUN=true` (simulated positions have no broker counterpart). Tests that call `run_scan` must set `config.dry_run = True` (or patch `main.get_positions`) so the suite never touches the live Schwab API.
 
 ### Configuration
 
@@ -119,6 +121,9 @@ MAX_POSITION_SIZE_USD=500
 - `/scan` — manually trigger stock scan (same as scheduled daily run)
 - `/scan_etf` — manually trigger ETF-only scan
 - `/positions` — display open positions with live P&L embed
+- `/stats` — win rate and P&L stats for closed trades
+- `/history` — last 20 closed trades
+- `/reconcile` — compare DB open positions against the Schwab account (report-only; skipped in DRY_RUN)
 
 ### Test Suite
 

@@ -15,6 +15,9 @@ def _make_bot():
 def _make_config():
     c = Config()
     c.db_path = ":memory:"
+    # Keep reconciliation skipped: with dry_run=False it would call the real
+    # Schwab API (config defaults come from .env, which may set DRY_RUN=false).
+    c.dry_run = True
     return c
 
 

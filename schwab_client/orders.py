@@ -40,7 +40,9 @@ def parse_positions(account_response: dict) -> list[dict]:
     """
     Extract a clean list of positions from a Schwab get_account response dict.
 
-    Returns dicts with keys: symbol, quantity, avg_price, market_value.
+    Returns dicts with keys: symbol, quantity, avg_price, market_value, asset_type.
+    asset_type is the Schwab instrument assetType (e.g. 'EQUITY', 'CASH_EQUIVALENT'),
+    or '' when absent — reconciliation uses it to ignore cash/sweep instruments.
     """
     raw_positions = (
         account_response
@@ -58,6 +60,7 @@ def parse_positions(account_response: dict) -> list[dict]:
             "quantity": pos.get("longQuantity", 0.0),
             "avg_price": pos.get("averagePrice", 0.0),
             "market_value": pos.get("marketValue", 0.0),
+            "asset_type": instrument.get("assetType", ""),
         })
     return result
 
