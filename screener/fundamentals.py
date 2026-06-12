@@ -13,6 +13,19 @@ _retry = retry(
 )
 
 
+def normalize_dividend_yield(raw: float | None) -> float | None:
+    """Convert a yfinance dividendYield value (percent) to a fraction.
+
+    yfinance >= 0.2.55 reports dividendYield in percentage points (KO -> 2.57,
+    AAPL -> 0.37); this codebase uses fractions internally (0.0257, 0.0037).
+    The pinned yfinance version in requirements.txt must match this assumption —
+    pre-0.2.55 versions returned fractions and would be divided twice.
+    """
+    if raw is None:
+        return None
+    return raw / 100
+
+
 def passes_fundamental_filter(info: dict, config: Config) -> bool:
     """
     Return True only if all available fundamental criteria are met.
@@ -27,10 +40,7 @@ def passes_fundamental_filter(info: dict, config: Config) -> bool:
     - earningsGrowth: optional — skip growth check if absent; let the analyst judge.
     """
     pe = info.get("trailingPE")
-    div_yield = info.get("dividendYield")
-    # yfinance occasionally returns dividendYield as a percentage (e.g. 2.5 instead of 0.025)
-    if div_yield is not None and div_yield > 1:
-        div_yield = div_yield / 100
+    div_yield = normalize_dividend_yield(info.get("dividendYield"))
     earnings_growth = info.get("earningsGrowth")
 
     if pe is None:

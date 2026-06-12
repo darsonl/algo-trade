@@ -501,3 +501,33 @@ async def test_run_scan_etf_passes_confidence_to_recommendation():
                                                                     assert send_kwargs.get("confidence") == "medium"
                                                                     cache_kwargs = mock_set_cache.call_args.kwargs
                                                                     assert cache_kwargs.get("confidence") == "medium"
+
+
+# --- compute_headline_hash (cache-key salting for empty news feeds) ---
+
+def test_headline_hash_stable_for_same_headlines():
+    from main import compute_headline_hash
+    h1 = compute_headline_hash(["Fed cuts rates", "Apple beats estimates"])
+    h2 = compute_headline_hash(["Apple beats estimates", "Fed cuts rates"])
+    assert h1 == h2  # order-insensitive (sorted before hashing)
+
+
+def test_headline_hash_differs_for_different_headlines():
+    from main import compute_headline_hash
+    assert compute_headline_hash(["A"]) != compute_headline_hash(["B"])
+
+
+def test_headline_hash_empty_list_salted_with_date():
+    """An empty feed must not produce the same key as any real headline set,
+    and must roll daily so a broken news pipeline can't pin a cache entry forever."""
+    from unittest.mock import patch
+    from datetime import date
+    from main import compute_headline_hash
+
+    with patch("main.date") as mock_date:
+        mock_date.today.return_value = date(2026, 6, 11)
+        h_day1 = compute_headline_hash([])
+    with patch("main.date") as mock_date:
+        mock_date.today.return_value = date(2026, 6, 12)
+        h_day2 = compute_headline_hash([])
+    assert h_day1 != h_day2

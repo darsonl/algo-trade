@@ -15,7 +15,7 @@ from config import Config
 from database.models import initialize_db
 from database import queries
 from screener.universe import get_watchlist, get_top_sp500_by_fundamentals, get_universe, partition_watchlist
-from screener.fundamentals import passes_fundamental_filter, fetch_fundamental_info, fetch_eps_data
+from screener.fundamentals import passes_fundamental_filter, fetch_fundamental_info, fetch_eps_data, normalize_dividend_yield
 from screener.technicals import passes_technical_filter, fetch_technical_data
 from analyst.news import fetch_news_headlines
 from analyst.claude_analyst import analyze_ticker, create_analyst_client, create_fallback_client, create_fallback2_client, analyze_sell_ticker, analyze_etf_ticker
@@ -58,6 +58,20 @@ def configure_scheduler(
             id=f"{job_id_prefix}_{i}",
             replace_existing=True,
         )
+
+
+def compute_headline_hash(headlines: list[str]) -> str:
+    """SHA-256 cache key over sorted headlines.
+
+    An empty headline list is salted with today's date: a broken or empty news
+    feed would otherwise produce one constant hash per ticker, pinning a single
+    analyst_cache entry forever. The salt bounds that staleness to one day.
+    """
+    if headlines:
+        content = "\n".join(sorted(headlines))
+    else:
+        content = f"NO_HEADLINES:{date.today().isoformat()}"
+    return hashlib.sha256(content.encode()).hexdigest()
 
 
 def all_providers_exhausted(config: Config) -> bool:
@@ -131,6 +145,8 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
     recommendations_posted = 0
     error_count = 0
     errors_posted = 0
+    headline_fetches = 0
+    empty_headline_fetches = 0
     scan_time = datetime.now().strftime("%H:%M")
 
     for ticker in universe:
@@ -206,9 +222,10 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
             headlines = await asyncio.to_thread(
                 fetch_news_headlines, ticker, alpha_vantage_api_key=config.alpha_vantage_api_key
             )
-            headline_hash = hashlib.sha256(
-                "\n".join(sorted(headlines)).encode()
-            ).hexdigest()
+            headline_fetches += 1
+            if not headlines:
+                empty_headline_fetches += 1
+            headline_hash = compute_headline_hash(headlines)
             cached = queries.get_cached_analysis(config.db_path, ticker, headline_hash)
             if cached:
                 logger.debug("Cache hit for %s (hash %s...)", ticker, headline_hash[:8])
@@ -244,8 +261,7 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
             if not should_recommend(analysis["signal"], tech_data, config):
                 continue
 
-            raw_yield = info.get("dividendYield")
-            div_yield = raw_yield / 100 if raw_yield is not None and raw_yield > 1 else raw_yield
+            div_yield = normalize_dividend_yield(info.get("dividendYield"))
 
             rec_id = queries.create_recommendation(
                 db_path=config.db_path,
@@ -286,6 +302,18 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
     if error_count > 3:
         overflow = error_count - 3
         await bot.send_ops_alert(f"[{overflow} more errors not shown \u2014 check logs]")
+
+    # Health check: every headline fetch coming back empty across a real scan means the
+    # news pipeline is broken (e.g. a yfinance schema change), not that there is no news.
+    if headline_fetches >= 3 and empty_headline_fetches == headline_fetches:
+        logger.warning(
+            "All %d headline fetches returned 0 headlines \u2014 news pipeline may be broken.",
+            headline_fetches,
+        )
+        await bot.send_ops_alert(
+            f"All {headline_fetches} headline fetches returned 0 headlines \u2014 "
+            "news pipeline may be broken (yfinance schema change or Alpha Vantage outage)."
+        )
 
     if recommendations_posted == 0:
         logger.warning("Scan complete: 0 recommendations posted.")
@@ -454,9 +482,7 @@ async def run_scan_etf(bot: TradingBot, config: Config) -> None:
             )
 
             # Analyst cache check (same pattern as run_scan)
-            headline_hash = hashlib.sha256(
-                "\n".join(sorted(headlines)).encode()
-            ).hexdigest()
+            headline_hash = compute_headline_hash(headlines)
             cached = queries.get_cached_analysis(config.db_path, ticker, headline_hash)
             if cached:
                 logger.debug("Cache hit for %s (hash %s...)", ticker, headline_hash[:8])
