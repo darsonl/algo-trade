@@ -39,3 +39,30 @@ def test_extract_headlines_skips_empty_title():
 def test_extract_headlines_default_limit_is_five():
     items = [make_news_item(f"Headline {i}") for i in range(10)]
     assert len(extract_headlines(items)) == 5
+
+
+# --- yfinance >= 0.2.51 nested news schema: title lives at item["content"]["title"] ---
+
+def make_nested_news_item(title: str) -> dict:
+    return {"id": "abc-123", "content": {"title": title, "contentType": "STORY"}}
+
+
+def test_extract_headlines_reads_nested_content_title():
+    items = [make_nested_news_item("Apple unveils new chip"), make_nested_news_item("Fed cuts rates")]
+    assert extract_headlines(items) == ["Apple unveils new chip", "Fed cuts rates"]
+
+
+def test_extract_headlines_mixed_schemas():
+    items = [make_nested_news_item("Nested headline"), make_news_item("Flat headline")]
+    assert extract_headlines(items) == ["Nested headline", "Flat headline"]
+
+
+def test_extract_headlines_nested_without_title_skipped():
+    items = [{"id": "x", "content": {"contentType": "VIDEO"}}, make_nested_news_item("Real news")]
+    assert extract_headlines(items) == ["Real news"]
+
+
+def test_extract_headlines_content_not_dict_falls_back():
+    # Defensive: content key present but not a dict should not crash
+    items = [{"content": "weird string", "title": "Flat title wins"}]
+    assert extract_headlines(items) == ["Flat title wins"]

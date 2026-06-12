@@ -1,7 +1,7 @@
 import pytest
 import pandas as pd
 from unittest.mock import MagicMock, PropertyMock
-from screener.fundamentals import passes_fundamental_filter, fetch_eps_data
+from screener.fundamentals import passes_fundamental_filter, fetch_eps_data, normalize_dividend_yield
 from config import Config
 
 
@@ -14,7 +14,8 @@ def cfg():
     return c
 
 
-def make_info(pe=15.0, div_yield=0.03, earnings_growth=0.10):
+def make_info(pe=15.0, div_yield=3.0, earnings_growth=0.10):
+    # dividendYield is in percent (yfinance >= 0.2.55 format): 3.0 means 3%
     return {
         "trailingPE": pe,
         "dividendYield": div_yield,
@@ -31,7 +32,8 @@ def test_fails_when_pe_too_high(cfg):
 
 
 def test_fails_when_dividend_yield_too_low(cfg):
-    assert passes_fundamental_filter(make_info(div_yield=0.005), cfg) is False
+    # 0.5 percent — sub-1% values must be read as percent, not as a 50% fraction
+    assert passes_fundamental_filter(make_info(div_yield=0.5), cfg) is False
 
 
 def test_fails_when_earnings_growth_too_low(cfg):
@@ -59,10 +61,27 @@ def test_passes_when_earnings_growth_is_none(cfg):
 
 
 def test_passes_at_exact_boundary(cfg):
-    # Exactly at limits should pass
+    # Exactly at limits should pass (2.0 percent == min_dividend_yield 0.02 fraction)
     assert passes_fundamental_filter(
-        make_info(pe=25.0, div_yield=0.02, earnings_growth=0.05), cfg
+        make_info(pe=25.0, div_yield=2.0, earnings_growth=0.05), cfg
     ) is True
+
+
+# ---------------------------------------------------------------------------
+# normalize_dividend_yield (yfinance >= 0.2.55 percent format)
+# ---------------------------------------------------------------------------
+
+def test_normalize_dividend_yield_converts_percent_to_fraction():
+    assert normalize_dividend_yield(2.57) == pytest.approx(0.0257)
+
+
+def test_normalize_dividend_yield_sub_one_percent():
+    # AAPL-style regression case: 0.37 means 0.37%, not a 37% fraction
+    assert normalize_dividend_yield(0.37) == pytest.approx(0.0037)
+
+
+def test_normalize_dividend_yield_none_passthrough():
+    assert normalize_dividend_yield(None) is None
 
 
 # ---------------------------------------------------------------------------

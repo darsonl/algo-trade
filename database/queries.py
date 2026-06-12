@@ -33,6 +33,22 @@ def get_recommendation(db_path: str, rec_id: int) -> sqlite3.Row | None:
         ).fetchone()
 
 
+def claim_recommendation(db_path: str, rec_id: int, new_status: str) -> bool:
+    """Atomically transition a recommendation from 'pending' to new_status.
+
+    Returns True iff this call performed the transition (the row was still
+    pending). The Discord buttons use this as an idempotency gate: a double
+    click or a click on a stale restored view loses the race and gets False,
+    so an order can never be placed twice for the same recommendation.
+    """
+    with get_cursor(db_path) as conn:
+        cursor = conn.execute(
+            "UPDATE recommendations SET status = ? WHERE id = ? AND status = 'pending'",
+            (new_status, rec_id),
+        )
+        return cursor.rowcount == 1
+
+
 def update_recommendation_status(db_path: str, rec_id: int, status: str) -> None:
     """Set the status column of recommendation rec_id to status."""
     with get_cursor(db_path) as conn:

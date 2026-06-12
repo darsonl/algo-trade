@@ -16,10 +16,18 @@ _AV_NEWS_URL = "https://www.alphavantage.co/query"
 
 
 def extract_headlines(news_items: list[dict], max_headlines: int = 5) -> list[str]:
-    """Extract headline strings from yfinance news dicts, skipping items without a title."""
+    """Extract headline strings from yfinance news dicts, skipping items without a title.
+
+    Handles both news schemas: yfinance >= 0.2.51 nests the title under
+    item["content"]["title"]; older versions put it at item["title"].
+    """
     headlines = []
     for item in news_items:
-        title = item.get("title", "").strip()
+        content = item.get("content")
+        title = content.get("title", "") if isinstance(content, dict) else ""
+        if not title:
+            title = item.get("title", "")
+        title = title.strip()
         if title:
             headlines.append(title)
         if len(headlines) == max_headlines:

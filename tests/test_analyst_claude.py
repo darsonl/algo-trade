@@ -19,11 +19,17 @@ def test_build_prompt_contains_headlines():
 
 
 def test_build_prompt_contains_fundamental_data():
-    info = {"trailingPE": 24.5, "dividendYield": 0.006, "earningsGrowth": 0.08}
+    # dividendYield arrives in percent (yfinance >= 0.2.55) and is rendered as a % string
+    info = {"trailingPE": 24.5, "dividendYield": 0.6, "earningsGrowth": 0.08}
     prompt = build_prompt("AAPL", info, [])
     assert "24.5" in prompt
-    assert "0.006" in prompt
+    assert "0.60%" in prompt
     assert "0.08" in prompt
+
+
+def test_build_prompt_missing_dividend_yield_shows_na():
+    prompt = build_prompt("AAPL", {"trailingPE": 24.5}, [])
+    assert "Dividend Yield: N/A" in prompt
 
 
 def test_build_prompt_instructs_signal_format():

@@ -667,3 +667,44 @@ def test_get_closed_trades_shape():
     assert isinstance(row["price"], float)
     assert isinstance(row["cost_basis"], float)
     assert isinstance(row["executed_at"], str)
+
+
+# ---------------------------------------------------------------------------
+# claim_recommendation — atomic idempotency gate for Discord buttons
+# ---------------------------------------------------------------------------
+
+def _make_rec(ticker="AAPL"):
+    from database.queries import create_recommendation as _cr
+    return _cr(
+        db_path=DB_PATH, ticker=ticker, signal="BUY",
+        reasoning=".", price=100.0, dividend_yield=None, pe_ratio=None,
+    )
+
+
+def test_claim_recommendation_pending_to_approved():
+    from database.queries import claim_recommendation
+    rec_id = _make_rec()
+    assert claim_recommendation(DB_PATH, rec_id, "approved") is True
+    assert get_recommendation(DB_PATH, rec_id)["status"] == "approved"
+
+
+def test_claim_recommendation_second_claim_loses():
+    from database.queries import claim_recommendation
+    rec_id = _make_rec()
+    assert claim_recommendation(DB_PATH, rec_id, "approved") is True
+    assert claim_recommendation(DB_PATH, rec_id, "approved") is False
+    assert claim_recommendation(DB_PATH, rec_id, "rejected") is False
+    assert get_recommendation(DB_PATH, rec_id)["status"] == "approved"
+
+
+def test_claim_recommendation_non_pending_not_claimable():
+    from database.queries import claim_recommendation
+    rec_id = _make_rec()
+    update_recommendation_status(DB_PATH, rec_id, "expired")
+    assert claim_recommendation(DB_PATH, rec_id, "approved") is False
+    assert get_recommendation(DB_PATH, rec_id)["status"] == "expired"
+
+
+def test_claim_recommendation_missing_id_returns_false():
+    from database.queries import claim_recommendation
+    assert claim_recommendation(DB_PATH, 99999, "approved") is False

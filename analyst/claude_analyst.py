@@ -6,6 +6,7 @@ import openai
 from config import Config
 from tenacity import retry, retry_if_exception, stop_after_attempt
 from screener.macro import compute_52w_position
+from screener.fundamentals import normalize_dividend_yield
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +128,8 @@ def build_prompt(
 ) -> str:
     """Build the analysis prompt for a single ticker."""
     pe = info.get("trailingPE", "N/A")
-    div_yield = info.get("dividendYield", "N/A")
+    raw_yield = info.get("dividendYield")
+    div_yield = f"{normalize_dividend_yield(raw_yield):.2%}" if raw_yield is not None else "N/A"
     earnings_growth = info.get("earningsGrowth", "N/A")
 
     headlines_block = (

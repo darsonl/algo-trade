@@ -96,8 +96,9 @@ async def test_sell_approve_sends_confirmation_message(config, mock_interaction,
 
     await _get_approve_callback(view)(view, mock_interaction, MagicMock())
 
-    mock_interaction.response.send_message.assert_called_once()
-    msg = mock_interaction.response.send_message.call_args[0][0]
+    mock_interaction.response.defer.assert_called_once()
+    mock_interaction.followup.send.assert_called_once()
+    msg = mock_interaction.followup.send.call_args[0][0]
     assert "DRY RUN" in msg
     assert "selling" in msg
     assert "AAPL" in msg
@@ -194,3 +195,55 @@ async def test_sell_approve_populates_cost_basis(config, mock_interaction, db_pa
     conn.close()
     assert trade is not None
     assert trade["cost_basis"] == pytest.approx(120.0)
+
+
+# ---------------------------------------------------------------------------
+# Idempotency gate + order-failure recovery (review items 2/3)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_sell_approve_double_click_records_one_trade(config, mock_interaction, db_path):
+    """Second approve loses the claim race (position closed + status approved): one trade only."""
+    rec_id = create_recommendation(db_path, "AAPL", "SELL", "Overbought", 170.0, None, None)
+    create_position(db_path, "AAPL", 10, 150.0)
+    view = SellApproveRejectView(rec_id, "AAPL", 10.0, 170.0, config)
+
+    second_interaction = AsyncMock()
+    await _get_approve_callback(view)(view, mock_interaction, MagicMock())
+    await _get_approve_callback(view)(view, second_interaction, MagicMock())
+
+    conn = get_connection(db_path)
+    count = conn.execute(
+        "SELECT COUNT(*) AS n FROM trades WHERE recommendation_id = ?", (rec_id,)
+    ).fetchone()["n"]
+    conn.close()
+    assert count == 1
+    # Second click was answered ephemerally, not with a sale confirmation
+    second_interaction.followup.send.assert_not_called()
+    assert second_interaction.response.send_message.call_args[1].get("ephemeral") is True
+
+
+@pytest.mark.asyncio
+@patch("discord_bot.bot.place_sell_order", side_effect=RuntimeError("Schwab down"))
+async def test_sell_approve_order_failure_reopens_recommendation(mock_place, db_path, mock_interaction):
+    """Failed sell order: status back to pending, position still open, no trade recorded."""
+    c = Config()
+    c.db_path = db_path
+    c.dry_run = False
+    rec_id = create_recommendation(db_path, "AAPL", "SELL", "Overbought", 170.0, None, None)
+    create_position(db_path, "AAPL", 10, 150.0)
+    view = SellApproveRejectView(rec_id, "AAPL", 10.0, 170.0, c)
+
+    await _get_approve_callback(view)(view, mock_interaction, MagicMock())
+
+    rec = get_recommendation(db_path, rec_id)
+    assert rec["status"] == "pending"
+    assert len(get_open_positions(db_path)) == 1
+    conn = get_connection(db_path)
+    count = conn.execute(
+        "SELECT COUNT(*) AS n FROM trades WHERE recommendation_id = ?", (rec_id,)
+    ).fetchone()["n"]
+    conn.close()
+    assert count == 0
+    msg = mock_interaction.followup.send.call_args[0][0]
+    assert "failed" in msg

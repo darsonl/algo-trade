@@ -63,7 +63,9 @@ class ApproveRejectView(discord.ui.View):
 
         # POS-05: exposure guard — block if total portfolio exposure would exceed limit
         new_exposure = shares * self.price
-        existing_positions = queries.get_open_positions(self.config.db_path)
+        existing_positions = await asyncio.to_thread(
+            queries.get_open_positions, self.config.db_path
+        )
         existing_total = sum(
             p["shares"] * (p["last_price"] if p["last_price"] is not None else p["avg_cost_usd"])
             for p in existing_positions
@@ -77,22 +79,54 @@ class ApproveRejectView(discord.ui.View):
             )
             return
 
+        # Idempotency gate: exactly one click wins the pending -> approved transition.
+        claimed = await asyncio.to_thread(
+            queries.claim_recommendation, self.config.db_path, self.rec_id, "approved"
+        )
+        if not claimed:
+            await interaction.response.send_message(
+                f"This recommendation for {self.ticker} was already handled.",
+                ephemeral=True,
+            )
+            return
+
+        # Acknowledge within Discord's 3s interaction window before the Schwab call,
+        # which is synchronous HTTP with retries and must run off the event loop.
+        await interaction.response.defer()
+
         order_id = None
         limit_price_val = None      # D-06: dry-run records market defaults regardless of use_limit_buy
         order_type_val = "market"   # D-06: see above
-        if not self.config.dry_run:
-            if self.config.use_limit_buy:
-                order_id = place_limit_order(self.ticker, shares, self.price, self.config)
-                limit_price_val = self.price
-                order_type_val = "limit"
-            else:
-                order_id = place_order(self.ticker, shares, self.config)
+        try:
+            if not self.config.dry_run:
+                if self.config.use_limit_buy:
+                    order_id = await asyncio.to_thread(
+                        place_limit_order, self.ticker, shares, self.price, self.config
+                    )
+                    limit_price_val = self.price
+                    order_type_val = "limit"
+                else:
+                    order_id = await asyncio.to_thread(
+                        place_order, self.ticker, shares, self.config
+                    )
+        except Exception as exc:
+            # Release the claim so the button can be retried after the failure.
+            await asyncio.to_thread(
+                queries.update_recommendation_status, self.config.db_path, self.rec_id, "pending"
+            )
+            logger.error("Buy order failed for %s: %s", self.ticker, exc)
+            await interaction.followup.send(
+                f"Order placement failed for {self.ticker}: {exc} — recommendation "
+                "re-opened. Verify in Schwab before retrying."
+            )
+            return
 
         # WARNING (RISK-05 / Phase 17): GTC limit orders are recorded as positions immediately
         # on broker acknowledgement, not on fill. If the limit does not fill, has_open_position()
         # will block re-buys and the sell pass may attempt to sell non-existent shares.
         # Fill reconciliation is deferred to a future phase.
-        queries.create_trade(
+        await asyncio.to_thread(
+            queries.create_trade,
             db_path=self.config.db_path,
             recommendation_id=self.rec_id,
             ticker=self.ticker,
@@ -103,8 +137,9 @@ class ApproveRejectView(discord.ui.View):
             order_type=order_type_val,
         )
         # POS-02: track position
-        queries.upsert_position(self.config.db_path, self.ticker, shares, self.price)
-        queries.update_recommendation_status(self.config.db_path, self.rec_id, "approved")
+        await asyncio.to_thread(
+            queries.upsert_position, self.config.db_path, self.ticker, shares, self.price
+        )
 
         elapsed = f" (scan at {self.scan_time})" if self.scan_time else ""
         if self.config.dry_run:
@@ -113,12 +148,20 @@ class ApproveRejectView(discord.ui.View):
             msg = f"Approved: buying {shares} share(s) of {self.ticker} at ${self.price:.2f} (limit, GTC{elapsed})."
         else:
             msg = f"Approved: buying {shares} share(s) of {self.ticker} at ${self.price:.2f}{elapsed}."
-        await interaction.response.send_message(msg)
+        await interaction.followup.send(msg)
         self.stop()
 
     @discord.ui.button(label="Reject", style=discord.ButtonStyle.danger, emoji="❌")
     async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
-        queries.update_recommendation_status(self.config.db_path, self.rec_id, "rejected")
+        claimed = await asyncio.to_thread(
+            queries.claim_recommendation, self.config.db_path, self.rec_id, "rejected"
+        )
+        if not claimed:
+            await interaction.response.send_message(
+                f"This recommendation for {self.ticker} was already handled.",
+                ephemeral=True,
+            )
+            return
         await interaction.response.send_message(f"Rejected {self.ticker}.")
         self.stop()
 
@@ -141,25 +184,60 @@ class SellApproveRejectView(discord.ui.View):
     @discord.ui.button(label="Approve Sell", style=discord.ButtonStyle.danger, emoji="✅")
     async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
         # Idempotency guard: reject duplicate/concurrent presses if position already closed (WR-01)
-        if not queries.has_open_position(self.config.db_path, self.ticker):
+        has_position = await asyncio.to_thread(
+            queries.has_open_position, self.config.db_path, self.ticker
+        )
+        if not has_position:
             await interaction.response.send_message(
                 f"Position for {self.ticker} is already closed.", ephemeral=True
             )
             return
 
+        # Idempotency gate: exactly one click wins the pending -> approved transition.
+        claimed = await asyncio.to_thread(
+            queries.claim_recommendation, self.config.db_path, self.rec_id, "approved"
+        )
+        if not claimed:
+            await interaction.response.send_message(
+                f"This sell recommendation for {self.ticker} was already handled.",
+                ephemeral=True,
+            )
+            return
+
+        # Acknowledge within Discord's 3s interaction window before the Schwab call,
+        # which is synchronous HTTP with retries and must run off the event loop.
+        await interaction.response.defer()
+
         order_id = None
-        if not self.config.dry_run:
-            order_id = place_sell_order(self.ticker, self.shares, self.config)
+        try:
+            if not self.config.dry_run:
+                order_id = await asyncio.to_thread(
+                    place_sell_order, self.ticker, self.shares, self.config
+                )
+        except Exception as exc:
+            # Release the claim so the button can be retried after the failure.
+            await asyncio.to_thread(
+                queries.update_recommendation_status, self.config.db_path, self.rec_id, "pending"
+            )
+            logger.error("Sell order failed for %s: %s", self.ticker, exc)
+            await interaction.followup.send(
+                f"Sell order placement failed for {self.ticker}: {exc} — recommendation "
+                "re-opened. Verify in Schwab before retrying."
+            )
+            return
 
         # Fetch cost_basis from open position before recording trade (PORT-02 / T-13-02)
         cost_basis = None
-        open_positions = queries.get_open_positions(self.config.db_path)
+        open_positions = await asyncio.to_thread(
+            queries.get_open_positions, self.config.db_path
+        )
         for pos in open_positions:
             if pos["ticker"] == self.ticker:
                 cost_basis = pos["avg_cost_usd"]
                 break
 
-        queries.create_trade(
+        await asyncio.to_thread(
+            queries.create_trade,
             db_path=self.config.db_path,
             recommendation_id=self.rec_id,
             ticker=self.ticker,
@@ -169,19 +247,26 @@ class SellApproveRejectView(discord.ui.View):
             side="sell",
             cost_basis=cost_basis,
         )
-        queries.close_position(self.config.db_path, self.ticker)
-        queries.update_recommendation_status(self.config.db_path, self.rec_id, "approved")
+        await asyncio.to_thread(queries.close_position, self.config.db_path, self.ticker)
 
         label = "[DRY RUN] " if self.config.dry_run else ""
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"{label}Approved: selling {self.shares} share(s) of {self.ticker} at ${self.current_price:.2f}.",
         )
         self.stop()
 
     @discord.ui.button(label="Reject", style=discord.ButtonStyle.secondary, emoji="❌")
     async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
-        queries.update_recommendation_status(self.config.db_path, self.rec_id, "rejected")
-        queries.set_sell_blocked(self.config.db_path, self.ticker)
+        claimed = await asyncio.to_thread(
+            queries.claim_recommendation, self.config.db_path, self.rec_id, "rejected"
+        )
+        if not claimed:
+            await interaction.response.send_message(
+                f"This sell recommendation for {self.ticker} was already handled.",
+                ephemeral=True,
+            )
+            return
+        await asyncio.to_thread(queries.set_sell_blocked, self.config.db_path, self.ticker)
         await interaction.response.send_message(
             f"Rejected sell for {self.ticker}. Position sell-blocked until RSI drops below threshold.",
         )
