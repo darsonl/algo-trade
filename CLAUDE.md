@@ -122,7 +122,7 @@ MAX_POSITION_SIZE_USD=500
 
 ### Test Suite
 
-252 tests as of Phase 8 completion. Run with `pytest -q` (~14s). Key test files:
+482 tests as of the v1.3 improvement pass. Run with `pytest -q` (~35s). Key test files:
 - `test_screener_technicals.py` — RSI math with synthetic price series
 - `test_exit_signals.py` — RSI + MACD gate (16 tests, 2×2 matrix)
 - `test_sell_scan.py` — run_scan sell pass integration (9 tests)

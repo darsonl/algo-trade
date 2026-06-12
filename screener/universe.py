@@ -43,7 +43,9 @@ def get_universe(watchlist_path: str, extra_tickers: list[str] | None = None) ->
     return result
 
 
-def partition_watchlist(tickers: list[str]) -> tuple[list[str], list[str]]:
+def partition_watchlist(
+    tickers: list[str], info_sink: dict | None = None
+) -> tuple[list[str], list[str]]:
     """
     Classify tickers as stocks or ETFs using yfinance quoteType.
 
@@ -51,6 +53,14 @@ def partition_watchlist(tickers: list[str]) -> tuple[list[str], list[str]]:
     equals 'ETF', the ticker is classified as an ETF. Otherwise it is treated as
     a stock. When yfinance raises any exception, falls back to _ETF_ALLOWLIST:
     tickers in the allowlist go to etfs, all others go to stocks.
+
+    Performance: `.info` is the heaviest yfinance call, and the scan loop needs it
+    again (fundamentals for stocks, expense ratio for ETFs). Pass a dict as
+    `info_sink` to capture the fetched info per ticker ({ticker: info}); the caller
+    can then reuse it instead of fetching `.info` a second time. Tickers whose lookup
+    failed (allowlist fallback) are absent from the sink, so the caller should treat a
+    miss as "fetch it yourself". The return value is unchanged so existing
+    callers and tests are unaffected.
 
     Do NOT use @_retry — per-ticker failures are handled by the allowlist fallback.
     The function will be wrapped in asyncio.to_thread at its call site (Plan 03).
@@ -63,7 +73,10 @@ def partition_watchlist(tickers: list[str]) -> tuple[list[str], list[str]]:
     etfs: list[str] = []
     for ticker in tickers:
         try:
-            quote_type = yf.Ticker(ticker).info.get("quoteType", "")
+            info = yf.Ticker(ticker).info
+            if info_sink is not None:
+                info_sink[ticker] = info
+            quote_type = info.get("quoteType", "")
             if quote_type == "ETF":
                 etfs.append(ticker)
             else:
@@ -153,6 +166,18 @@ def get_sp500_tickers() -> list[str]:
 _top_sp500_cache: dict = {}
 
 
+def _rank_desc(items: list[tuple[float, str]]) -> dict[str, int]:
+    """Rank tickers by value descending (1 = highest value).
+
+    Ties share the same rank (standard competition ranking: a ticker's rank is
+    1 + the number of tickers with a strictly greater value).
+    """
+    ranks: dict[str, int] = {}
+    for value, ticker in items:
+        ranks[ticker] = 1 + sum(1 for other, _ in items if other > value)
+    return ranks
+
+
 def get_top_sp500_by_fundamentals(config) -> list[str]:
     """
     Return top config.top_sp500_count S&P 500 tickers ranked by combined EPS + ROE score.
@@ -168,27 +193,33 @@ def get_top_sp500_by_fundamentals(config) -> list[str]:
             return _top_sp500_cache["tickers"]
 
     tickers = get_sp500_tickers()
-    scores: list[tuple[float, str]] = []
+    scored: list[tuple[float, float, str]] = []  # (eps, roe, ticker)
     for t in tickers:
         try:
             info = yf.Ticker(t).info
             eps = info.get("trailingEps") or 0.0
             roe = info.get("returnOnEquity") or 0.0
-            scores.append((eps + roe, t))
+            scored.append((eps, roe, t))
         except Exception:
             continue
         time.sleep(0.15)
 
-    scores.sort(key=lambda x: x[0], reverse=True)
-    top = [t for _, t in scores[: config.top_sp500_count]]
-
-    if not top:
+    if not scored:
         # All per-ticker fetches failed; fall back to unranked slice without caching
         logging.getLogger(__name__).warning(
             "get_top_sp500_by_fundamentals: all per-ticker EPS/ROE fetches failed, "
             "falling back to unranked S&P 500 slice"
         )
         return tickers[: config.top_sp500_count]
+
+    # Rank-sum: rank EPS and ROE independently (1 = best), then combine by summing the
+    # two ranks so a stock strong on BOTH metrics outranks one that is great on a single
+    # metric. Scale-free — avoids EPS dollar magnitude swamping the ROE fraction, the
+    # flaw in the previous `eps + roe` score.
+    eps_rank = _rank_desc([(eps, t) for eps, _roe, t in scored])
+    roe_rank = _rank_desc([(roe, t) for _eps, roe, t in scored])
+    ranked = sorted(scored, key=lambda r: eps_rank[r[2]] + roe_rank[r[2]])
+    top = [t for _eps, _roe, t in ranked[: config.top_sp500_count]]
 
     _top_sp500_cache = {"tickers": top, "fetched_at": datetime.datetime.now()}
     return top

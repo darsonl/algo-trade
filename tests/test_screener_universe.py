@@ -116,9 +116,91 @@ def test_partition_watchlist_empty_input():
     assert etfs == []
 
 
+def test_partition_watchlist_populates_info_sink():
+    """info_sink captures the fetched .info per ticker so the caller can reuse it
+    instead of fetching the (heavy) .info a second time."""
+    def mock_ticker(t):
+        m = MagicMock()
+        m.info = {"quoteType": "ETF" if t == "SPY" else "EQUITY", "trailingPE": 21.0}
+        return m
+
+    info_sink = {}
+    with patch("screener.universe.yf") as mock_yf:
+        mock_yf.Ticker.side_effect = mock_ticker
+        stocks, etfs = partition_watchlist(["AAPL", "SPY"], info_sink)
+
+    # Return value unchanged (2-tuple); sink populated for every successfully-fetched ticker.
+    assert stocks == ["AAPL"] and etfs == ["SPY"]
+    assert set(info_sink) == {"AAPL", "SPY"}
+    assert info_sink["AAPL"]["trailingPE"] == 21.0
+    assert info_sink["SPY"]["quoteType"] == "ETF"
+
+
+def test_partition_watchlist_info_sink_omits_failed_tickers():
+    """Tickers that hit the allowlist fallback (raised before .info) are absent from
+    info_sink, so the caller knows to fetch them itself."""
+    def mock_ticker(t):
+        if t == "SPY":
+            raise Exception("timeout")
+        m = MagicMock()
+        m.info = {"quoteType": "EQUITY"}
+        return m
+
+    info_sink = {}
+    with patch("screener.universe.yf") as mock_yf:
+        mock_yf.Ticker.side_effect = mock_ticker
+        partition_watchlist(["AAPL", "SPY"], info_sink)
+
+    assert "AAPL" in info_sink
+    assert "SPY" not in info_sink
+
+
 def test_get_watchlist_reads_etf_watchlist(tmp_path):
     """Test 5: get_watchlist reads etf_watchlist.txt correctly."""
     p = tmp_path / "etf_watchlist.txt"
     p.write_text("# ETF watchlist\nSPY\nQQQ\nVTI\n")
     tickers = get_watchlist(str(p))
     assert tickers == ["SPY", "QQQ", "VTI"]
+
+
+# --- get_top_sp500_by_fundamentals rank-sum scoring (C2) ---
+
+def test_get_top_sp500_uses_rank_sum_not_value_sum(monkeypatch):
+    """Rank-sum surfaces a balanced high-ROE name over a high-EPS / low-ROE name that the
+    old `eps + roe` score ranked first (EPS dollar magnitude dominated the sum)."""
+    from types import SimpleNamespace
+    import screener.universe as u
+
+    data = {
+        "MEGA_EPS": {"trailingEps": 1000.0, "returnOnEquity": 0.01},
+        "BAL1":     {"trailingEps": 50.0,   "returnOnEquity": 0.40},
+        "BAL2":     {"trailingEps": 40.0,   "returnOnEquity": 0.35},
+        "BAL3":     {"trailingEps": 30.0,   "returnOnEquity": 0.30},
+    }
+
+    def mock_ticker(t):
+        m = MagicMock()
+        m.info = data[t]
+        return m
+
+    u._top_sp500_cache = {}  # bypass the in-memory daily cache
+    monkeypatch.setattr(u, "get_sp500_tickers", lambda: list(data))
+    monkeypatch.setattr(u.time, "sleep", lambda *a, **k: None)
+    monkeypatch.setattr(u.yf, "Ticker", mock_ticker)
+
+    top = u.get_top_sp500_by_fundamentals(SimpleNamespace(top_sp500_count=1))
+
+    # EPS ranks: MEGA_EPS=1, BAL1=2, BAL2=3, BAL3=4. ROE ranks: BAL1=1, BAL2=2, BAL3=3,
+    # MEGA_EPS=4. Composites: BAL1=3 (best), MEGA_EPS=5, BAL2=5, BAL3=7 -> rank-sum picks BAL1.
+    assert top == ["BAL1"]
+    # The OLD eps+roe formula would have picked MEGA_EPS — proves behavior genuinely changed.
+    old_winner = max(data, key=lambda t: data[t]["trailingEps"] + data[t]["returnOnEquity"])
+    assert old_winner == "MEGA_EPS"
+
+
+def test_rank_desc_handles_ties():
+    """_rank_desc gives tied values the same (competition) rank."""
+    from screener.universe import _rank_desc
+    ranks = _rank_desc([(10.0, "A"), (10.0, "B"), (5.0, "C")])
+    assert ranks["A"] == 1 and ranks["B"] == 1  # tie share rank 1
+    assert ranks["C"] == 3  # 1 + two strictly-greater values

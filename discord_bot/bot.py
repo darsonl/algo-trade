@@ -43,6 +43,13 @@ class ApproveRejectView(discord.ui.View):
         self.price = price
         self.config = config
         self.scan_time = scan_time
+        # Deterministic custom_ids (keyed by rec_id) make these buttons survive a bot
+        # restart: the ids baked into the sent message match the ids on the view
+        # re-registered at startup (see build_view_for_recommendation + setup_hook).
+        # Without this, decorator buttons get a fresh random id each run, so clicks on
+        # a pre-restart message route nowhere ("interaction failed").
+        self.approve.custom_id = f"approve:{rec_id}"
+        self.reject.custom_id = f"reject:{rec_id}"
 
     @discord.ui.button(label="Approve", style=discord.ButtonStyle.success, emoji="✅")
     async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -126,6 +133,10 @@ class SellApproveRejectView(discord.ui.View):
         self.shares = int(shares)  # Schwab expects int
         self.current_price = current_price
         self.config = config
+        # Deterministic custom_ids (see ApproveRejectView) so a sell view re-registered
+        # after restart matches the buttons on the original message.
+        self.approve.custom_id = f"sell_approve:{rec_id}"
+        self.reject.custom_id = f"sell_reject:{rec_id}"
 
     @discord.ui.button(label="Approve Sell", style=discord.ButtonStyle.danger, emoji="✅")
     async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -177,6 +188,24 @@ class SellApproveRejectView(discord.ui.View):
         self.stop()
 
 
+def build_view_for_recommendation(rec, config: Config) -> discord.ui.View:
+    """Reconstruct the persistent view that matches a stored recommendation row.
+
+    SELL rows → SellApproveRejectView (shares read from the open position, or 0.0 if
+    none — the approve handler's has_open_position guard makes that safe). BUY/ETF rows
+    → ApproveRejectView. Used at startup to re-register views so Approve/Reject buttons
+    posted before a restart keep working.
+    """
+    if rec["signal"] == "SELL":
+        shares = 0.0
+        for pos in queries.get_open_positions(config.db_path):
+            if pos["ticker"] == rec["ticker"]:
+                shares = pos["shares"]
+                break
+        return SellApproveRejectView(rec["id"], rec["ticker"], shares, rec["price"], config)
+    return ApproveRejectView(rec["id"], rec["ticker"], rec["price"], config)
+
+
 class TradingBot(discord.Client):
     """Discord client that posts stock recommendations and handles Approve/Reject button interactions."""
 
@@ -226,6 +255,33 @@ class TradingBot(discord.Client):
             )
         )
         await self.tree.sync()
+        self._register_persistent_views()
+
+    def _register_persistent_views(self) -> None:
+        """Re-register persistent Approve/Reject views for still-pending recommendations.
+
+        Called on startup so buttons posted before a restart keep routing to working
+        handlers. discord.py matches incoming clicks to these views by the deterministic
+        custom_ids set in each view's __init__.
+        """
+        try:
+            pending = queries.get_pending_recommendations(self.config.db_path)
+        except Exception as exc:
+            logger.warning("Could not load pending recommendations for view restore: %s", exc)
+            return
+        restored = 0
+        for rec in pending:
+            message_id = rec["discord_message_id"]
+            if not message_id:
+                continue
+            try:
+                view = build_view_for_recommendation(rec, self.config)
+                self.add_view(view, message_id=int(message_id))
+                restored += 1
+            except Exception as exc:
+                logger.warning("Failed to restore view for recommendation %s: %s", rec["id"], exc)
+        if restored:
+            logger.info("Restored %d persistent recommendation view(s) after startup", restored)
 
     async def _scan_command(self, interaction: discord.Interaction):
         try:

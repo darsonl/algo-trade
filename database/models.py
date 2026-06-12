@@ -1,12 +1,37 @@
 import sqlite3
+from contextlib import contextmanager
 
 
 def get_connection(db_path: str) -> sqlite3.Connection:
-    """Open a SQLite connection to db_path with WAL mode and Row factory enabled."""
+    """Open a SQLite connection to db_path with WAL mode and Row factory enabled.
+
+    Sets busy_timeout so a connection waits (up to 5s) for a competing writer to
+    release its lock instead of immediately raising "database is locked" — defensive
+    hardening for the case where a DB write runs off the event-loop thread.
+    """
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     return conn
+
+
+@contextmanager
+def get_cursor(db_path: str):
+    """Yield a connection that commits on clean exit and ALWAYS closes.
+
+    Replaces the repeated open / commit / close dance in queries.py and fixes the
+    connection leak in that pattern: if a statement raised between open and close, the
+    old code skipped conn.close(). Here close() runs in `finally`, and commit() runs
+    only on a clean exit (an exception closes without committing and re-propagates).
+    Reads are fine too — commit() on a read-only connection is a harmless no-op.
+    """
+    conn = get_connection(db_path)
+    try:
+        yield conn
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def initialize_db(db_path: str) -> None:
