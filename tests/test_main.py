@@ -537,3 +537,26 @@ def test_headline_hash_empty_list_salted_with_date():
         mock_date.today.return_value = date(2026, 6, 12)
         h_day2 = compute_headline_hash([])
     assert h_day1 != h_day2
+
+
+# --- configure_scheduler: SCAN_TIMEZONE ---
+
+def test_scheduler_uses_configured_timezone():
+    cfg = Config()
+    cfg.scan_times = ["09:30"]
+    cfg.scan_timezone = "America/New_York"
+    scheduler = BackgroundScheduler()
+    configure_scheduler(scheduler, cfg, _dummy_job)
+    job = scheduler.get_jobs()[0]
+    assert str(job.trigger.timezone) == "America/New_York"
+
+
+def test_scheduler_falls_back_to_local_timezone_when_unset():
+    cfg = Config()
+    cfg.scan_times = ["09:30"]
+    cfg.scan_timezone = ""
+    scheduler = BackgroundScheduler()
+    configure_scheduler(scheduler, cfg, _dummy_job)
+    job = scheduler.get_jobs()[0]
+    # Empty setting must not crash and must resolve to a concrete (local) timezone
+    assert job.trigger.timezone is not None

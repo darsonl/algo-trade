@@ -66,6 +66,9 @@ class Config:
 
     scan_hour: int = int(os.getenv("SCAN_HOUR", "9"))
     scan_minute: int = int(os.getenv("SCAN_MINUTE", "0"))
+    # IANA timezone for the scan schedule (e.g. "America/New_York" to stay
+    # market-aligned across DST). Empty = machine-local time (legacy behavior).
+    scan_timezone: str = os.getenv("SCAN_TIMEZONE", "")
     scan_times: list = field(default_factory=_parse_scan_times)
     etf_scan_hour: int = int(os.getenv("ETF_SCAN_HOUR", "9"))
     etf_scan_minute: int = int(os.getenv("ETF_SCAN_MINUTE", "30"))

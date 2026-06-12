@@ -173,7 +173,7 @@ def test_ticker_recommended_today_true_for_approved_status():
 
 
 def test_ticker_recommended_today_false_for_yesterday_utc_date():
-    """UTC boundary: a record created yesterday (UTC) is not 'today'."""
+    """Day boundary: a record created 24h ago is not 'today' (local-date comparison)."""
     import sqlite3
     rec_id = create_recommendation(
         db_path=DB_PATH, ticker="AAPL", signal="BUY",
@@ -190,7 +190,7 @@ def test_ticker_recommended_today_false_for_yesterday_utc_date():
 
 
 def test_ticker_recommended_today_true_for_today_utc_date():
-    """UTC boundary: a record explicitly created today (UTC) is found."""
+    """Day boundary: a record created at the current instant is 'today' (local-date comparison)."""
     import sqlite3
     rec_id = create_recommendation(
         db_path=DB_PATH, ticker="AAPL", signal="BUY",

@@ -309,6 +309,20 @@ def _call_api(client, model: str, prompt: str) -> str:
     return response.choices[0].message.content
 
 
+def _note_attempt(on_attempt, provider: str) -> None:
+    """Record a quota-consuming provider attempt via the on_attempt callback.
+
+    Recording failures (e.g. a locked DB) must never block the analysis itself,
+    so any exception is logged and swallowed.
+    """
+    if on_attempt is None:
+        return
+    try:
+        on_attempt(provider)
+    except Exception as exc:
+        logger.warning("Failed to record analyst call attempt for '%s': %s", provider, exc)
+
+
 def _run_with_fallbacks(
     prompt: str,
     config: Config,
@@ -317,6 +331,7 @@ def _run_with_fallbacks(
     fallback2_client,
     ticker: str,
     log_context: str = "",
+    on_attempt=None,
 ) -> dict:
     """Run a built prompt through the primary → fallback → fallback2 analyst chain.
 
@@ -328,6 +343,12 @@ def _run_with_fallbacks(
 
     `log_context` is an optional phrase (e.g. "ETF analysis", "sell analysis")
     inserted into the warning logs to distinguish the call site.
+
+    `on_attempt(provider)` is invoked before EACH provider attempt so quota
+    tracking counts calls that reach the provider and then fail — those burn
+    quota just like successes did. (Tenacity retries inside _call_api still
+    count as one attempt; close enough, and _should_retry already stops
+    retrying once a daily quota is exhausted.)
     """
     model = config.analyst_model or _DEFAULT_MODELS.get(config.analyst_provider, "")
     fallback_model = config.analyst_fallback_model or _DEFAULT_MODELS.get(config.analyst_fallback_provider, "")
@@ -336,6 +357,7 @@ def _run_with_fallbacks(
 
     # --- Primary provider ---
     try:
+        _note_attempt(on_attempt, config.analyst_provider)
         text = _call_api(client, model, prompt)
         result = parse_claude_response(text)
         result["provider_used"] = config.analyst_provider
@@ -357,6 +379,7 @@ def _run_with_fallbacks(
 
     # --- First fallback provider ---
     try:
+        _note_attempt(on_attempt, config.analyst_fallback_provider)
         text = _call_api(fallback_client, fallback_model, prompt)
         result = parse_claude_response(text)
         result["provider_used"] = config.analyst_fallback_provider
@@ -377,6 +400,7 @@ def _run_with_fallbacks(
         )
 
     # --- Second fallback provider (failure propagates from here) ---
+    _note_attempt(on_attempt, config.analyst_fallback2_provider)
     text = _call_api(fallback2_client, fallback2_model, prompt)
     result = parse_claude_response(text)
     result["provider_used"] = config.analyst_fallback2_provider
@@ -394,11 +418,13 @@ def analyze_ticker(
     fundamental_trend: dict | None = None,  # NEW — Phase 15 SIG-07, SIG-08
     earnings_date: str | None = None,        # NEW — Phase 16 SIG-06
     fallback2_client=None,
+    on_attempt=None,
 ) -> dict:
     """
     Call the configured analyst provider to get a BUY/HOLD/SKIP signal.
     Returns {"signal": str, "reasoning": str, "provider_used": str}.
     Falls back through fallback_client → fallback2_client on either API errors or parse errors.
+    on_attempt(provider) is called before each provider attempt (quota tracking).
     """
     if client is None:
         client = create_analyst_client(config)
@@ -412,6 +438,7 @@ def analyze_ticker(
 
     return _run_with_fallbacks(
         prompt, config, client, fallback_client, fallback2_client, ticker,
+        on_attempt=on_attempt,
     )
 
 
@@ -425,10 +452,12 @@ def analyze_etf_ticker(
     fallback_client=None,
     macro_context: dict | None = None,
     fallback2_client=None,
+    on_attempt=None,
 ) -> dict:
     """Call the analyst for an ETF BUY/HOLD/SKIP signal (per D-01, D-03).
     Returns {"signal": str, "reasoning": str, "provider_used": str}.
     Falls back through fallback_client → fallback2_client on either API errors or parse errors.
+    on_attempt(provider) is called before each provider attempt (quota tracking).
     """
     if client is None:
         client = create_analyst_client(config)
@@ -452,6 +481,7 @@ def analyze_etf_ticker(
     return _run_with_fallbacks(
         prompt, config, client, fallback_client, fallback2_client, ticker,
         log_context="ETF analysis",
+        on_attempt=on_attempt,
     )
 
 
@@ -537,12 +567,14 @@ def analyze_sell_ticker(
     macro_context: dict | None = None,
     info: dict | None = None,
     fallback2_client=None,
+    on_attempt=None,
 ) -> dict:
     """Call the analyst to get a SELL/HOLD signal for an open position.
 
     Reuses the same _call_api + fallback pipeline as analyze_ticker (per D-03).
     Falls back through fallback_client → fallback2_client on either API errors or parse errors.
     Returns {"signal": str, "reasoning": str, "provider_used": str}.
+    on_attempt(provider) is called before each provider attempt (quota tracking).
     """
     if client is None:
         client = create_analyst_client(config)
@@ -559,4 +591,5 @@ def analyze_sell_ticker(
     return _run_with_fallbacks(
         prompt, config, client, fallback_client, fallback2_client, ticker,
         log_context="sell analysis",
+        on_attempt=on_attempt,
     )

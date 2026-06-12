@@ -164,11 +164,17 @@ def get_pending_recommendations(db_path: str) -> list[sqlite3.Row]:
 
 
 def ticker_recommended_today(db_path: str, ticker: str) -> bool:
-    """Return True if ticker has a non-expired, non-rejected recommendation created today (UTC date)."""
+    """Return True if ticker has a non-expired, non-rejected recommendation created today.
+
+    "Today" is the machine-local calendar date ('localtime' modifier on the
+    UTC-stored created_at), aligning the dupe-prevention window with the
+    scheduler and analyst quota tracking, which both use local time. The old
+    bare date('now') compared UTC days, which roll over mid-evening US time.
+    """
     with get_cursor(db_path) as conn:
         row = conn.execute(
             """SELECT id FROM recommendations
-               WHERE ticker = ? AND date(created_at) = date('now')
+               WHERE ticker = ? AND date(created_at, 'localtime') = date('now', 'localtime')
                AND status NOT IN ('expired', 'rejected')""",
             (ticker,),
         ).fetchone()
@@ -222,11 +228,11 @@ def create_position(db_path: str, ticker: str, shares: float, avg_cost_usd: floa
     with get_cursor(db_path) as conn:
         cursor = conn.execute(
             """INSERT INTO positions (ticker, shares, avg_cost_usd, entry_date, status)
-               VALUES (?, ?, ?, date('now'), 'open')
+               VALUES (?, ?, ?, date('now', 'localtime'), 'open')
                ON CONFLICT(ticker) DO UPDATE SET
                    shares=excluded.shares,
                    avg_cost_usd=excluded.avg_cost_usd,
-                   entry_date=date('now'),
+                   entry_date=date('now', 'localtime'),
                    status='open',
                    last_price=NULL,
                    last_updated=NULL""",

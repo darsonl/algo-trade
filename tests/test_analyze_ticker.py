@@ -76,3 +76,59 @@ def test_analyze_ticker_uses_configured_model():
     analyze_ticker("AAPL", {}, [], _make_config(model="claude-custom-model"), client=client)
     call_kwargs = client.messages.create.call_args[1]
     assert call_kwargs["model"] == "claude-custom-model"
+
+
+# --- on_attempt quota callback (counts attempts, not successes) ---
+
+def test_on_attempt_called_once_for_successful_primary():
+    client = _make_anthropic_client("SIGNAL: BUY\nREASONING: ok.")
+    attempts = []
+    analyze_ticker("AAPL", {}, [], _make_config(), client=client, on_attempt=attempts.append)
+    assert attempts == ["claude"]
+
+
+def test_on_attempt_counts_failed_primary_and_fallback():
+    """A primary call that reaches the provider and fails still burned quota — both attempts count."""
+    c = _make_config()
+    c.analyst_fallback_provider = "github"
+    attempts = []
+    with patch(
+        "analyst.claude_analyst._call_api",
+        side_effect=[RuntimeError("quota exhausted"), "SIGNAL: BUY\nREASONING: ok."],
+    ):
+        result = analyze_ticker(
+            "AAPL", {}, [], c,
+            client=MagicMock(), fallback_client=MagicMock(),
+            on_attempt=attempts.append,
+        )
+    assert attempts == ["claude", "github"]
+    assert result["provider_used"] == "github"
+
+
+def test_on_attempt_counts_all_three_providers_in_chain():
+    c = _make_config()
+    c.analyst_fallback_provider = "github"
+    c.analyst_fallback2_provider = "deepseek"
+    attempts = []
+    with patch(
+        "analyst.claude_analyst._call_api",
+        side_effect=[RuntimeError("boom"), RuntimeError("boom"), "SIGNAL: BUY\nREASONING: ok."],
+    ):
+        result = analyze_ticker(
+            "AAPL", {}, [], c,
+            client=MagicMock(), fallback_client=MagicMock(), fallback2_client=MagicMock(),
+            on_attempt=attempts.append,
+        )
+    assert attempts == ["claude", "github", "deepseek"]
+    assert result["provider_used"] == "deepseek"
+
+
+def test_on_attempt_failure_does_not_break_analysis():
+    """A failing quota write (e.g. locked DB) must never abort the analysis itself."""
+    client = _make_anthropic_client("SIGNAL: BUY\nREASONING: ok.")
+
+    def boom(provider):
+        raise RuntimeError("database is locked")
+
+    result = analyze_ticker("AAPL", {}, [], _make_config(), client=client, on_attempt=boom)
+    assert result["signal"] == "BUY"

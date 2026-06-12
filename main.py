@@ -50,13 +50,18 @@ def configure_scheduler(
 
     Defaults to stock scan (config.scan_times, prefix 'scan'); pass times +
     job_id_prefix for ETF scheduling (per Phase 12 D-03).
+
+    Times are interpreted in config.scan_timezone when set (e.g.
+    "America/New_York" keeps the schedule market-aligned across DST);
+    otherwise machine-local time, the historical behavior.
     """
     scan_times = times if times is not None else config.scan_times
+    tz = config.scan_timezone or None
     for i, time_str in enumerate(scan_times):
         hour, minute = map(int, time_str.split(":"))
         scheduler.add_job(
             job_fn,
-            trigger=CronTrigger(hour=hour, minute=minute),
+            trigger=CronTrigger(hour=hour, minute=minute, timezone=tz),
             id=f"{job_id_prefix}_{i}",
             replace_existing=True,
         )
@@ -184,6 +189,12 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
     client = create_analyst_client(config)
     fallback_client = create_fallback_client(config)
     fallback2_client = create_fallback2_client(config)
+
+    def on_attempt(provider: str) -> None:
+        # Count every provider attempt against today's quota — calls that reach
+        # a provider and then fail burn quota exactly like successes.
+        queries.increment_analyst_call_count(config.db_path, provider)
+
     recommendations_posted = 0
     error_count = 0
     errors_posted = 0
@@ -286,9 +297,7 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
                     fundamental_trend=fundamental_trend,  # NEW — Phase 15 SIG-07, SIG-08
                     earnings_date=earnings_date_prompt,   # NEW — Phase 16 SIG-06
                     fallback2_client=fallback2_client,
-                )
-                queries.increment_analyst_call_count(
-                    config.db_path, analysis["provider_used"]
+                    on_attempt=on_attempt,
                 )
                 try:
                     queries.set_cached_analysis(
@@ -432,9 +441,7 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
                 macro_context=macro_context,
                 info=sell_info,
                 fallback2_client=fallback2_client,
-            )
-            queries.increment_analyst_call_count(
-                config.db_path, analysis["provider_used"]
+                on_attempt=on_attempt,
             )
 
             if analysis["signal"] != "SELL":
@@ -500,6 +507,11 @@ async def run_scan_etf(bot: TradingBot, config: Config) -> None:
     client = create_analyst_client(config)
     fallback_client = create_fallback_client(config)
     fallback2_client = create_fallback2_client(config)
+
+    def on_attempt(provider: str) -> None:
+        # Count every provider attempt against today's quota (see run_scan).
+        queries.increment_analyst_call_count(config.db_path, provider)
+
     recommendations_posted = 0
     error_count = 0
     errors_posted = 0
@@ -550,9 +562,7 @@ async def run_scan_etf(bot: TradingBot, config: Config) -> None:
                     expense_ratio, config, client, fallback_client,
                     macro_context=macro_context,
                     fallback2_client=fallback2_client,
-                )
-                queries.increment_analyst_call_count(
-                    config.db_path, analysis["provider_used"]
+                    on_attempt=on_attempt,
                 )
                 try:
                     queries.set_cached_analysis(
