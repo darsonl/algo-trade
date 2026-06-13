@@ -155,6 +155,53 @@ async def run_reconciliation(bot: TradingBot, config: Config, alert_on_discrepan
 # Scan pipeline
 # ---------------------------------------------------------------------------
 
+async def analyze_with_cache(
+    config: Config,
+    ticker: str,
+    headlines: list[str],
+    analyze_fn,
+) -> dict | None:
+    """Shared analyst-cache + quota path for the buy and ETF scans.
+
+    Returns the analysis dict — from analyst_cache on a hit, or by awaiting
+    analyze_fn() on a miss (its result is then written to the cache). Returns
+    None when every provider is at its daily quota, signalling the caller to
+    skip this ticker (`if analysis is None: continue`).
+
+    analyze_fn is an async zero-arg callable that builds the pass-specific
+    prompt and runs the analyzer. It runs ONLY on a cache miss, so any expensive
+    enrichment inside it (e.g. the buy pass's fetch_eps_data) is skipped on a hit.
+    """
+    headline_hash = compute_headline_hash(headlines)
+    cached = queries.get_cached_analysis(config.db_path, ticker, headline_hash)
+    if cached:
+        logger.debug("Cache hit for %s (hash %s...)", ticker, headline_hash[:8])
+        return cached
+
+    # D-11: quota guard — skip if all providers exhausted
+    if all_providers_exhausted(config):
+        logger.warning(
+            "Daily analyst quota reached for all providers, skipping analysis for %s",
+            ticker,
+        )
+        return None
+
+    analysis = await analyze_fn()
+    # Load-bearing: None is reserved above as the "quota-exhausted, skip" signal, so a
+    # real analysis must be a dict. analyze_ticker/analyze_etf_ticker always return one
+    # (or raise) — this guards against a future analyzer silently reading as "skip".
+    assert analysis is not None, "analyze_fn must return an analysis dict, not None"
+    try:
+        queries.set_cached_analysis(
+            config.db_path, ticker, headline_hash,
+            analysis["signal"], analysis["reasoning"],
+            confidence=analysis.get("confidence"),
+        )
+    except Exception as cache_exc:
+        logger.warning("Failed to write analyst cache for %s: %s", ticker, cache_exc)
+    return analysis
+
+
 async def run_scan(bot: TradingBot, config: Config) -> None:
     """Run the full screening pipeline and post qualifying tickers to Discord."""
     logger.info("Starting scan...")
@@ -248,24 +295,12 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
             headline_fetches += 1
             if not headlines:
                 empty_headline_fetches += 1
-            headline_hash = compute_headline_hash(headlines)
-            cached = queries.get_cached_analysis(config.db_path, ticker, headline_hash)
-            if cached:
-                logger.debug("Cache hit for %s (hash %s...)", ticker, headline_hash[:8])
-                analysis = cached
-            else:
-                # D-11: quota guard — skip if all providers exhausted
-                if all_providers_exhausted(config):
-                    logger.warning(
-                        "Daily analyst quota reached for all providers, skipping analysis for %s",
-                        ticker,
-                    )
-                    continue
 
-                # Build fundamental_trend enrichment only on a cache miss: the cached
-                # path never uses it, and fetch_eps_data (quarterly_income_stmt) is a
-                # slow network call. Computing it before the cache check paid that fetch
-                # on every hit (perf, review item 5). Per D-07/D-08.
+            async def _analyze_buy():
+                # Runs only on a cache miss (analyze_with_cache calls this closure only
+                # then): the cached path never uses fundamental_trend, and fetch_eps_data
+                # (quarterly_income_stmt) is a slow network call we shouldn't pay for on a
+                # hit (perf, review item 5). Per D-07/D-08.
                 trailing_pe = info.get("trailingPE")
                 forward_pe = info.get("forwardPE")
                 if trailing_pe is None or forward_pe is None or trailing_pe <= 0:
@@ -293,22 +328,18 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
                 logger.debug("fundamental_trend for %s: pe_direction=%s, eps_quarters=%s",
                              ticker, pe_direction, len(eps_trend) if eps_trend else 0)
 
-                analysis = await asyncio.to_thread(
+                return await asyncio.to_thread(
                     analyze_ticker, ticker, info, headlines, config,
                     client, fallback_client, macro_context=macro_context,
-                    fundamental_trend=fundamental_trend,  # NEW — Phase 15 SIG-07, SIG-08
-                    earnings_date=earnings_date_prompt,   # NEW — Phase 16 SIG-06
+                    fundamental_trend=fundamental_trend,  # Phase 15 SIG-07, SIG-08
+                    earnings_date=earnings_date_prompt,   # Phase 16 SIG-06
                     fallback2_client=fallback2_client,
                     on_attempt=on_attempt,
                 )
-                try:
-                    queries.set_cached_analysis(
-                        config.db_path, ticker, headline_hash,
-                        analysis["signal"], analysis["reasoning"],
-                        confidence=analysis.get("confidence"),
-                    )
-                except Exception as cache_exc:
-                    logger.warning("Failed to write analyst cache for %s: %s", ticker, cache_exc)
+
+            analysis = await analyze_with_cache(config, ticker, headlines, _analyze_buy)
+            if analysis is None:
+                continue  # all providers quota-exhausted
 
             tech_data = await asyncio.to_thread(fetch_technical_data, yf_ticker)
             if not should_recommend(analysis["signal"], tech_data, config):
@@ -544,36 +575,19 @@ async def run_scan_etf(bot: TradingBot, config: Config) -> None:
                 fetch_news_headlines, ticker, alpha_vantage_api_key=config.alpha_vantage_api_key
             )
 
-            # Analyst cache check (same pattern as run_scan)
-            headline_hash = compute_headline_hash(headlines)
-            cached = queries.get_cached_analysis(config.db_path, ticker, headline_hash)
-            if cached:
-                logger.debug("Cache hit for %s (hash %s...)", ticker, headline_hash[:8])
-                analysis = cached
-            else:
-                # Quota guard (same pattern as run_scan buy pass)
-                if all_providers_exhausted(config):
-                    logger.warning(
-                        "Daily analyst quota reached for all providers, skipping analysis for %s",
-                        ticker,
-                    )
-                    continue
-
-                analysis = await asyncio.to_thread(
+            async def _analyze_etf():
+                return await asyncio.to_thread(
                     analyze_etf_ticker, ticker, headlines, tech_data,
                     expense_ratio, config, client, fallback_client,
                     macro_context=macro_context,
                     fallback2_client=fallback2_client,
                     on_attempt=on_attempt,
                 )
-                try:
-                    queries.set_cached_analysis(
-                        config.db_path, ticker, headline_hash,
-                        analysis["signal"], analysis["reasoning"],
-                        confidence=analysis.get("confidence"),
-                    )
-                except Exception as cache_exc:
-                    logger.warning("Failed to write analyst cache for %s: %s", ticker, cache_exc)
+
+            # Shared analyst-cache + quota path (same helper as the run_scan buy pass)
+            analysis = await analyze_with_cache(config, ticker, headlines, _analyze_etf)
+            if analysis is None:
+                continue  # all providers quota-exhausted
 
             # ETF uses BUY signal check but no technical filter (no fundamental filter per ETF-02)
             if analysis["signal"] != "BUY":

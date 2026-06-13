@@ -567,3 +567,90 @@ def test_scheduler_falls_back_to_local_timezone_when_unset():
     job = scheduler.get_jobs()[0]
     # Empty setting must not crash and must resolve to a concrete (local) timezone
     assert job.trigger.timezone is not None
+
+
+# --- analyze_with_cache helper (shared buy/ETF cache + quota path) ---
+
+@pytest.mark.asyncio
+async def test_analyze_with_cache_returns_cached_without_calling_fn():
+    """Cache hit: returns the cached dict, never awaits analyze_fn, writes nothing."""
+    from main import analyze_with_cache
+    cfg = Config()
+    cfg.db_path = ":memory:"
+    called = []
+
+    async def analyze_fn():
+        called.append(True)
+        return {"signal": "BUY", "reasoning": "fresh"}
+
+    cached = {"signal": "HOLD", "reasoning": "cached", "confidence": "low"}
+    with patch("main.queries.get_cached_analysis", return_value=cached), \
+         patch("main.queries.set_cached_analysis") as mock_set:
+        result = await analyze_with_cache(cfg, "AAPL", ["h"], analyze_fn)
+
+    assert result is cached
+    assert called == []
+    mock_set.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_analyze_with_cache_runs_fn_and_writes_on_miss():
+    """Cache miss + quota available: awaits analyze_fn and caches its result."""
+    from main import analyze_with_cache
+    cfg = Config()
+    cfg.db_path = ":memory:"
+    fresh = {"signal": "BUY", "reasoning": "fresh", "confidence": "high"}
+
+    async def analyze_fn():
+        return fresh
+
+    with patch("main.queries.get_cached_analysis", return_value=None), \
+         patch("main.all_providers_exhausted", return_value=False), \
+         patch("main.queries.set_cached_analysis") as mock_set:
+        result = await analyze_with_cache(cfg, "AAPL", ["h1", "h2"], analyze_fn)
+
+    assert result is fresh
+    mock_set.assert_called_once()
+    args = mock_set.call_args[0]
+    assert "BUY" in args and "fresh" in args
+
+
+@pytest.mark.asyncio
+async def test_analyze_with_cache_returns_none_when_quota_exhausted():
+    """Cache miss + all providers exhausted: returns None (caller skips), fn never runs."""
+    from main import analyze_with_cache
+    cfg = Config()
+    cfg.db_path = ":memory:"
+    called = []
+
+    async def analyze_fn():
+        called.append(True)
+        return {"signal": "BUY", "reasoning": "fresh"}
+
+    with patch("main.queries.get_cached_analysis", return_value=None), \
+         patch("main.all_providers_exhausted", return_value=True), \
+         patch("main.queries.set_cached_analysis") as mock_set:
+        result = await analyze_with_cache(cfg, "AAPL", ["h"], analyze_fn)
+
+    assert result is None
+    assert called == []
+    mock_set.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_analyze_with_cache_swallows_cache_write_failure():
+    """A failing cache write must not lose the freshly-computed analysis."""
+    from main import analyze_with_cache
+    cfg = Config()
+    cfg.db_path = ":memory:"
+    fresh = {"signal": "BUY", "reasoning": "fresh"}
+
+    async def analyze_fn():
+        return fresh
+
+    with patch("main.queries.get_cached_analysis", return_value=None), \
+         patch("main.all_providers_exhausted", return_value=False), \
+         patch("main.queries.set_cached_analysis", side_effect=RuntimeError("locked")):
+        result = await analyze_with_cache(cfg, "AAPL", ["h"], analyze_fn)
+
+    assert result is fresh
