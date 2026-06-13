@@ -1,5 +1,6 @@
 import pytest
 import pytest_asyncio
+from unittest.mock import patch
 from apscheduler.schedulers.background import BackgroundScheduler
 from config import Config
 from main import should_recommend, configure_scheduler
@@ -86,8 +87,10 @@ def test_scheduler_job_fires_at_configured_minute():
 # --- run_scan cache integration ---
 
 @pytest.mark.asyncio
-async def test_run_scan_cache_hit_skips_analyze_ticker():
-    """When analyst cache has a hit, analyze_ticker is not called."""
+@patch("main.fetch_eps_data")
+async def test_run_scan_cache_hit_skips_analyze_ticker(mock_eps):
+    """When analyst cache has a hit, analyze_ticker is not called — and the slow
+    fetch_eps_data enrichment is skipped (it lives in the cache-miss branch)."""
     from unittest.mock import AsyncMock, MagicMock, patch
     from main import run_scan
 
@@ -119,11 +122,14 @@ async def test_run_scan_cache_hit_skips_analyze_ticker():
                                                                 with patch("main.queries.set_discord_message_id"):
                                                                     await run_scan(bot, config)
                                                                     mock_analyze.assert_not_called()
+                                                                    mock_eps.assert_not_called()  # EPS enrichment skipped on cache hit
 
 
 @pytest.mark.asyncio
-async def test_run_scan_cache_miss_calls_analyze_ticker_and_caches():
-    """On cache miss, analyze_ticker is called and result is written to cache."""
+@patch("main.fetch_eps_data")
+async def test_run_scan_cache_miss_calls_analyze_ticker_and_caches(mock_eps):
+    """On cache miss, analyze_ticker is called, the EPS enrichment runs, and the
+    result is written to cache."""
     from unittest.mock import AsyncMock, MagicMock, patch
     from main import run_scan
 
@@ -159,6 +165,7 @@ async def test_run_scan_cache_miss_calls_analyze_ticker_and_caches():
                                                                                 with patch("main.queries.set_discord_message_id"):
                                                                                     await run_scan(bot, config)
                                                                                     mock_analyze.assert_called_once()
+                                                                                    mock_eps.assert_called_once()  # EPS enrichment runs on cache miss
                                                                                     assert mock_set_cache.call_count == 1
                                                                                     args = mock_set_cache.call_args[0]
                                                                                     assert "BUY" in args

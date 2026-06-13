@@ -230,3 +230,37 @@ async def test_history_command_uses_to_thread():
     called_fn, called_args = recorded_calls[0]
     assert called_fn is get_closed_trades
     assert called_args[0] == "test_history.db"
+
+
+# --- _resolve_channel memoization (review item 5: cache the channel object) ---
+
+@pytest.mark.asyncio
+async def test_resolve_channel_memoizes_fetch():
+    """Repeated sends reuse the cached channel — fetch_channel hits the API once."""
+    from discord_bot.bot import TradingBot
+    bot = _make_bot_instance()
+    bot._cached_channel = None
+    fake_channel = MagicMock()
+    bot.fetch_channel = AsyncMock(return_value=fake_channel)
+
+    first = await TradingBot._resolve_channel(bot)
+    second = await TradingBot._resolve_channel(bot)
+
+    assert first is fake_channel
+    assert second is fake_channel
+    bot.fetch_channel.assert_awaited_once_with(bot.config.discord_channel_id)
+
+
+@pytest.mark.asyncio
+async def test_resolve_channel_tolerates_missing_cache_attr():
+    """Instances built via __new__ (no __init__) lack _cached_channel; getattr default covers it."""
+    from discord_bot.bot import TradingBot
+    bot = _make_bot_instance()
+    # Do not set _cached_channel at all — exercise the getattr(..., None) fallback.
+    if hasattr(bot, "_cached_channel"):
+        del bot._cached_channel
+    fake_channel = MagicMock()
+    bot.fetch_channel = AsyncMock(return_value=fake_channel)
+
+    result = await TradingBot._resolve_channel(bot)
+    assert result is fake_channel

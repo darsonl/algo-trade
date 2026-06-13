@@ -11,4 +11,5 @@ build/
 .claude/
 .worktrees/
 sp500_cache.json
+sp500_top_cache.json
 logs/

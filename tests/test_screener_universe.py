@@ -184,6 +184,8 @@ def test_get_top_sp500_uses_rank_sum_not_value_sum(monkeypatch):
         return m
 
     u._top_sp500_cache = {}  # bypass the in-memory daily cache
+    monkeypatch.setattr(u, "_load_top_cache", lambda: None)   # bypass the disk cache
+    monkeypatch.setattr(u, "_save_top_cache", lambda ranked: None)  # don't write repo-dir file
     monkeypatch.setattr(u, "get_sp500_tickers", lambda: list(data))
     monkeypatch.setattr(u.time, "sleep", lambda *a, **k: None)
     monkeypatch.setattr(u.yf, "Ticker", mock_ticker)
@@ -204,3 +206,74 @@ def test_rank_desc_handles_ties():
     ranks = _rank_desc([(10.0, "A"), (10.0, "B"), (5.0, "C")])
     assert ranks["A"] == 1 and ranks["B"] == 1  # tie share rank 1
     assert ranks["C"] == 3  # 1 + two strictly-greater values
+
+
+# --- sp500_top_cache.json disk tier ---
+
+def _patch_cache_path(monkeypatch, tmp_path):
+    import screener.universe as u
+    path = tmp_path / "sp500_top_cache.json"
+    monkeypatch.setattr(u, "_TOP_CACHE_PATH", path)
+    return path
+
+
+def test_top_cache_roundtrip(monkeypatch, tmp_path):
+    import screener.universe as u
+    _patch_cache_path(monkeypatch, tmp_path)
+    u._save_top_cache(["AAPL", "MSFT", "NVDA"])
+    loaded = u._load_top_cache()
+    assert loaded["ranked"] == ["AAPL", "MSFT", "NVDA"]
+
+
+def test_top_cache_stale_returns_none(monkeypatch, tmp_path):
+    import json as _json
+    import datetime as _dt
+    import screener.universe as u
+    path = _patch_cache_path(monkeypatch, tmp_path)
+    stale = (_dt.datetime.now() - _dt.timedelta(hours=25)).isoformat()
+    path.write_text(_json.dumps({"fetched_at": stale, "ranked": ["AAPL"]}), encoding="utf-8")
+    assert u._load_top_cache() is None
+
+
+def test_top_cache_corrupt_returns_none(monkeypatch, tmp_path):
+    import screener.universe as u
+    path = _patch_cache_path(monkeypatch, tmp_path)
+    path.write_text("{not json", encoding="utf-8")
+    assert u._load_top_cache() is None
+
+
+def test_top_cache_missing_file_returns_none(monkeypatch, tmp_path):
+    import screener.universe as u
+    _patch_cache_path(monkeypatch, tmp_path)
+    assert u._load_top_cache() is None
+
+
+def test_get_top_sp500_uses_disk_cache_after_restart(monkeypatch, tmp_path):
+    """Empty memory tier + fresh disk cache -> no Wikipedia/yfinance fetch at all."""
+    from types import SimpleNamespace
+    import screener.universe as u
+    _patch_cache_path(monkeypatch, tmp_path)
+    u._save_top_cache(["AAPL", "MSFT", "NVDA", "GOOG"])
+    u._top_sp500_cache = {}  # simulate process restart
+
+    def explode():
+        raise AssertionError("full fetch should not run when disk cache is fresh")
+
+    monkeypatch.setattr(u, "get_sp500_tickers", explode)
+    top = u.get_top_sp500_by_fundamentals(SimpleNamespace(top_sp500_count=2))
+    assert top == ["AAPL", "MSFT"]
+    # And the memory tier was primed for subsequent calls
+    assert u._top_sp500_cache["ranked"] == ["AAPL", "MSFT", "NVDA", "GOOG"]
+
+
+def test_get_top_sp500_slices_full_ranking_per_count(monkeypatch, tmp_path):
+    """The cache stores the full ranking; a different count reuses it without refetch."""
+    from types import SimpleNamespace
+    import screener.universe as u
+    _patch_cache_path(monkeypatch, tmp_path)
+    u._save_top_cache(["AAPL", "MSFT", "NVDA", "GOOG"])
+    u._top_sp500_cache = {}
+    monkeypatch.setattr(u, "get_sp500_tickers", lambda: [])
+
+    assert u.get_top_sp500_by_fundamentals(SimpleNamespace(top_sp500_count=1)) == ["AAPL"]
+    assert u.get_top_sp500_by_fundamentals(SimpleNamespace(top_sp500_count=3)) == ["AAPL", "MSFT", "NVDA"]

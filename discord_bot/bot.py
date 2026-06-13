@@ -302,6 +302,7 @@ class TradingBot(discord.Client):
         self._scan_callback = None  # Set by main.py after construction
         self._scan_etf_callback = None  # Set by main.py after construction
         self._reconcile_callback = None  # Set by main.py after construction
+        self._cached_channel = None  # Memoized by _resolve_channel on first send
 
     async def setup_hook(self):
         """Register and sync the /scan and /positions slash commands on bot startup."""
@@ -434,6 +435,18 @@ class TradingBot(discord.Client):
         embed = build_history_embed(trades)
         await interaction.response.send_message(embed=embed)
 
+    async def _resolve_channel(self):
+        """Return the configured channel, fetching it from the API once and caching it.
+
+        The send_* methods post many messages per scan and each previously called
+        fetch_channel (an API round-trip). The channel object is stable for the
+        bot's lifetime, so memoize the first fetch and reuse it (review item 5).
+        getattr-with-default tolerates instances built via __new__ in tests.
+        """
+        if getattr(self, "_cached_channel", None) is None:
+            self._cached_channel = await self.fetch_channel(self.config.discord_channel_id)
+        return self._cached_channel
+
     async def send_recommendation(
         self,
         rec_id: int,
@@ -448,7 +461,7 @@ class TradingBot(discord.Client):
         scan_time: str | None = None,       # NEW — Phase 17 RISK-04
     ) -> str:
         """Fetch the configured channel, post a recommendation embed with Approve/Reject buttons, and return the message id as a string."""
-        channel = await self.fetch_channel(self.config.discord_channel_id)
+        channel = await self._resolve_channel()
         embed = build_recommendation_embed(ticker, signal, reasoning, price, dividend_yield, pe_ratio, confidence=confidence, earnings_date=earnings_date, scan_time=scan_time)
         view = ApproveRejectView(rec_id, ticker, price, self.config, scan_time=scan_time)
         msg = await _send_message(channel, embed, view)
@@ -467,7 +480,7 @@ class TradingBot(discord.Client):
         confidence: str | None = None,
     ) -> str:
         """Post a sell recommendation embed with Approve/Reject buttons and return the message id."""
-        channel = await self.fetch_channel(self.config.discord_channel_id)
+        channel = await self._resolve_channel()
         embed = build_sell_embed(ticker, reasoning, entry_price, current_price, pnl_pct, shares, rsi, confidence=confidence)
         view = SellApproveRejectView(rec_id, ticker, shares, current_price, self.config)
         msg = await _send_message(channel, embed, view)
@@ -487,7 +500,7 @@ class TradingBot(discord.Client):
         confidence: str | None = None,
     ) -> str:
         """Post an ETF recommendation embed with Approve/Reject buttons and return the message id."""
-        channel = await self.fetch_channel(self.config.discord_channel_id)
+        channel = await self._resolve_channel()
         embed = build_etf_recommendation_embed(
             ticker,
             signal,
@@ -506,7 +519,7 @@ class TradingBot(discord.Client):
     async def send_ops_alert(self, message: str) -> None:
         """Send a plain-text operational alert to the configured Discord channel."""
         try:
-            channel = await self.fetch_channel(self.config.discord_channel_id)
+            channel = await self._resolve_channel()
             await channel.send(f"[OPS ALERT] {message}")
         except Exception as exc:
             logger.error("Failed to send ops alert: %s", exc)
