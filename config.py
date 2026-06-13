@@ -27,59 +27,84 @@ def _parse_etf_scan_times() -> list[str]:
     return [f"{hour:02d}:{minute:02d}"]
 
 
+# Field helpers: each returns a dataclass field whose default is read from the
+# environment at Config() CONSTRUCTION time, not at module import. Plain
+# `= os.getenv(...)` defaults froze the values when config.py was first
+# imported, so monkeypatch.setenv in tests (and any runtime env change) had no
+# effect without an importlib.reload — that bit us twice; don't reintroduce it.
+
+def _env_str(name: str, default: str = ""):
+    return field(default_factory=lambda: os.getenv(name, default))
+
+
+def _env_int(name: str, default: str):
+    return field(default_factory=lambda: int(os.getenv(name, default)))
+
+
+def _env_float(name: str, default: str):
+    return field(default_factory=lambda: float(os.getenv(name, default)))
+
+
+def _env_bool(name: str, default: str):
+    return field(default_factory=lambda: os.getenv(name, default).lower() == "true")
+
+
+_DEFAULT_DB_PATH = str(Path(__file__).parent / "algo_trade.db")
+
+
 @dataclass
 class Config:
-    schwab_app_key: str = os.getenv("SCHWAB_APP_KEY", "")
-    schwab_app_secret: str = os.getenv("SCHWAB_APP_SECRET", "")
-    schwab_callback_url: str = os.getenv("SCHWAB_CALLBACK_URL", "https://127.0.0.1")
-    schwab_account_hash: str = os.getenv("SCHWAB_ACCOUNT_HASH", "")
-    paper_trading: bool = os.getenv("PAPER_TRADING", "true").lower() == "true"
-    dry_run: bool = os.getenv("DRY_RUN", "true").lower() == "true"
-    use_limit_buy: bool = os.getenv("USE_LIMIT_BUY", "false").lower() == "true"
+    schwab_app_key: str = _env_str("SCHWAB_APP_KEY")
+    schwab_app_secret: str = _env_str("SCHWAB_APP_SECRET")
+    schwab_callback_url: str = _env_str("SCHWAB_CALLBACK_URL", "https://127.0.0.1")
+    schwab_account_hash: str = _env_str("SCHWAB_ACCOUNT_HASH")
+    paper_trading: bool = _env_bool("PAPER_TRADING", "true")
+    dry_run: bool = _env_bool("DRY_RUN", "true")
+    use_limit_buy: bool = _env_bool("USE_LIMIT_BUY", "false")
 
-    discord_token: str = os.getenv("DISCORD_TOKEN", "")
-    discord_channel_id: int = int(os.getenv("DISCORD_CHANNEL_ID", "0"))
+    discord_token: str = _env_str("DISCORD_TOKEN")
+    discord_channel_id: int = _env_int("DISCORD_CHANNEL_ID", "0")
 
-    anthropic_api_key: str = os.getenv("ANTHROPIC_API_KEY", "")
+    anthropic_api_key: str = _env_str("ANTHROPIC_API_KEY")
 
-    analyst_provider: str = os.getenv("ANALYST_PROVIDER", "claude")
-    analyst_api_key: str = os.getenv("ANALYST_API_KEY", "")
-    analyst_model: str = os.getenv("ANALYST_MODEL", "")
-    analyst_fallback_provider: str = os.getenv("ANALYST_FALLBACK_PROVIDER", "")
-    analyst_fallback_api_key: str = os.getenv("ANALYST_FALLBACK_API_KEY", "")
-    analyst_fallback_model: str = os.getenv("ANALYST_FALLBACK_MODEL", "")
-    analyst_fallback2_provider: str = os.getenv("ANALYST_FALLBACK2_PROVIDER", "")
-    analyst_fallback2_api_key: str = os.getenv("ANALYST_FALLBACK2_API_KEY", "")
-    analyst_fallback2_model: str = os.getenv("ANALYST_FALLBACK2_MODEL", "")
+    analyst_provider: str = _env_str("ANALYST_PROVIDER", "claude")
+    analyst_api_key: str = _env_str("ANALYST_API_KEY")
+    analyst_model: str = _env_str("ANALYST_MODEL")
+    analyst_fallback_provider: str = _env_str("ANALYST_FALLBACK_PROVIDER")
+    analyst_fallback_api_key: str = _env_str("ANALYST_FALLBACK_API_KEY")
+    analyst_fallback_model: str = _env_str("ANALYST_FALLBACK_MODEL")
+    analyst_fallback2_provider: str = _env_str("ANALYST_FALLBACK2_PROVIDER")
+    analyst_fallback2_api_key: str = _env_str("ANALYST_FALLBACK2_API_KEY")
+    analyst_fallback2_model: str = _env_str("ANALYST_FALLBACK2_MODEL")
 
-    min_dividend_yield: float = float(os.getenv("MIN_DIVIDEND_YIELD", "0.02"))
-    max_pe_ratio: float = float(os.getenv("MAX_PE_RATIO", "35.0"))
-    min_earnings_growth: float = float(os.getenv("MIN_EARNINGS_GROWTH", "0.05"))
-    max_rsi: float = float(os.getenv("MAX_RSI", "70.0"))
-    sell_rsi_threshold: float = float(os.getenv("SELL_RSI_THRESHOLD", "70.0"))
-    analyst_daily_limit: int = int(os.getenv("ANALYST_DAILY_LIMIT", "18"))
-    min_volume_ratio: float = float(os.getenv("MIN_VOLUME_RATIO", "0.5"))
-    etf_max_expense_ratio: float = float(os.getenv("ETF_MAX_EXPENSE_RATIO", "0.005"))
+    min_dividend_yield: float = _env_float("MIN_DIVIDEND_YIELD", "0.02")
+    max_pe_ratio: float = _env_float("MAX_PE_RATIO", "35.0")
+    min_earnings_growth: float = _env_float("MIN_EARNINGS_GROWTH", "0.05")
+    max_rsi: float = _env_float("MAX_RSI", "70.0")
+    sell_rsi_threshold: float = _env_float("SELL_RSI_THRESHOLD", "70.0")
+    analyst_daily_limit: int = _env_int("ANALYST_DAILY_LIMIT", "18")
+    min_volume_ratio: float = _env_float("MIN_VOLUME_RATIO", "0.5")
+    etf_max_expense_ratio: float = _env_float("ETF_MAX_EXPENSE_RATIO", "0.005")
 
-    max_position_size_usd: float = float(os.getenv("MAX_POSITION_SIZE_USD", "500.0"))
-    max_portfolio_usd: float = float(os.getenv("MAX_PORTFOLIO_USD", "20000.0"))
+    max_position_size_usd: float = _env_float("MAX_POSITION_SIZE_USD", "500.0")
+    max_portfolio_usd: float = _env_float("MAX_PORTFOLIO_USD", "20000.0")
 
-    scan_hour: int = int(os.getenv("SCAN_HOUR", "9"))
-    scan_minute: int = int(os.getenv("SCAN_MINUTE", "0"))
+    scan_hour: int = _env_int("SCAN_HOUR", "9")
+    scan_minute: int = _env_int("SCAN_MINUTE", "0")
     # IANA timezone for the scan schedule (e.g. "America/New_York" to stay
     # market-aligned across DST). Empty = machine-local time (legacy behavior).
-    scan_timezone: str = os.getenv("SCAN_TIMEZONE", "")
+    scan_timezone: str = _env_str("SCAN_TIMEZONE")
     scan_times: list = field(default_factory=_parse_scan_times)
-    etf_scan_hour: int = int(os.getenv("ETF_SCAN_HOUR", "9"))
-    etf_scan_minute: int = int(os.getenv("ETF_SCAN_MINUTE", "30"))
+    etf_scan_hour: int = _env_int("ETF_SCAN_HOUR", "9")
+    etf_scan_minute: int = _env_int("ETF_SCAN_MINUTE", "30")
     etf_scan_times: list = field(default_factory=_parse_etf_scan_times)
-    top_sp500_count: int = int(os.getenv("TOP_SP500_COUNT", "10"))
-    analyst_call_delay_s: float = float(os.getenv("ANALYST_CALL_DELAY_S", "12.0"))
+    top_sp500_count: int = _env_int("TOP_SP500_COUNT", "10")
+    analyst_call_delay_s: float = _env_float("ANALYST_CALL_DELAY_S", "12.0")
 
-    alpha_vantage_api_key: str = os.getenv("ALPHA_VANTAGE_API_KEY", "")
+    alpha_vantage_api_key: str = _env_str("ALPHA_VANTAGE_API_KEY")
 
-    db_path: str = os.getenv("DB_PATH", str(Path(__file__).parent / "algo_trade.db"))
-    log_level: str = os.getenv("LOG_LEVEL", "INFO")
+    db_path: str = _env_str("DB_PATH", _DEFAULT_DB_PATH)
+    log_level: str = _env_str("LOG_LEVEL", "INFO")
 
     def validate(self):
         """Call this at startup (in main.py) to fail fast if credentials are missing."""
@@ -99,4 +124,3 @@ class Config:
             raise ValueError("DISCORD_CHANNEL_ID is required in .env")
         if not self.schwab_account_hash:
             raise ValueError("SCHWAB_ACCOUNT_HASH is required in .env")
-

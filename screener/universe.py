@@ -165,6 +165,39 @@ def get_sp500_tickers() -> list[str]:
 
 _top_sp500_cache: dict = {}
 
+# Disk cache for the EPS+ROE ranking. The ranking costs ~500 yfinance .info
+# calls (10-20 minutes); the in-memory cache alone dies with the process, so
+# every restart used to repay that cost on the next scan. Stores the FULL
+# ranked list (not the top-N slice) so a TOP_SP500_COUNT change never
+# invalidates it.
+_TOP_CACHE_PATH = Path(__file__).parent.parent / "sp500_top_cache.json"
+
+
+def _load_top_cache() -> dict | None:
+    """Return {"ranked": [...], "fetched_at": datetime} from disk if fresh (<24h), else None."""
+    try:
+        data = json.loads(_TOP_CACHE_PATH.read_text(encoding="utf-8"))
+        fetched_at = datetime.datetime.fromisoformat(data["fetched_at"])
+        if (datetime.datetime.now() - fetched_at).total_seconds() >= _CACHE_TTL_HOURS * 3600:
+            return None
+        ranked = data["ranked"]
+        if not ranked:
+            return None
+        return {"ranked": ranked, "fetched_at": fetched_at}
+    except Exception:
+        return None
+
+
+def _save_top_cache(ranked: list[str]) -> None:
+    """Write the full ranked ticker list to disk. Failure is non-fatal."""
+    try:
+        _TOP_CACHE_PATH.write_text(
+            json.dumps({"fetched_at": datetime.datetime.now().isoformat(), "ranked": ranked}),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
 
 def _rank_desc(items: list[tuple[float, str]]) -> dict[str, int]:
     """Rank tickers by value descending (1 = highest value).
@@ -182,15 +215,23 @@ def get_top_sp500_by_fundamentals(config) -> list[str]:
     """
     Return top config.top_sp500_count S&P 500 tickers ranked by combined EPS + ROE score.
 
-    Uses in-memory 24h cache so the ~500 yfinance info calls only happen once per day.
-    Falls back to raw get_sp500_tickers() slice on any fetch error.
+    Two-tier 24h cache: in-memory first, then sp500_top_cache.json on disk (so a
+    process restart doesn't repay the ~500 yfinance info calls). Both tiers hold
+    the full ranking and slice per top_sp500_count on read. Falls back to a raw
+    get_sp500_tickers() slice on any fetch error.
     """
     import yfinance as yf
     global _top_sp500_cache
     if _top_sp500_cache.get("fetched_at"):
         age = (datetime.datetime.now() - _top_sp500_cache["fetched_at"]).total_seconds()
         if age < _CACHE_TTL_HOURS * 3600:
-            return _top_sp500_cache["tickers"]
+            return _top_sp500_cache["ranked"][: config.top_sp500_count]
+
+    disk_cache = _load_top_cache()
+    if disk_cache is not None:
+        # Keep the disk timestamp so the memory tier expires when the disk data does.
+        _top_sp500_cache = disk_cache
+        return disk_cache["ranked"][: config.top_sp500_count]
 
     tickers = get_sp500_tickers()
     scored: list[tuple[float, float, str]] = []  # (eps, roe, ticker)
@@ -218,8 +259,8 @@ def get_top_sp500_by_fundamentals(config) -> list[str]:
     # flaw in the previous `eps + roe` score.
     eps_rank = _rank_desc([(eps, t) for eps, _roe, t in scored])
     roe_rank = _rank_desc([(roe, t) for _eps, roe, t in scored])
-    ranked = sorted(scored, key=lambda r: eps_rank[r[2]] + roe_rank[r[2]])
-    top = [t for _eps, _roe, t in ranked[: config.top_sp500_count]]
+    ranked_full = [t for _eps, _roe, t in sorted(scored, key=lambda r: eps_rank[r[2]] + roe_rank[r[2]])]
 
-    _top_sp500_cache = {"tickers": top, "fetched_at": datetime.datetime.now()}
-    return top
+    _top_sp500_cache = {"ranked": ranked_full, "fetched_at": datetime.datetime.now()}
+    _save_top_cache(ranked_full)
+    return ranked_full[: config.top_sp500_count]

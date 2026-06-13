@@ -219,36 +219,6 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
             if not passes_fundamental_filter(info, config):
                 continue
 
-            # Phase 15 (SIG-07, SIG-08): build fundamental_trend enrichment dict.
-            # Per D-08: P/E direction computed inline from info dict (no separate fetch).
-            # Per D-07: EPS trend fetched via asyncio.to_thread (quarterly_income_stmt is blocking I/O).
-            trailing_pe = info.get("trailingPE")
-            forward_pe = info.get("forwardPE")
-            if trailing_pe is None or forward_pe is None or trailing_pe <= 0:
-                pe_direction = "N/A"  # D-03: graceful N/A, no crash on missing forwardPE or zero/negative trailingPE
-            elif abs(forward_pe - trailing_pe) / abs(trailing_pe) < 0.05:
-                pe_direction = "stable"  # D-01: ±5% stable band
-            elif forward_pe < trailing_pe:
-                pe_direction = "expanding"   # D-02: earnings growing → multiple contracting
-            else:
-                pe_direction = "contracting"  # D-02: earnings shrinking → multiple expanding
-
-            try:
-                eps_trend = await asyncio.to_thread(fetch_eps_data, yf_ticker)
-            except Exception as exc:
-                logger.warning(
-                    "EPS data fetch failed for %s: %s — continuing without EPS trend",
-                    ticker, exc,
-                )
-                eps_trend = None
-
-            fundamental_trend = {
-                "pe_direction": pe_direction,
-                "eps_trend": eps_trend,
-            }
-            logger.debug("fundamental_trend for %s: pe_direction=%s, eps_quarters=%s",
-                         ticker, pe_direction, len(eps_trend) if eps_trend else 0)
-
             # Phase 16 (SIG-05, SIG-06): earnings date from info dict — zero extra HTTP call (D-09).
             _ts = info.get("earningsTimestamp")
             if _ts is None:
@@ -291,6 +261,38 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
                         ticker,
                     )
                     continue
+
+                # Build fundamental_trend enrichment only on a cache miss: the cached
+                # path never uses it, and fetch_eps_data (quarterly_income_stmt) is a
+                # slow network call. Computing it before the cache check paid that fetch
+                # on every hit (perf, review item 5). Per D-07/D-08.
+                trailing_pe = info.get("trailingPE")
+                forward_pe = info.get("forwardPE")
+                if trailing_pe is None or forward_pe is None or trailing_pe <= 0:
+                    pe_direction = "N/A"  # D-03: graceful N/A on missing forwardPE or zero/negative trailingPE
+                elif abs(forward_pe - trailing_pe) / abs(trailing_pe) < 0.05:
+                    pe_direction = "stable"  # D-01: ±5% stable band
+                elif forward_pe < trailing_pe:
+                    pe_direction = "expanding"   # D-02: earnings growing → multiple contracting
+                else:
+                    pe_direction = "contracting"  # D-02: earnings shrinking → multiple expanding
+
+                try:
+                    eps_trend = await asyncio.to_thread(fetch_eps_data, yf_ticker)
+                except Exception as exc:
+                    logger.warning(
+                        "EPS data fetch failed for %s: %s — continuing without EPS trend",
+                        ticker, exc,
+                    )
+                    eps_trend = None
+
+                fundamental_trend = {
+                    "pe_direction": pe_direction,
+                    "eps_trend": eps_trend,
+                }
+                logger.debug("fundamental_trend for %s: pe_direction=%s, eps_quarters=%s",
+                             ticker, pe_direction, len(eps_trend) if eps_trend else 0)
+
                 analysis = await asyncio.to_thread(
                     analyze_ticker, ticker, info, headlines, config,
                     client, fallback_client, macro_context=macro_context,
