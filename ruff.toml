@@ -17,4 +17,4 @@ select = ["F"]
 # Tests intentionally keep some unused imports (fixtures, re-exports) and assign locals
 # they don't read (e.g. `mocks` from a context manager). Don't gate CI on those.
 "tests/**" = ["F401", "F841"]
-"test_discord_live.py" = ["F401"]
+"scripts/test_discord_live.py" = ["F401"]
