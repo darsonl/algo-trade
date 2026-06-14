@@ -1,7 +1,8 @@
 import pytest
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 from analyst.claude_analyst import build_prompt, parse_claude_response, build_etf_prompt, analyze_etf_ticker, analyze_ticker, analyze_sell_ticker
-from analyst.claude_analyst import _parse_retry_delay, _should_retry
+from analyst.claude_analyst import _parse_retry_delay, _should_retry, _call_api
 
 
 # --- build_prompt ---
@@ -1087,3 +1088,68 @@ def test_analyze_etf_ticker_uses_fallback2_on_fallback_parse_error():
     assert result["signal"] == "BUY"
     assert result["provider_used"] == "openai"
     assert call_count["n"] == 3
+
+
+# --- _call_api response extraction (live SDK-call path) ---
+# The fallback/orchestration tests above patch _call_api wholesale, so the actual
+# SDK call and response unwrapping never execute there. These exercise that path
+# directly with PLAIN stubs — not MagicMock, which answers hasattr(client, "messages")
+# True and would force every client down the anthropic branch — pinning the openai
+# (1.x/2.x identical) and anthropic response shapes.
+
+class _StubOpenAIClient:
+    """openai-shaped client: .chat.completions.create(**kw), no `messages` attr.
+
+    _call_api takes the openai branch when the client lacks `messages`, then reads
+    response.choices[0].message.content.
+    """
+    def __init__(self, content: str):
+        self._content = content
+        self.captured: dict = {}
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+
+    def _create(self, **kwargs):
+        self.captured = kwargs
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=self._content))]
+        )
+
+
+class _StubAnthropicClient:
+    """anthropic-shaped client: .messages.create(**kw) → content[0].text."""
+    def __init__(self, text: str):
+        self._text = text
+        self.captured: dict = {}
+        self.messages = SimpleNamespace(create=self._create)
+
+    def _create(self, **kwargs):
+        self.captured = kwargs
+        return SimpleNamespace(content=[SimpleNamespace(text=self._text)])
+
+
+def test_call_api_openai_branch_extracts_message_content():
+    """_call_api routes a non-anthropic client through chat.completions.create and
+    returns choices[0].message.content (the openai 1.x/2.x response shape)."""
+    client = _StubOpenAIClient("SIGNAL: BUY\nREASONING: stubbed openai path.")
+
+    out = _call_api(client, "gpt-4o-mini", "the prompt")
+
+    assert out == "SIGNAL: BUY\nREASONING: stubbed openai path."
+    # max_tokens (NOT max_completion_tokens) is what the OpenAI-compatible proxy
+    # endpoints (Gemini/DeepSeek/GitHub) expect — guard that it stays this way.
+    assert client.captured["model"] == "gpt-4o-mini"
+    assert client.captured["max_tokens"] == 256
+    assert client.captured["messages"] == [{"role": "user", "content": "the prompt"}]
+
+
+def test_call_api_anthropic_branch_extracts_content_text():
+    """_call_api routes a client exposing .messages through messages.create and
+    returns content[0].text (the anthropic response shape)."""
+    client = _StubAnthropicClient("SIGNAL: HOLD\nREASONING: stubbed anthropic path.")
+
+    out = _call_api(client, "claude-opus-4-8", "the prompt")
+
+    assert out == "SIGNAL: HOLD\nREASONING: stubbed anthropic path."
+    assert client.captured["model"] == "claude-opus-4-8"
+    assert client.captured["max_tokens"] == 256
+    assert client.captured["messages"] == [{"role": "user", "content": "the prompt"}]
