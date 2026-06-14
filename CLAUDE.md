@@ -5,8 +5,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-# Install dependencies
+# Install dependencies (requirements.txt is a generated lock — see note below)
 pip install -r requirements.txt
+
+# Update dependencies: edit requirements.in (direct deps only), then regenerate
+# the fully-pinned lock with uv. Never hand-edit requirements.txt.
+#   uv pip compile requirements.in --universal --python-version 3.11 -o requirements.txt
 
 # Run the bot (opens browser on first run for Schwab OAuth2)
 python main.py

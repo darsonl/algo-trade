@@ -1,0 +1,24 @@
+# requirements.in — direct (top-level) dependencies, hand-edited.
+#
+# requirements.txt is GENERATED from this file and is the fully-pinned lock
+# (every transitive included). Regenerate after editing this file with:
+#
+#   uv pip compile requirements.in --universal --python-version 3.11 -o requirements.txt
+#
+# --universal emits environment markers so the single lock is valid across OS/arch
+# and Python 3.11+ (CI runs Linux on 3.11 and 3.12); --python-version sets the floor.
+# CI itself needs no uv — it just runs `pip install -r requirements.txt`.
+
+schwab-py==1.4.0
+anthropic==0.40.0
+openai>=2.0.0    # match CI's pre-lock 2.x resolution; uv --universal otherwise undershoots to 1.x (code uses the stable chat.completions client)
+discord.py==2.4.0
+yfinance==1.2.0
+pandas==2.2.3
+lxml>=5.0.0
+tenacity>=8.0.0
+APScheduler==3.10.4
+python-dotenv==1.0.1
+pytest==8.3.4
+pytest-asyncio==0.24.0
+ruff>=0.6.0
