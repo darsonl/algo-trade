@@ -5,8 +5,15 @@ Connects to Discord, posts a fake BUY recommendation embed with Approve/Reject
 buttons, prints the message URL, then exits cleanly.
 
 Usage:
-    python test_discord_live.py
+    python scripts/test_discord_live.py
 """
+import sys
+import pathlib
+
+# Running `python scripts/test_discord_live.py` puts scripts/ on sys.path, not the
+# repo root — add the repo root so the `config` / `discord_bot` imports resolve.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
+
 import asyncio
 import discord
 from config import Config
