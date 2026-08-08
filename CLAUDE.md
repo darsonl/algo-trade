@@ -67,6 +67,7 @@ python main.py
 | `screener/universe.py` | Watchlist loading, S&P 500 fetch, deduplication |
 | `screener/fundamentals.py` | yfinance fundamental fetch + threshold filter |
 | `screener/technicals.py` | RSI (Wilder's, 14-period), MA50, volume filter |
+| `screener/macro.py` | Prompt enrichment: SPY 1m/1y trend, VIX level, 52-week range position. All formatters are pure; `fetch_macro_context()` swallows failures and returns `None` values so a macro outage never blocks a scan |
 | `screener/exit_signals.py` | Two-gate sell signal: RSI > sell_rsi_threshold AND MACD bearish |
 | `screener/positions.py` | `get_position_summary` — live yfinance price + P&L% per open position |
 | `analyst/claude_analyst.py` | Prompt building, API call (primary + fallback provider), signal parsing |
@@ -136,7 +137,7 @@ MAX_POSITION_SIZE_USD=500
 
 ### Test Suite
 
-482 tests as of the v1.3 improvement pass. Run with `pytest -q` (~35s). Key test files:
+546 tests as of 2026-08-08. Run with `pytest -q` (~35s). Key test files:
 - `test_screener_technicals.py` — RSI math with synthetic price series
 - `test_exit_signals.py` — RSI + MACD gate (16 tests, 2×2 matrix)
 - `test_sell_scan.py` — run_scan sell pass integration (9 tests)

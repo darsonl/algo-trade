@@ -1,104 +1,213 @@
-# README.md
+# Algo Trade
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+A stock screener that does the boring research every morning — fundamentals, news, technicals — hands the shortlist to an LLM for a BUY/HOLD/SKIP call, and posts the survivors to Discord with Approve/Reject buttons.
 
-## Commands
+**Nothing trades until a human taps Approve.**
 
-```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Run the bot (opens browser on first run for Schwab OAuth2)
-python main.py
-
-# Run all tests
-pytest
-
-# Run a single test file
-pytest tests/test_screener_technicals.py
-
-# Run tests with verbose output
-pytest -v
-
-# Run a single test by name
-pytest tests/test_analyst_claude.py::test_parse_buy_signal -v
-```
-
-## Architecture
-
-**Algo Trade** is an automated stock screener that posts [[Claude API]]-generated BUY recommendations to [[Discord]] for human approval before executing trades via the [[Schwab API]].
-
-### Execution Flow
-
-```
-python main.py
-  → Config.validate() (fast-fail if Schwab/Discord/Anthropic keys missing)
-  → DB init (SQLite, creates tables if absent)
-  → Discord bot + APScheduler start
-  → Daily cron at SCAN_HOUR:SCAN_MINUTE (default 9:00 AM)
-      → run_scan():
-          → expire stale recommendations (>24h)
-          → build universe: watchlist.txt + S&P 500 from Wikipedia
-          → for each ticker (skip if recommended today):
-              1. yfinance fundamentals → fundamental filter (P/E, yield, growth)
-              2. yfinance news headlines (5 max) → Claude API → BUY/HOLD/SKIP signal
-              3. yfinance technicals → technical filter (RSI, MA50, volume)
-              4. Write recommendation to DB, post Discord embed with Approve/Reject buttons
-      → User clicks Approve → place Schwab market order (skipped if DRY_RUN=true)
-```
-
-### Module Responsibilities
-
-| Module | Responsibility |
-|---|---|
-| `config.py` | Dataclass config loaded from `.env`; `validate()` called at startup |
-| `main.py` | Orchestration, scheduler setup, `should_recommend()`, `run_scan()` |
-| `screener/universe.py` | Watchlist loading, S&P 500 fetch, deduplication |
-| `screener/fundamentals.py` | yfinance fundamental fetch + threshold filter |
-| `screener/technicals.py` | RSI (Wilder's, 14-period), MA50, volume filter |
-| `analyst/claude_analyst.py` | Prompt building, [[Claude API]] call, signal parsing |
-| `analyst/news.py` | Fetch 5 headlines per ticker from yfinance |
-| `discord_bot/bot.py` | `TradingBot` (discord.Client), slash commands, Approve/Reject buttons |
-| `discord_bot/embeds.py` | Recommendation embed formatting (green/yellow/red) |
-| `database/models.py` | [[SQLite]] schema: `recommendations` + `trades` tables |
-| `database/queries.py` | CRUD for recommendations/trades, expiration, dupe check |
-| `schwab_client/auth.py` | [[OAuth2]] via `schwab-py`, token stored at `schwab_token.json` |
-| `schwab_client/orders.py` | Market buy order construction, position parsing |
-
-### Key Design Decisions
-
-- **Two-stage filtering**: Fundamental filter runs before calling [[Claude API]] (cheap check first), technical filter runs after Claude approves (avoids technical fetch on skipped tickers).
-- **[[Paper Trading]] by default**: `DRY_RUN=true` and `PAPER_TRADING=true` are the defaults; no orders are placed unless explicitly disabled.
-- **24-hour recommendation expiry**: Stale records are expired at the start of each scan. The `should_recommend()` function in `main.py` is the single source of truth for dupe prevention.
-- **Pure functions for testability**: `should_recommend()`, `configure_scheduler()`, prompt builders, and filter functions are all pure/stateless to enable unit testing without mocking the [[Discord]] client or [[Schwab API]].
-
-### Configuration
-
-All thresholds and credentials are set via `.env` (see `.env.example`). The `Config` dataclass in `config.py` maps every variable with typed defaults. Safety-critical flags:
-
-```
-DRY_RUN=true          # When true, Discord buttons log instead of placing orders
-PAPER_TRADING=true    # When true, Schwab paper trading endpoint is used
-MAX_POSITION_SIZE_USD=500
-```
-
-### Database Schema
-
-**`recommendations`**: ticker, signal, reasoning, price, dividend_yield, pe_ratio, earnings_growth, status (`pending`/`approved`/`rejected`/`expired`), discord_message_id, created_at, expires_at
-
-**`trades`**: recommendation_id (FK), ticker, shares, price, order_id, executed_at
-
-### Technical Indicator Notes
-
-`screener/technicals.py` calculates [[RSI]] using Wilder's smoothing (not simple EWM) and requires a minimum of 51 price data points (50-day MA + 1). Tests in `test_screener_technicals.py` use synthetic price series to validate RSI math directly.
+That last part is the design, not a safety afterthought. This automates the *research*, not the *decision*.
 
 ---
 
-## Related notes
-- [[Claude API]] — AI signal generation for BUY/HOLD/SKIP
-- [[Schwab API]] — Brokerage execution layer
-- [[Discord]] — Approval UI and notification surface
-- [[Paper Trading]] — Safety defaults before live execution
-- [[SQLite]] — Local persistence for recommendations and trades
-- [[OAuth2]] — Auth mechanism for Schwab brokerage connection
-- [[RSI]] — Technical indicator used in screener/technicals.py
+## What it does
+
+Once a day (09:00 local by default), the bot:
+
+1. **Builds a universe** — your `watchlist.txt`, plus the top 10 S&P 500 names ranked by EPS + ROE (scraped from Wikipedia, cached 24h).
+2. **Screens on fundamentals** — dividend yield, P/E, earnings growth. Fails fast and cheap.
+3. **Asks an analyst LLM** — feeds up to 5 recent headlines plus macro context (SPY 1m/1y trend, VIX level, 52-week range position) and asks for a BUY/HOLD/SKIP with reasoning.
+4. **Screens on technicals** — RSI (Wilder's, 14-period), price vs. 50-day MA, volume ratio.
+5. **Posts what survives** to Discord as an embed with Approve / Reject buttons.
+
+Then it does a **sell pass** over everything you already own: if RSI is above threshold **and** MACD has turned bearish, it asks the analyst whether to exit and posts a red SELL embed with its own approve/reject.
+
+You tap a button. Only then does an order go to Schwab — and only if `DRY_RUN=false`.
+
+## What you actually see
+
+A BUY recommendation arrives as a Discord embed:
+
+```
+┌─────────────────────────────────────────┐
+│  KO — BUY                               │
+│  Coca-Cola's Q3 beat on volume growth   │
+│  in Latin America, and the dividend is  │
+│  covered at 68% of FCF...               │
+│                                         │
+│  Price      Dividend Yield   P/E Ratio  │
+│  $61.42     3.1%             24.8       │
+│                                         │
+│  Confidence      Next Earnings          │
+│  High            2026-10-21             │
+│                                         │
+│     [ ✅ Approve ]    [ ❌ Reject ]      │
+└─────────────────────────────────────────┘
+```
+
+SELL embeds are red and show entry price, current price, P&L%, shares, and RSI. ETF embeds swap the fundamental fields for RSI, MA50 trend, and expense ratio.
+
+Buttons survive a restart — views are re-registered as persistent on startup, so a recommendation posted before a crash is still clickable after it.
+
+## Why it's built this way
+
+The interesting parts of this codebase are the constraints, not the features.
+
+**Filter order is an economics decision.** The fundamental screen runs *before* the LLM call; the technical screen runs *after* it. Cheap checks first, and never pay for a technical fetch on a ticker the analyst already rejected.
+
+**A bad parse is an outage.** The analyst falls through a chain: `primary → fallback → fallback2`. API failures trigger it (quota, rate limit, network) — but so do *parse* failures. A free-tier model that echoes the prompt template back at you is functionally identical to a 429, so it's handled identically.
+
+**Safety is the default, not a flag you remember.** `DRY_RUN=true` and `PAPER_TRADING=true` ship on. Real money requires opting in, twice. There's also a hard portfolio ceiling (`MAX_PORTFOLIO_USD`) that blocks the Approve button rather than warning about it.
+
+**Reconciliation reports; it never corrects.** Positions are recorded when Schwab *acknowledges* an order, not when it fills, so DB and broker can legitimately drift. `/reconcile` diffs them and posts an ops alert for a human. It has no code path that mutates positions to match the broker — guessing which side is right is exactly the kind of decision this system doesn't make on its own.
+
+**Never block the event loop.** Discord's gateway heartbeat dies if you stall the loop, and yfinance is synchronous. Every yfinance call inside an async function is wrapped in `asyncio.to_thread`. Zero exceptions.
+
+## Setup
+
+Requires Python 3.11+.
+
+```bash
+git clone <repo-url> && cd "algo trade"
+pip install -r requirements.txt
+cp .env.example .env    # then fill it in
+python main.py
+```
+
+On first run a browser opens for Schwab's OAuth2 flow; the token is cached in `schwab_token.json` and refreshed automatically after that.
+
+You'll need three sets of credentials:
+
+| Service | Where | Needed for |
+|---|---|---|
+| **Schwab** | [developer.schwab.com](https://developer.schwab.com) | App key, secret, account hash. Callback URL must match what you registered. |
+| **Discord** | [discord.com/developers](https://discord.com/developers/applications) | Bot token + channel ID (enable Developer Mode → right-click channel → Copy ID). |
+| **Analyst LLM** | Anthropic, Google, OpenAI, GitHub Models, or DeepSeek | At least one API key. See below. |
+
+`Config.validate()` runs at startup and fails immediately with a named variable if anything is missing — you won't get a half-configured bot that dies at 09:00.
+
+### Choosing an analyst provider
+
+Simplest path is Claude:
+
+```env
+ANALYST_PROVIDER=claude
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+Or run a free-tier primary with paid fallbacks behind it:
+
+```env
+ANALYST_PROVIDER=gemini
+ANALYST_API_KEY=...
+ANALYST_MODEL=gemini-2.5-flash
+
+ANALYST_FALLBACK_PROVIDER=github        # free GPT-4o-mini via GitHub Models
+ANALYST_FALLBACK_API_KEY=<PAT with models:read>
+
+ANALYST_FALLBACK2_PROVIDER=deepseek
+ANALYST_FALLBACK2_API_KEY=sk-...
+```
+
+`ANALYST_DAILY_LIMIT` (default 18) caps calls per provider per day to stay inside free-tier quotas, and `ANALYST_CALL_DELAY_S` (default 12s) paces them under 5 RPM. Identical headline sets hit a SHA-256 cache and cost nothing.
+
+## Discord commands
+
+| Command | What it does |
+|---|---|
+| `/scan` | Run the stock scan now (same as the scheduled job) |
+| `/scan_etf` | ETF-only scan — skips fundamentals, uses an ETF-specific prompt |
+| `/positions` | Open positions with live prices and P&L |
+| `/stats` | Win rate, average gain/loss across closed trades |
+| `/history` | Last 20 closed trades |
+| `/reconcile` | Diff DB positions against the Schwab account (report-only) |
+
+## Configuration
+
+Everything lives in `.env` — see `.env.example` for the annotated full list. The flags that matter most:
+
+```env
+DRY_RUN=true                # Approve logs the order instead of placing it
+PAPER_TRADING=true          # use Schwab's paper endpoint
+MAX_POSITION_SIZE_USD=500   # ceiling per trade
+MAX_PORTFOLIO_USD=20000     # total exposure ceiling; Approve is blocked above it
+```
+
+Screener thresholds (`MIN_DIVIDEND_YIELD`, `MAX_PE_RATIO`, `MIN_EARNINGS_GROWTH`, `MAX_RSI`, `SELL_RSI_THRESHOLD`, `MIN_VOLUME_RATIO`) are all tunable without touching code.
+
+Set `SCAN_TIMEZONE=America/New_York` if you want the schedule pinned to market hours across DST rather than to your machine's clock.
+
+## How the code is laid out
+
+```
+main.py                     orchestration, scheduler, run_scan(), run_reconciliation()
+config.py                   typed dataclass config; validate() at startup
+
+screener/
+  universe.py               watchlist + S&P 500 fetch, stock/ETF partition
+  fundamentals.py           yfinance fundamentals + threshold filter
+  technicals.py             RSI (Wilder's), MA50, volume filter
+  exit_signals.py           two-gate sell: RSI high AND MACD bearish
+  macro.py                  SPY trend, VIX level, 52-week position for prompts
+  positions.py              live price + P&L per open position
+
+analyst/
+  claude_analyst.py         prompt building, provider fallback chain, parsing
+  news.py                   headline fetch (yfinance, or Alpha Vantage if keyed)
+
+discord_bot/
+  bot.py                    TradingBot, slash commands, approve/reject views
+  embeds.py                 embed formatting
+
+schwab_client/
+  auth.py                   OAuth2 via schwab-py
+  orders.py                 order construction, position parsing
+  reconcile.py              pure DB-vs-broker diff
+
+database/
+  models.py                 SQLite schema
+  queries.py                CRUD, expiration, dupe checks
+```
+
+### A reading path
+
+If you want to understand this in an hour, read in this order:
+
+1. `main.py` → `run_scan()` — the entire system as one function
+2. `screener/universe.py` — where candidates come from
+3. `analyst/claude_analyst.py` → `build_prompt` / `parse_claude_response` — the LLM boundary, and the most brittle seam in the project
+4. `discord_bot/bot.py` → the `approve` handler — where software stops and a person starts
+5. `tests/test_run_scan.py` — the executable spec for step 1
+
+## Tests
+
+```bash
+pytest          # 546 tests, ~35s
+pytest -q
+pytest tests/test_screener_technicals.py
+pytest tests/test_analyst_claude.py::test_parse_buy_signal -v
+```
+
+Roughly 6,000 lines of tests against 3,200 lines of application code. That ratio is deliberate: `should_recommend()`, the prompt builders, `diff_positions()`, and every filter are pure functions specifically so they can be tested without mocking Discord or Schwab. `test_screener_technicals.py` validates the RSI math against synthetic price series rather than trusting the implementation.
+
+Tests that reach `run_scan` must set `config.dry_run = True` so the suite never touches a live brokerage account.
+
+## Dependencies
+
+`requirements.txt` is a **generated lock file** — don't hand-edit it. Add direct dependencies to `requirements.in`, then:
+
+```bash
+uv pip compile requirements.in --universal --python-version 3.11 -o requirements.txt
+```
+
+## Scope and limitations
+
+Worth being clear about what this is not:
+
+- **No backtesting.** There's no historical simulation and no evidence the screening criteria are profitable. The thresholds are reasonable-looking defaults, not fitted parameters.
+- **The LLM is one filter among several**, and it sees only headlines — not filings, not transcripts, not price history. Treat its reasoning as a prompt for your own thinking, not as analysis.
+- **Market orders by default.** Fills are whatever the market gives you.
+- **Single account, long-only, US equities and ETFs.** No shorts, no options, no multi-account support.
+- **Positions are recorded on acknowledgement, not fill** — hence `/reconcile` existing at all.
+
+## Disclaimer
+
+This is personal software for managing a personal account. It is not investment advice, and it comes with no warranty. You are responsible for every order you approve. Run it with `DRY_RUN=true` for a good while and read what it suggests before you even think about changing that.
