@@ -53,14 +53,30 @@ fourth was found while re-reading v2 against `master`. All five are fixed here.
 
 | # | v2 defect | Fix | Section |
 |---|---|---|---|
-| C1 | **Kill switch never reaches the sink.** §10 claimed "the sink re-reads it," but the §2 predicate was `execution_mode != "live" or dry_run` — no `trading_enabled` term anywhere in it. `/halt` during a pending approval did nothing. | New `risk/kill_switch.py` holds the runtime flag; the sink predicate reads it | §2, §10 |
+| C1 | **Kill switch never reaches the sink.** v2 §10 claimed "the sink re-reads it," but the §2 predicate was `execution_mode != "live" or dry_run` — no `trading_enabled` term anywhere in it. `/halt` during a pending approval did nothing. | New `risk/kill_switch.py` holds the runtime flag; the sink predicate reads it | §2, §12 |
 | C2 | **`submit_unknown` reserved no capital and could not be resolved.** Absent from `COMMITTING_ORDER_STATUSES` (`execution-ledger.md:222`), so a possibly-live $500 order counted $0 against both ceilings. No operation could resolve one — `/reconcile` reads positions, which cannot distinguish "working order" from "no order." | Added to the committing set; `/resolve` uses `get_orders_for_account` to settle it | §3, §4 |
 | C3 | **Broker reads fail open.** `get_positions` has no `raise_for_status`; a 401/429/500 body has no `securitiesAccount` key, so `parse_positions` returns `[]`. Exposure reads zero, the holding check sees nothing — **a broker outage opens the gate.** | `raise_for_status` on every broker read, strict parse, new `broker_unavailable` guard | §5, §7 |
 | C4 | **Daily ceiling buckets on `localtime`.** `execution-ledger.md:304` uses `date(submitted_at,'localtime') = date('now','localtime')`, and v2 §8 explicitly *defended* it. Commit `36761da` invalidated that convention later the same day. On this UTC+8 host the 21:45 and 03:30 scans are **one** US session but **two** local dates, so `MAX_DAILY_NOTIONAL_USD` resets mid-session — $4,000 through a $2,000 ceiling. Identical to the bug that was doubling `ANALYST_DAILY_LIMIT`. | Range predicate over `market_session_bounds_utc()` | §9 |
 | H1 | **`approved` blocks a ticker permanently.** The `completed` transition the index depends on existed nowhere — not in the repo, not in `/reconcile`, not in the ledger plan. | `recommendations.broker_order_id` + a named sweep, pulled into Phase 1 scope | §11 |
 
 **Also in v3:** sells are bounded by limit orders too (v2 bounded only buys — §6), and a
-process rule was added to prevent the defect class that produced C1, C2, and H1 (§14).
+process rule was added to prevent the defect class that produced C1, C2, and H1
+(see "Process rule adopted in v3").
+
+**Corrections made to the v3 draft before review, found by applying that same rule to v3
+itself:**
+
+| Defect in the v3 draft | Fix | Section |
+|---|---|---|
+| `REPLACED` was listed as a terminal broker status. It is not — the original order is dead but a **replacement is still working**, under an id we do not hold. Completing on it frees the ticker while a live order sits at the broker: fail-open in the exact spot the allowlist protects. | Removed from the allowlist; routed to `submit_unknown` | §11 |
+| `/resolve` matched on symbol and a 5-minute window. This is a personal brokerage account — a **manual order you placed** in the Schwab app minutes later would match, and be silently adopted as the bot's. | Exact match on five fields; window narrowed to −30s/+120s; partial matches are ambiguous | §4 |
+| A single 0-match was treated as proof no order landed. That assumes Schwab's order list is immediately consistent with acceptance. | Two zeros ≥ `RESOLVE_CONFIRM_DELAY_S` apart | §4 |
+| Fail-closed on a stuck order meant a ticker could be **silently blocked forever** with no alert. | `STUCK_APPROVAL_ALERT_H` ops alert + manual override | §11 |
+| Partial fills were unaddressed: status-only sweeping cannot see a partially-filled-then-cancelled order, so a real position goes unrecorded. | Stated as a **known gap** with its mitigations, and raised as review question Q2 | §11 |
+
+Three of those five are the same shape as C1/C2/H1 — a claim that read as settled and named no
+mechanism that made it true. The rule caught them in the author's own draft, which is some
+evidence it works, and no evidence at all that it is sufficient.
 
 ---
 
@@ -95,7 +111,7 @@ but sit inside one US session.
   limit orders (buy **and** sell), `get_order_status`, `find_recent_orders`
 - `schwab_client/quotes.py` — **new**, live quote fetch
 - `risk/preflight.py` — **new**, the pure guard table
-- `risk/kill_switch.py` — **new**, runtime kill-switch state (§10)
+- `risk/kill_switch.py` — **new**, runtime kill-switch state (§12)
 - `discord_bot/bot.py` — both approval views, both scan commands, `/halt`, `/resume`, `/resolve`
 - `database/queries.py` — claim predicate, day-notional query, recommendation completion
 - `database/models.py` — partial unique index, `broker_order_id` column
@@ -154,7 +170,7 @@ v1's central failure: every guard lived in a pure function that *advises*, and n
 enforced anything at the point of irreversibility. All three order wrappers reached
 `client.place_order` unconditionally.
 
-v2 added a sink guard but checked only the two *mode* flags. §10 simultaneously claimed the
+v2 added a sink guard but checked only the two *mode* flags. v2 §10 simultaneously claimed the
 sink re-read the kill switch, which it did not — so `/halt` pressed during a pending approval
 was cosmetic. v3 puts the kill switch in the predicate:
 
@@ -286,24 +302,50 @@ the *order* endpoint.
 # schwab_client/orders.py
 @_retry
 def find_recent_orders(config, symbol, since, until, client=None) -> list[dict]:
-    """Return orders entered in [since, until] matching `symbol`.
+    """Return orders entered in [since, until] whose symbol matches.
 
     Wraps Client.get_orders_for_account (verified present in schwab-py 1.5.1).
-    Filters by symbol client-side; the endpoint filters only by time and status.
+    The endpoint filters only by time and status; symbol and every other field
+    are matched client-side by the caller.
     """
 ```
 
-`main.py::resolve_unknown_submissions(config)` then applies, per unresolved row, a search
-window of `[submitted_at − 5 min, now]`:
+**Matching is exact on five fields, not one.** This is not *our* order book — it is *your
+brokerage account*, and you can place orders in the Schwab app at any time. A symbol-and-time
+match would let a manual buy of the same ticker minutes later be adopted as the bot's order.
+That failure is silent and compounding: the bot's own possibly-live order becomes untracked
+(no capital reserved, both ceilings understated by its full notional), the §11 sweep then
+watches *your* order, and completing on your fill frees the ticker while the bot's order may
+still be working. It reads as a clean resolution.
+
+A candidate matches only if **symbol, side, quantity, order type (`LIMIT`), and limit price**
+all equal what was submitted. Anything less than an exact match on all five is treated as
+*ambiguous*, never as a match.
+
+The search window is `[submitted_at − 30s, submitted_at + 120s]`, not five minutes. The
+question being resolved is "did my HTTP call land," which is a seconds-scale question; a wide
+window buys nothing and admits unrelated activity.
+
+`main.py::resolve_unknown_submissions(config)` then applies, per unresolved row:
 
 | Broker result | Resolution |
 |---|---|
 | Call **raises** | Stay `submit_unknown`. Never resolve on a failed read. |
-| **0** matching orders | The order never landed → `submit_failed`; capital released; recommendation → `completed` |
-| **Exactly 1** match | Attach its `orderId` → `submitted`; the §11 sweep takes over |
-| **2 or more** matches | Ambiguous → stay `submit_unknown`; ops alert naming every candidate order id; a human decides |
+| **0** matches, **first** observation | Stay `submit_unknown`; record the observation and retry no sooner than `RESOLVE_CONFIRM_DELAY_S` later |
+| **0** matches, confirmed **twice** ≥ delay apart | The order never landed → `submit_failed`; capital released; recommendation → `completed` |
+| **Exactly 1** exact 5-field match | Attach its `orderId` → `submitted`; the §11 sweep takes over |
+| **1 partial** match, or **2+** of anything | Ambiguous → stay `submit_unknown`; ops alert naming every candidate order id; a human decides |
 
-Exposed as `/resolve` (allowlisted, §10) and run automatically at the top of
+**Why 0 matches needs confirming twice.** A single 0 was the one result that looked
+unambiguously safe — the call succeeded, so there is no order. That reasoning assumes Schwab's
+order list is *immediately* consistent with order acceptance. If it is eventually consistent,
+a query moments after submission can return 0 for an order that does exist, and we would
+release its capital and mark `submit_failed` on a live order. Requiring the same answer twice,
+separated in time, removes the assumption at the cost of one extra scan cycle.
+`RESOLVE_CONFIRM_DELAY_S` defaults to 60. **Verify Schwab's actual consistency behavior during
+implementation**; if the order appears synchronously, this can collapse to a single read.
+
+Exposed as `/resolve` (allowlisted, §12) and run automatically at the top of
 `run_reconciliation()`.
 
 **Blast radius while unresolved:** the notional is reserved against *both* ceilings globally,
@@ -311,6 +353,9 @@ but only the *affected symbol* is blocked from new buys. Halting all trading wou
 disproportionate — the ledger is untrustworthy for one symbol, not for the book. An
 unresolved row surviving past one market session escalates to a repeated ops alert on every
 scan.
+
+**Open for review (see Open Questions):** whether `/resolve` should auto-resolve *at all*, or
+only ever report candidates for a human to confirm.
 
 ### 5. Every broker read validates before it parses  *(fixes C3)*
 
@@ -540,7 +585,7 @@ Three named pieces:
 **Terminal is an allowlist, never a denylist:**
 
 ```python
-TERMINAL_BROKER_STATUSES = frozenset({"FILLED", "CANCELED", "REJECTED", "EXPIRED", "REPLACED"})
+TERMINAL_BROKER_STATUSES = frozenset({"FILLED", "CANCELED", "REJECTED", "EXPIRED"})
 ```
 
 Schwab's status enum contains a literal `UNKNOWN` member (verified against 1.5.1, which also
@@ -548,14 +593,70 @@ spells it `CANCELED` with one L). A denylist — "terminal means not in the work
 classify `UNKNOWN`, and any status Schwab adds later, as terminal and free the ticker on the
 strength of no information. The allowlist defaults the unrecognized case to "still open."
 
+**`REPLACED` is deliberately excluded.** An earlier v3 draft listed it as terminal. It is not:
+`REPLACED` means the original order is dead *and a new order took its place*, still working,
+under an order id we do not hold. Completing on it would free the ticker while a live
+replacement sits at the broker — fail-open in exactly the spot this allowlist exists to
+protect. `REPLACED` routes to `submit_unknown` and §4's human resolution instead. The same
+applies to `PENDING_REPLACE`, which is simply not terminal.
+
+**Known gap — partial fills.** `CANCELED` and `EXPIRED` are terminal and free the ticker, but
+either can follow a *partial* fill. Phase 1 reads order **status** and deliberately not order
+**quantity** (`filledQuantity` is Workstream A's). So a partially-filled-then-cancelled order
+leaves a real position that this phase never records, and it is invisible to every exposure
+guard thereafter.
+
+This is a genuine limitation of the scope call, not an oversight, and it is stated rather than
+hidden: **status alone is not sufficient to know whether a position exists.** Two mitigations
+apply until Workstream A lands — `run_reconciliation()` compares broker positions against the
+DB and already reports untracked holdings, which is exactly what a stranded partial fill looks
+like; and guards 9 and 10 read *broker* positions, not DB positions, so exposure and the
+duplicate-symbol check see the real holding even when the DB does not. Reviewers should judge
+whether that is sufficient or whether `filledQuantity` must come forward too.
+
 **Fail-closed everywhere in the sweep:** a failed broker read leaves the row `approved`, which
 keeps the ticker blocked. Blocking is the safe direction. Rows with `status='approved' AND
 broker_order_id IS NULL` are exactly the `submit_unknown` cases and are never touched here —
 only §4 resolves those.
 
+**Fail-closed is still a silent failure.** A ticker parked in `AWAITING_MANUAL_REVIEW` for days
+keeps its row `approved`, and the index blocks that symbol with no notification. Not
+double-buying is the right direction, but "silently stop trading a symbol forever" is not an
+acceptable resting state. An `approved` recommendation older than `STUCK_APPROVAL_ALERT_H`
+(default 24) raises a repeated ops alert naming the ticker, its broker order id, and the last
+status seen, and `/resolve` accepts a manual override.
+
 The sweep runs at the top of each scan (before the buy pass, so releases are visible to the
 inserts that follow) and inside `/reconcile`. Insert catches `sqlite3.IntegrityError` and
 skips the ticker. The table has 0 rows, so this applies with no backfill.
+
+#### Alternative under review: scope the index to the session
+
+The scope call above — pulling `broker_order_id` and a broker read into Phase 1 — buys index
+safety at the cost of a second source of truth that Workstream A's `orders` table will later
+duplicate. There is an alternative that may buy the same safety for less:
+
+```sql
+CREATE UNIQUE INDEX IF NOT EXISTS idx_active_rec_per_ticker_session
+  ON recommendations(ticker, session_date) WHERE status IN ('pending', 'approved');
+```
+
+**The argument for it** composes with a decision already made in §6: *all orders are DAY
+duration*, so no working order can outlive the session that created it. If nothing being
+guarded can survive a session boundary, then per-session uniqueness is not an approximation —
+it matches the real lifetime of the thing. A stuck `approved` row would block its ticker for
+that session only, which also dissolves the silent-failure problem above. `submit_unknown` is
+blocked independently by guard 11, which never consults the index.
+
+**What has to be true for it to hold**, and what a reviewer should test: Schwab's after-hours
+DAY handling. §6 already flags this as needing verification, but under this alternative it stops
+being a documentation detail and becomes load-bearing — if an order placed at 22:00 is queued
+for the *next* session's open rather than dying at the boundary, the premise fails at exactly
+one edge and the index becomes fail-open there.
+
+**Disclosure:** this option was identified after the v3 draft was written and has not been
+validated. It is presented as an open alternative, not a recommendation. It is the only one of
+v3's open questions whose answer could make this phase *smaller*.
 
 ### 12. Kill switch
 
@@ -585,6 +686,8 @@ Guard 2 reads `kill_switch.is_enabled()`, and **the sink reads it again** at sub
 | `approval_slippage_buffer_pct` | `APPROVAL_SLIPPAGE_BUFFER_PCT` | `0.5` |
 | `quote_max_age_s` | `QUOTE_MAX_AGE_S` | `60` (regular hours only) |
 | `max_daily_notional_usd` | `MAX_DAILY_NOTIONAL_USD` | `2000.0` |
+| `resolve_confirm_delay_s` | `RESOLVE_CONFIRM_DELAY_S` | `60` (§4 — how long before a second 0-match reading is trusted) |
+| `stuck_approval_alert_h` | `STUCK_APPROVAL_ALERT_H` | `24` (§11 — age at which an `approved` row starts alerting) |
 
 `validate()` requires a non-empty allowlist when `execution_mode == "live"`. An empty
 allowlist means **deny all**, never allow all.
@@ -607,9 +710,13 @@ Everything fails **closed**.
 | Order submission definitively refused (4xx) | Order → `submit_failed`, capital released, recommendation → `completed` |
 | Order submission ambiguous (timeout, 5xx, 408, 429, missing `Location`) | Order → `submit_unknown`, capital **reserved**, symbol blocked, ops alert, recommendation **stays claimed** |
 | `/resolve` broker read raises | Row stays `submit_unknown`. Never resolved on a failed read. |
-| `/resolve` finds 2+ candidate orders | Row stays `submit_unknown`, ops alert lists every candidate id |
+| `/resolve` finds 2+ candidates, or 1 partial-field match | Row stays `submit_unknown`, ops alert lists every candidate id |
+| `/resolve` finds 0, first observation | Row stays `submit_unknown` until a second 0 confirms it ≥ `RESOLVE_CONFIRM_DELAY_S` later |
 | Order-status sweep read raises | Recommendation stays `approved`; ticker stays blocked |
 | Broker status unrecognized (incl. `UNKNOWN`) | Treated as non-terminal; ticker stays blocked |
+| Broker status `REPLACED` / `PENDING_REPLACE` | **Not terminal.** Routed to `submit_unknown` — a live replacement order exists under an id we do not hold |
+| `approved` row older than `STUCK_APPROVAL_ALERT_H` | Repeated ops alert; ticker stays blocked until `/resolve` overrides |
+| Order partially filled then cancelled | **Known gap (§11).** Position not recorded by Phase 1; surfaced by `/reconcile` as untracked, and guards 9/10 still see it via broker positions |
 | Duplicate active recommendation | `IntegrityError` caught, ticker skipped, logged |
 | Scan already running | Slash command replies without spawning |
 | Legacy env var present | Startup raises with the mapping message |
@@ -645,13 +752,14 @@ TDD throughout.
 | `test_kill_switch.py` | `/halt`, `/resume`, `/resolve` all allowlisted; `init` from config; **sink raises when halted even with both mode flags live**; guard 2 and the sink read the same module state |
 | `test_broker_read_failures.py` | **New (C3).** `raise_for_status` fires on 401/429/500 for account, quote, order, and order-list reads; `parse_positions` raises on a body with no `securitiesAccount`; `evaluate_trade` returns `broker_unavailable` rather than evaluating guards 8–11 on absent data |
 | `test_preflight.py` | All 12 guards table-driven, plus boundaries: drift exactly at tolerance, exposure exactly at ceiling, quote exactly at max age, shares rounding to 0, session-aware staleness in and out of hours, guard-5-before-guard-9 ordering |
-| `test_submission_outcomes.py` | **New (C2).** The §3 classification matrix; `submit_unknown` counted by `COMMITTING_ORDER_STATUSES` and `BLOCKING_ORDER_STATUSES`; `submit_failed` releases; `/resolve` for 0 / 1 / 2+ matches and for a raising broker call |
+| `test_submission_outcomes.py` | **New (C2).** The §3 classification matrix; `submit_unknown` counted by `COMMITTING_ORDER_STATUSES` and `BLOCKING_ORDER_STATUSES`; `submit_failed` releases |
+| `test_resolve_matching.py` | **New (v3).** §4 matching is exact on all five fields — a same-symbol manual order differing only in quantity, or in limit price, or in side is **not** adopted; the ±30s/+120s window excludes an order outside it; a single 0-match does not resolve, two ≥ `RESOLVE_CONFIRM_DELAY_S` apart do; a raising broker call never resolves |
 | `test_execution_mode.py` | Legacy var rejection, `simulated` startup failure, `dry_run` derivation, empty allowlist under `live` |
 | `test_approval_flow.py` | Unauthorized user, wrong guild, expired button, drift block, quote outage, submission failure paths, recommendation NOT reopened |
 | `test_approval_serialization.py` | Two concurrent approvals for different tickers cannot jointly exceed `MAX_DAILY_NOTIONAL_USD` |
 | `test_scan_lock.py` | Concurrent `/scan` rejection, shared lock across stock and ETF |
 | `test_claim_expiry.py` | SQL expiry claim, equality boundary, index covering `pending` **and** `approved` |
-| `test_recommendation_completion.py` | **New (H1).** Terminal allowlist releases the index; `UNKNOWN` and an invented status do **not**; failed broker read leaves `approved`; `broker_order_id IS NULL` rows untouched; a ticker is buyable again after completion |
+| `test_recommendation_completion.py` | **New (H1).** Terminal allowlist releases the index; `UNKNOWN`, `REPLACED`, `PENDING_REPLACE` and an invented status do **not**; `REPLACED` routes to `submit_unknown`; failed broker read leaves `approved`; `broker_order_id IS NULL` rows untouched; a ticker is buyable again after completion; a row past `STUCK_APPROVAL_ALERT_H` alerts and stays blocked |
 | `test_day_notional_session.py` | **New (C4).** A 21:45 and an 03:30 order on this host land in **one** session bucket; the ceiling does not reset between them; DST spring-forward and fall-back boundaries |
 | `test_limit_order_construction.py` | Buy buffer arithmetic, **sell buffer arithmetic**, DAY duration on both (not GTC), buy limit ≥ quote, sell limit ≤ quote, market builders deleted |
 
@@ -710,6 +818,38 @@ the payload, always.
 ---
 
 ## Open questions
+
+### Decisions this design makes that a reviewer should overturn or confirm
+
+These three are judgment calls with a real cost on both sides, not defects with a fix. They are
+the least-reviewed parts of v3 and are stated as questions on purpose.
+
+**Q1 — Should `/resolve` auto-resolve at all, or only ever report?**
+§4 auto-resolves on an exact five-field match and on a twice-confirmed zero. The alternative is
+that it never writes state: it reports candidates and a human confirms. Auto-resolving is
+inference about the one state the design has already declared untrustworthy, and the account
+contains orders this system did not place. Against that, human-only resolution means an
+unresolved row keeps reserving capital and blocking its symbol until someone acts, which on a
+long-horizon strategy could be days. **The question is who owns the ambiguity, not how precise
+the matcher is.**
+
+**Q2 — Is a status-only sweep sufficient, or must `filledQuantity` come forward?**
+§11 reads order status and not fill quantity, which leaves partially-filled-then-cancelled
+orders unrecorded (stated as a known gap there). The mitigations are indirect: `/reconcile`
+reports the holding as untracked, and guards 9/10 read broker positions rather than DB
+positions. Pulling `filledQuantity` forward closes it properly but drags more of Workstream A
+into this phase.
+
+**Q3 — Scope: `broker_order_id` + sweep, or a session-scoped index?**
+See the alternative at the end of §11. The adopted design buys index safety with a column and a
+broker read that Workstream A will later duplicate. The alternative
+(`UNIQUE(ticker, session_date)`) needs neither, and leans on §6's DAY-duration decision to argue
+that nothing being guarded can outlive a session. It requires a `session_date` column populated
+at insert from `market_time.market_session_date()`, and its correctness hinges entirely on
+Schwab's after-hours DAY behavior. **This is the only open question whose answer could make the
+phase smaller.** It was identified after the v3 draft and is unvalidated.
+
+### Environment and data questions
 
 1. **Schwab `FUNDAMENTAL` projection** — `Client.get_instruments(symbols, projection=FUNDAMENTAL)`
    returns `epsChangePercentTTM`, `returnOnEquity`, `currentRatio`, `marketCap`. Could restore
