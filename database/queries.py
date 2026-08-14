@@ -1,5 +1,10 @@
+from __future__ import annotations
+
 import sqlite3
+from datetime import datetime
+
 from database.models import get_cursor
+from market_time import market_session_bounds_utc, market_session_date
 
 
 def create_recommendation(
@@ -163,20 +168,28 @@ def get_pending_recommendations(db_path: str) -> list[sqlite3.Row]:
         ).fetchall()
 
 
-def ticker_recommended_today(db_path: str, ticker: str) -> bool:
-    """Return True if ticker has a non-expired, non-rejected recommendation created today.
+def ticker_recommended_today(
+    db_path: str, ticker: str, instant: datetime | None = None
+) -> bool:
+    """Return True if ticker has a non-expired, non-rejected recommendation this session.
 
-    "Today" is the machine-local calendar date ('localtime' modifier on the
-    UTC-stored created_at), aligning the dupe-prevention window with the
-    scheduler and analyst quota tracking, which both use local time. The old
-    bare date('now') compared UTC days, which roll over mid-evening US time.
+    "Today" is the US market SESSION date, not a calendar date on this machine.
+    Both earlier attempts were wrong here: bare date('now') compares UTC days,
+    which roll over mid-afternoon US time; date(..., 'localtime') compares the
+    host's days, which on a UTC+8 host splits one US session in two — the
+    configured 21:45 and 03:30 scans are 09:45 ET and 15:30 ET of the SAME
+    session but land on different local dates, so this guard never matched
+    between them and the same ticker could be recommended twice.
+
+    The range predicate also leaves created_at unwrapped, so it can use an index.
     """
+    start, end = market_session_bounds_utc(instant)
     with get_cursor(db_path) as conn:
         row = conn.execute(
             """SELECT id FROM recommendations
-               WHERE ticker = ? AND date(created_at, 'localtime') = date('now', 'localtime')
+               WHERE ticker = ? AND created_at >= ? AND created_at < ?
                AND status NOT IN ('expired', 'rejected')""",
-            (ticker,),
+            (ticker, start, end),
         ).fetchone()
     return row is not None
 
@@ -219,24 +232,32 @@ def set_cached_analysis(
 # --- Position CRUD ---
 
 
-def create_position(db_path: str, ticker: str, shares: float, avg_cost_usd: float) -> int:
+def create_position(
+    db_path: str, ticker: str, shares: float, avg_cost_usd: float,
+    instant: datetime | None = None,
+) -> int:
     """Insert a new open position for ticker, or re-open a closed one via ON CONFLICT upsert.
 
     If a row for ticker already exists (from a prior closed position), the conflict clause
     resets shares, avg_cost_usd, entry_date, and status back to 'open'. Returns the row id.
+
+    entry_date is the US market session date, supplied explicitly rather than
+    left to SQL. It feeds hold_days in the sell prompt, so a half-day skew from
+    host-local bucketing would misreport holding periods.
     """
+    session = market_session_date(instant).isoformat()
     with get_cursor(db_path) as conn:
         cursor = conn.execute(
             """INSERT INTO positions (ticker, shares, avg_cost_usd, entry_date, status)
-               VALUES (?, ?, ?, date('now', 'localtime'), 'open')
+               VALUES (?, ?, ?, ?, 'open')
                ON CONFLICT(ticker) DO UPDATE SET
                    shares=excluded.shares,
                    avg_cost_usd=excluded.avg_cost_usd,
-                   entry_date=date('now', 'localtime'),
+                   entry_date=excluded.entry_date,
                    status='open',
                    last_price=NULL,
                    last_updated=NULL""",
-            (ticker, shares, avg_cost_usd),
+            (ticker, shares, avg_cost_usd, session),
         )
         return cursor.lastrowid
 
@@ -318,13 +339,18 @@ def reset_sell_blocked(db_path: str, ticker: str) -> None:
 # --- Analyst quota tracking (D-11) ---
 
 
-def get_analyst_call_count_today(db_path: str, provider: str) -> int:
-    """Return the number of analyst API calls made today for provider.
+def get_analyst_call_count_today(
+    db_path: str, provider: str, instant: datetime | None = None
+) -> int:
+    """Return the number of analyst API calls made this session for provider.
 
-    Returns 0 if no row exists for today's date and the given provider.
+    Returns 0 if no row exists for the current session date and the given provider.
+
+    Bucketed on the US market session, not date.today(): on a UTC+8 host the
+    local day rolls over mid-session, which let ANALYST_DAILY_LIMIT reset partway
+    through a single US trading day and silently double the effective quota.
     """
-    from datetime import date
-    today = date.today().isoformat()
+    today = market_session_date(instant).isoformat()
     with get_cursor(db_path) as conn:
         row = conn.execute(
             "SELECT count FROM analyst_calls WHERE date = ? AND provider = ?",
@@ -333,14 +359,16 @@ def get_analyst_call_count_today(db_path: str, provider: str) -> int:
     return row["count"] if row else 0
 
 
-def increment_analyst_call_count(db_path: str, provider: str) -> None:
-    """Upsert today's call count for provider, incrementing by 1.
+def increment_analyst_call_count(
+    db_path: str, provider: str, instant: datetime | None = None
+) -> None:
+    """Upsert this session's call count for provider, incrementing by 1.
 
     Uses INSERT ... ON CONFLICT DO UPDATE to atomically increment the counter
-    or create a new row with count=1 if none exists for today and provider.
+    or create a new row with count=1 if none exists for this session and provider.
+    Session-bucketed for the same reason as get_analyst_call_count_today.
     """
-    from datetime import date
-    today = date.today().isoformat()
+    today = market_session_date(instant).isoformat()
     with get_cursor(db_path) as conn:
         conn.execute(
             """INSERT INTO analyst_calls (date, provider, count) VALUES (?, ?, 1)
