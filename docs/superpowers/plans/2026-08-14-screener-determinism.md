@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.11, pandas, yfinance, pytest
 
-**Spec:** `docs/superpowers/plans/2026-08-14-codex-backlog-roadmap.md` (Workstream D0); source findings in `codex_recommendations.md` §8 and §13
+**Spec:** `docs/superpowers/plans/2026-08-14-codex-backlog-roadmap.md` (Workstream D0); source findings in `docs/superpowers/codex_recommendations.md` §8 and §13
 
 **Revision note (v2):** v1 was reviewed externally and had three defects fixed here — missing
 detection that checked only `is None` while yfinance yields `NaN`, an unvalidated policy

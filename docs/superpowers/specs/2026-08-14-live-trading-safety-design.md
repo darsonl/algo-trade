@@ -3,7 +3,7 @@
 **Date:** 2026-08-14
 **Status:** Approved (v2, revised after external review)
 **Milestone:** v1.4 (candidate)
-**Source:** `codex_recommendations.md` — findings 1, 2, 3, 10, roadmap item 1.6
+**Source:** `docs/superpowers/codex_recommendations.md` — findings 1, 2, 3, 10, roadmap item 1.6
 
 ---
 

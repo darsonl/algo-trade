@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.11, SQLite (WAL), schwab-py, discord.py, APScheduler, pytest, pytest-asyncio
 
-**Spec:** `docs/superpowers/plans/2026-08-14-codex-backlog-roadmap.md` (Workstream A); source findings in `codex_recommendations.md` §4 and §10
+**Spec:** `docs/superpowers/plans/2026-08-14-codex-backlog-roadmap.md` (Workstream A); source findings in `docs/superpowers/codex_recommendations.md` §4 and §10
 
 **Revision note (v2):** v1 was reviewed externally and had four Critical and five High defects,
 all fixed here. See "What v2 changes" below.

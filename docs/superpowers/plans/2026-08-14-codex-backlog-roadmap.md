@@ -1,7 +1,7 @@
 # Codex Backlog Roadmap — Findings 4–13
 
 **Date:** 2026-08-14
-**Source:** `codex_recommendations.md`
+**Source:** `docs/superpowers/codex_recommendations.md`
 **Phase 1 spec (separate, already written):** `docs/superpowers/specs/2026-08-14-live-trading-safety-design.md`
 
 This is the organizing document for everything the Codex review raised that Phase 1

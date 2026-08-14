@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.11, SQLite, anthropic/openai SDKs, pytest
 
-**Spec:** `docs/superpowers/plans/2026-08-14-codex-backlog-roadmap.md` (Workstream B); source findings in `codex_recommendations.md` §5 and §12
+**Spec:** `docs/superpowers/plans/2026-08-14-codex-backlog-roadmap.md` (Workstream B); source findings in `docs/superpowers/codex_recommendations.md` §5 and §12
 
 **Revision note (v2):** v1 was reviewed externally and had four defects fixed here — a
 mathematically constant `band()` function, an RSI bucketer contradicting its own test, key
