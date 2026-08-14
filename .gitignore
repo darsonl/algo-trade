@@ -8,7 +8,16 @@ __pycache__/
 dist/
 build/
 .venv/
+
+# Agent tooling — machine-local, installed by CLI tools rather than authored here.
+# .claude/ holds the GSD skills; .agents/ and .codex/ are created by the Codex
+# plugin install; AGENTS.md is its generated mirror of CLAUDE.md. CLAUDE.md is
+# the tracked source of truth for project guidance — see the note in it if the
+# two ever drift.
 .claude/
+.agents/
+.codex/
+AGENTS.md
 .worktrees/
 sp500_cache.json
 sp500_top_cache.json
