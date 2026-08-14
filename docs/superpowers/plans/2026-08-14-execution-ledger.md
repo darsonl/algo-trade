@@ -18,7 +18,12 @@ all fixed here. See "What v2 changes" below.
 - Python 3.11; SQLite via `database/models.py:get_cursor` — never open raw connections
 - All broker I/O inside async functions wrapped in `await asyncio.to_thread(...)`
 - Tests set `config.dry_run = True` or patch the broker call; the suite never reaches live Schwab
-- Day-bucketing uses `'localtime'`; timestamp comparisons use bare UTC `datetime('now')`
+- **Day-bucketing uses the US market session** via `market_time.market_session_bounds_utc()`,
+  as a range predicate (`col >= ? AND col < ?`). **Neither `'localtime'` nor bare UTC** — see
+  CLAUDE.md and commit `36761da`. A v2 draft of this plan used `'localtime'`; on this UTC+8
+  host that splits one US session across two local dates and resets any daily ceiling
+  mid-session. Instant comparisons (expiry, `expires_at`) are a different thing and stay bare
+  UTC `datetime('now')`.
 - New tables via `CREATE TABLE IF NOT EXISTS`; new columns via `try: ALTER TABLE / except sqlite3.OperationalError: pass`
 - Test files use module-level `DB_PATH` with an `autouse` `fresh_db` fixture, matching `tests/test_positions.py`
 - **Prerequisite:** Phase 1 (`docs/superpowers/specs/2026-08-14-live-trading-safety-design.md`) must land first. Task 6 modifies the approval handler Phase 1 rewrites.
@@ -215,11 +220,28 @@ Append to `database/queries.py`:
 
 ```python
 # --- Order ledger (Workstream A) ---
+from datetime import datetime
+
+from market_time import market_session_bounds_utc
 
 OPEN_ORDER_STATUSES = ("pending_submit", "submitted", "working", "partially_filled")
+UNRESOLVED_ORDER_STATUSES = ("submit_unknown",)
 TERMINAL_ORDER_STATUSES = ("filled", "cancelled", "rejected", "submit_failed")
+
 # Statuses that still commit capital, for daily-notional and exposure reservation.
-COMMITTING_ORDER_STATUSES = OPEN_ORDER_STATUSES + ("filled",)
+# submit_unknown is included deliberately: the broker call was ambiguous, so the
+# order MAY exist and MAY have committed real capital. Assuming otherwise is the
+# fail-open direction — it lets a possibly-live $500 order count $0 against both
+# ceilings. See spec section 4.
+COMMITTING_ORDER_STATUSES = OPEN_ORDER_STATUSES + UNRESOLVED_ORDER_STATUSES + ("filled",)
+
+# Statuses that block a second buy of the same symbol (preflight guards 10/11).
+BLOCKING_ORDER_STATUSES = OPEN_ORDER_STATUSES + UNRESOLVED_ORDER_STATUSES
+
+# submit_unknown is intentionally absent from TERMINAL_ORDER_STATUSES: nothing may
+# sweep it away automatically. Only main.py::resolve_unknown_submissions clears it,
+# by querying Client.get_orders_for_account — /reconcile reads positions and cannot
+# distinguish "unfilled working order" from "no order at all".
 
 
 def create_order(
@@ -286,14 +308,26 @@ def get_order(db_path: str, order_id: int) -> dict | None:
     return dict(row) if row else None
 
 
-def get_day_notional(db_path: str) -> float:
-    """Today's committed buy notional, valued at each order's reference price.
+def get_day_notional(db_path: str, instant: datetime | None = None) -> float:
+    """This SESSION's committed buy notional, valued at each order's reference price.
 
     Reads ORDERS, not trades. Phase 1's daily ceiling must be consumed at
-    approval time: if it counted fills, several market buys could all be
-    approved before any fill was visible and jointly blow through the cap.
-    Rejected, cancelled, and never-submitted orders release their budget.
+    approval time: if it counted fills, several buys could all be approved
+    before any fill was visible and jointly blow through the cap. Rejected,
+    cancelled, and never-submitted orders release their budget.
+
+    "Today" is the US MARKET SESSION date, not the host calendar date. An
+    earlier draft of this plan used date(submitted_at,'localtime') — that is
+    the convention commit 36761da removed and CLAUDE.md now forbids. This host
+    is Asia/Taipei (UTC+8), where SCAN_TIMES=21:45,03:30 are 09:45 ET and
+    15:30 ET of ONE session but TWO local dates. A localtime bucket therefore
+    resets the ceiling mid-session and admits double MAX_DAILY_NOTIONAL_USD —
+    the same defect that was doubling ANALYST_DAILY_LIMIT to 36.
+
+    The range predicate leaves submitted_at unwrapped and so index-usable.
+    `instant` is injectable so tests can pin time without freezegun.
     """
+    start, end = market_session_bounds_utc(instant)
     placeholders = ",".join("?" for _ in COMMITTING_ORDER_STATUSES)
     with get_cursor(db_path) as conn:
         row = conn.execute(
@@ -301,8 +335,8 @@ def get_day_notional(db_path: str) -> float:
                   FROM orders
                  WHERE side = 'buy'
                    AND status IN ({placeholders})
-                   AND date(submitted_at, 'localtime') = date('now', 'localtime')""",
-            COMMITTING_ORDER_STATUSES,
+                   AND submitted_at >= ? AND submitted_at < ?""",
+            (*COMMITTING_ORDER_STATUSES, start, end),
         ).fetchone()
     return float(row["total"])
 ```
