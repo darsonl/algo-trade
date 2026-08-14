@@ -14,22 +14,31 @@ build versus which need a design cycle first.
 ## Dependency order
 
 ```
-Phase 1 (safety)  ──┐
-                    ├──> A: Execution ledger ──┬──> C: Research harness ──> D: Signal redesign
-B: Analysis integrity ──────────────────────── ┘
-D0: Deterministic screener fixes  (independent, any time)
+Phase 1 (safety) ──> A: Execution ledger ──> Forward validation (Codex Phase 5)
+                                                      ^
+C: Research harness (needs point-in-time data) ──> D: Signal redesign
+B: Analysis integrity   (independent, any time)
+D0: Screener determinism (independent, any time)
 ```
 
-**A blocks C, which blocks D.** This is the single most important sequencing fact in the
-document. C (backtesting) exists to answer "does this strategy make money", and D (signal
-redesign) exists to act on that answer. Both are meaningless while the trade ledger records
-*quoted* prices instead of *fill* prices — you would be validating a strategy against a P&L
-series that never happened. A is therefore the foundation, not merely the next item.
+**Corrected 2026-08-14 after external review.** An earlier version of this document claimed
+"A blocks C" — that backtesting could not begin until the trade ledger recorded real fills.
+That was wrong. A point-in-time backtest simulates its own hypothetical fills from historical
+bars; it never reads the production `trades` table. **C's real blocker is point-in-time
+fundamentals data**, identified in C's own section below.
 
-**B is independent of A** and can run in parallel. It fixes correctness of the analysis
-input, not of the execution record.
+What A actually gates is **forward validation** (Codex Phase 5) — comparing live results
+against backtest expectations. That comparison is meaningless while live P&L is computed
+from quoted rather than filled prices. So A is a prerequisite for trusting live results, not
+for producing backtest results.
 
-**D0 is independent of everything.** Small deterministic fixes with no design risk.
+**A also gates nothing else.** B, C, and D0 are independent of it and of each other. The only
+hard chain is **C → D**: redesigning signals without a way to measure them is how you overfit
+to intuition.
+
+**Execution-order caution.** B, D0, and A all modify `config.py` and `main.py`. Running them
+in parallel will produce mechanical merge conflicts even though they are semantically
+independent. Sequence them, or expect to resolve conflicts by hand.
 
 ---
 
@@ -55,9 +64,16 @@ to sell shares that do not exist.
 
 **Approach.** Introduce an `orders` table between recommendations and trades. Orders carry
 broker lifecycle state; positions are built only from confirmed executions. `schwab-py`
-exposes `Client.get_order(order_id, account_hash)` and a 20-value status enum
-(`FILLED`, `WORKING`, `REJECTED`, `CANCELED`, `PENDING_ACTIVATION`, …), so the state machine
-is determined by the broker rather than invented.
+exposes `Client.get_order(order_id, account_hash)` and a broker-defined status enum, so the
+state machine is determined by the broker rather than invented.
+
+> **Dependency warning.** `requirements.txt:172` and `requirements.in:12` pin
+> `schwab-py==1.4.0`, but the machine this was planned on has **1.5.1** installed. Every API
+> fact used in these plans (`get_order`, `get_quote`, the status enum and its member count)
+> was verified against 1.5.1. **Before executing Workstream A, either bump the pin to 1.5.1
+> and regenerate the lock with `uv pip compile`, or re-verify each API against 1.4.0.** A
+> clean `pip install -r requirements.txt` today would install a version these plans were not
+> checked against.
 
 **Done when:** a GTC limit order that never fills produces no position; a partial fill
 records actual filled quantity at actual fill price; `/stats` derives from execution records.
@@ -150,23 +166,34 @@ dramatically simpler and cheaper.
 losing positions), 11 (ETF watchlist has overlapping exposure)
 
 **Status:** **Not plannable yet.** Depends on C — redesigning signals without a way to
-measure them is how you overfit to intuition.
+measure them is how you overfit to intuition. This is the one genuine hard dependency in the
+document.
 
 **Why it cannot be planned now.** "Use scale-independent factors such as earnings yield,
 FCF yield, ROIC, gross profitability" is a research program, not a task list. Which factors,
 weighted how, normalized within what sector scheme, validated against what — none of that is
 answerable without the harness from C.
 
-**One exception worth noting: finding 9 (no stop-loss) is arguably urgent and separable.**
-The current exit requires RSI above threshold AND MACD bearish — a profit-taking pattern. A
-position that declines steadily never becomes overbought and so never reaches the sell
-analysis at all. There is no maximum-loss stop anywhere in the system. If you begin trading
-real money after Phase 1, you hold positions with no downside exit.
+### Finding 9 — protective stop: WON'T FIX (decided 2026-08-14)
 
-A simple deterministic stop (hard percentage loss, or ATR-multiple) does not require the
-research harness to justify — it is risk management, not alpha generation. **Consider
-promoting this to run alongside Workstream A.** Flagged rather than planned because the
-threshold choice is yours and the design deserves its own short brainstorm.
+Codex recommends adding a maximum-loss stop, trailing exits, and time stops, on the grounds
+that the RSI+MACD exit is a profit-taking pattern that never fires on a steadily declining
+position.
+
+**Decision: no stop-loss will be added.** The strategy is long-term hold, not short-term
+gain. A stop would force realization of exactly the drawdowns a buy-and-hold thesis intends
+to ride through, and it is inconsistent with the entry screen, which selects for dividend
+yield, moderate P/E, and earnings growth — an income and quality screen, not a momentum one.
+
+Recorded here so future reviews do not re-raise it as an open gap. It is a deliberate
+strategy choice, not an oversight.
+
+**Open coherence question this raises.** If positions are held long term, the existing sell
+pass — RSI > 70 AND MACD bearish, a short-horizon overbought-reversal trigger — is the
+component that does not fit the thesis. The system currently has no downside exit and a
+sensitive upside exit, which is the opposite of what a long-term holder usually wants. Worth
+deciding separately whether the sell pass should be narrowed to thesis-breaking events
+(dividend cut, earnings collapse) or removed. Not planned; flagged.
 
 **Design questions for the rest of D:**
 
@@ -184,12 +211,13 @@ threshold choice is yours and the design deserves its own short brainstorm.
 
 | Workstream | Findings | Status | Blocked by |
 |---|---|---|---|
-| A — Execution ledger | 4, 10 | Plan ready | Phase 1 |
-| B — Analysis integrity | 5, 12 | Plan ready | nothing |
-| D0 — Screener determinism | 8, 13 | Plan ready | nothing |
-| D9 — Protective stop | 9 | Needs short brainstorm | nothing (promote?) |
-| C — Research harness | 6 | Needs design cycle | A |
+| A — Execution ledger | 4, 10 | Plan revised (v2) | Phase 1; schwab-py pin |
+| B — Analysis integrity | 5, 12 | Plan revised (v2) | nothing |
+| D0 — Screener determinism | 8, 13 | Plan revised (v2) | nothing |
+| D9 — Protective stop | 9 | **Won't fix — by design** | — |
+| C — Research harness | 6 | Needs design cycle | point-in-time data source |
 | D — Signal redesign | 7, 11 | Needs design + research | C |
+| Sell-pass coherence | — | Open question | strategy decision |
 
 **Standing caveat from finding 6:** none of this work produces evidence that the strategy is
 profitable. Phase 1 makes the bot safe to operate; A makes its records truthful; B makes its

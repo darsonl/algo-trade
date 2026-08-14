@@ -1,39 +1,47 @@
-# Screener Determinism Implementation Plan
+# Screener Determinism Implementation Plan (v2)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make the fundamental filter's missing-data behavior explicit rather than silently permissive, and make the volume filter independent of what time of day the scan runs.
 
-**Architecture:** `passes_fundamental_filter` gains a sibling that returns a structured result naming every missing field, with a configurable policy for what missing data means. `fetch_technical_data` drops the current session's partial bar before computing volume statistics, and records the data timestamp and session state alongside every indicator.
+**Architecture:** `passes_fundamental_filter` gains a sibling returning a structured result that names every missing field, with a configurable policy. `fetch_technical_data` computes volume statistics from completed bars only — defined as "not dated today" — and records the bar it used.
 
-**Tech Stack:** Python 3.11, pandas, yfinance, zoneinfo, pytest
+**Tech Stack:** Python 3.11, pandas, yfinance, pytest
 
 **Spec:** `docs/superpowers/plans/2026-08-14-codex-backlog-roadmap.md` (Workstream D0); source findings in `codex_recommendations.md` §8 and §13
 
+**Revision note (v2):** v1 was reviewed externally and had three defects fixed here — missing
+detection that checked only `is None` while yfinance yields `NaN`, an unvalidated policy
+string that silently behaved as `allow`, and a clock-based session detector that misclassified
+exchange half-days and holidays.
+
 ## Global Constraints
 
-- Python 3.11; `zoneinfo` from the stdlib — no new dependencies
+- Python 3.11; **no new dependencies** — v1 proposed `zoneinfo`-based session logic that v2 removes
 - Filter functions stay pure; only `fetch_*` functions do I/O
-- `passes_fundamental_filter` keeps its current name and `bool` return so existing callers and the 546-test suite keep working; the structured version is additive
-- Test files use module-level fixtures matching `tests/test_screener_technicals.py`
+- `passes_fundamental_filter` keeps its name and `bool` return so the existing 546-test suite keeps working; the structured version is additive
 - Commit after every task
 
 ---
 
-## Decision required before Task 1
+## Decision: `FUNDAMENTAL_MISSING_POLICY=reject` (confirmed 2026-08-14)
 
-`FUNDAMENTAL_MISSING_POLICY` defaults to **`reject`** in this plan, meaning a stock with no
-`earningsGrowth` data no longer passes the growth check by omission.
+A stock with no `earningsGrowth` data no longer passes the growth check by omission. This
+visibly shrinks the candidate set — `screener/fundamentals.py:53` currently skips the check
+when the value is absent, and yfinance omits `earningsGrowth` for a meaningful fraction of
+tickers.
 
-**This visibly shrinks your candidate set.** Today `screener/fundamentals.py:53` skips the
-growth check when the value is absent, and yfinance omits `earningsGrowth` for a meaningful
-fraction of tickers. Switching the default to `reject` is what Codex finding 8 asks for
-("reject insufficient data or assign a documented uncertainty penalty"), but it is a
-behavior change, not a bug fix.
+**Mitigation path.** Schwab's own API can supply the missing field:
+`Client.get_instruments(symbols, projection=Instrument.Projection.FUNDAMENTAL)` returns
+`epsChangePercentTTM`, `epsChangeYear`, and `revChangeTTM`, plus quality and liquidity
+metrics (`returnOnEquity`, `returnOnInvestment`, `grossMarginTTM`, `totalDebtToEquity`,
+`currentRatio`, `interestCoverage`, `marketCap`, `vol3MonthAvg`). Adding it as a fallback
+source would both restore candidates and supply the scale-independent factors Codex asks for
+in findings 7 and 8.
 
-If you would rather keep today's behavior while gaining visibility, set the default to
-`allow` — the filter still records and logs which fields were missing, so you can measure
-the impact before changing the policy. **Confirm which default you want before Task 1.**
+**Not planned here** — the exact response field names and units have not been verified
+against a live call (the local Schwab token is ~125 days old and expired). Verify first,
+then scope it as its own task.
 
 ---
 
@@ -46,8 +54,9 @@ the impact before changing the policy. **Confirm which default you want before T
 
 **Interfaces:**
 - Consumes: `screener.fundamentals.normalize_dividend_yield`
-- Produces: `evaluate_fundamentals(info: dict, config) -> dict` returning
-  `{"passed": bool, "reason": str, "missing": list[str]}`
+- Produces:
+  - `is_missing(value) -> bool`
+  - `evaluate_fundamentals(info: dict, config) -> dict` returning `{"passed": bool, "reason": str, "missing": list[str]}`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -55,7 +64,9 @@ the impact before changing the policy. **Confirm which default you want before T
 # tests/test_fundamental_missing_data.py
 import pytest
 from types import SimpleNamespace
-from screener.fundamentals import evaluate_fundamentals
+from screener.fundamentals import evaluate_fundamentals, is_missing
+
+NAN = float("nan")
 
 
 def _cfg(policy="reject"):
@@ -76,6 +87,19 @@ def _info(pe=20.0, div=3.0, growth=0.10):
     return out
 
 
+# --- is_missing ---
+
+def test_is_missing_covers_none_nan_and_junk():
+    assert is_missing(None) is True
+    assert is_missing(NAN) is True
+    assert is_missing(float("inf")) is True
+    assert is_missing("n/a") is True
+    assert is_missing(0.0) is False
+    assert is_missing(20.0) is False
+
+
+# --- evaluate_fundamentals ---
+
 def test_complete_data_passes():
     r = evaluate_fundamentals(_info(), _cfg())
     assert r["passed"] is True and r["missing"] == []
@@ -83,22 +107,34 @@ def test_complete_data_passes():
 
 def test_missing_pe_always_rejected_regardless_of_policy():
     r = evaluate_fundamentals(_info(pe=None), _cfg(policy="allow"))
+    assert r["passed"] is False and r["reason"] == "missing_required_pe"
+
+
+def test_nan_pe_rejected():
+    """v1 regression: NaN is not None, and every comparison against it is False."""
+    r = evaluate_fundamentals(_info(pe=NAN), _cfg(policy="allow"))
+    assert r["passed"] is False and r["reason"] == "missing_required_pe"
+
+
+def test_all_nan_rejected_under_reject_policy():
+    r = evaluate_fundamentals({"trailingPE": NAN, "dividendYield": NAN,
+                               "earningsGrowth": NAN}, _cfg())
     assert r["passed"] is False
-    assert r["reason"] == "missing_required_pe"
-    assert "trailingPE" in r["missing"]
 
 
-def test_missing_growth_is_reported_even_when_allowed():
+def test_missing_growth_reported_but_allowed_under_allow():
     r = evaluate_fundamentals(_info(growth=None), _cfg(policy="allow"))
-    assert r["passed"] is True
-    assert r["missing"] == ["earningsGrowth"]
+    assert r["passed"] is True and r["missing"] == ["earningsGrowth"]
 
 
-def test_missing_growth_rejected_under_reject_policy():
-    r = evaluate_fundamentals(_info(growth=None), _cfg(policy="reject"))
-    assert r["passed"] is False
-    assert r["reason"] == "insufficient_data"
-    assert r["missing"] == ["earningsGrowth"]
+def test_missing_growth_rejected_under_reject():
+    r = evaluate_fundamentals(_info(growth=None), _cfg())
+    assert r["passed"] is False and r["reason"] == "insufficient_data"
+
+
+def test_nan_growth_treated_as_missing_under_reject():
+    r = evaluate_fundamentals(_info(growth=NAN), _cfg())
+    assert r["passed"] is False and r["reason"] == "insufficient_data"
 
 
 def test_multiple_missing_fields_all_reported():
@@ -106,17 +142,20 @@ def test_multiple_missing_fields_all_reported():
     assert sorted(r["missing"]) == ["dividendYield", "earningsGrowth"]
 
 
-def test_failing_threshold_beats_missing_data_in_the_reason():
-    """A present-but-failing value is a threshold rejection, not a data problem."""
-    r = evaluate_fundamentals(_info(pe=99.0, growth=None), _cfg(policy="reject"))
-    assert r["passed"] is False
-    assert r["reason"] == "pe_too_high"
+def test_threshold_failure_beats_missing_data_in_the_reason():
+    r = evaluate_fundamentals(_info(pe=99.0, growth=None), _cfg())
+    assert r["passed"] is False and r["reason"] == "pe_too_high"
 
 
-def test_dividend_yield_is_normalised_from_percent():
-    """3.0 from yfinance means 3%, which clears a 2% minimum."""
+def test_dividend_yield_normalised_from_percent():
     assert evaluate_fundamentals(_info(div=3.0), _cfg())["passed"] is True
     assert evaluate_fundamentals(_info(div=1.0), _cfg())["passed"] is False
+
+
+def test_unknown_policy_string_fails_closed():
+    """v1 regression: any non-'reject' string silently behaved as 'allow'."""
+    r = evaluate_fundamentals(_info(growth=None), _cfg(policy="typo"))
+    assert r["passed"] is False
 
 
 def test_legacy_boolean_filter_still_works():
@@ -129,7 +168,7 @@ def test_legacy_boolean_filter_still_works():
 Run: `pytest tests/test_fundamental_missing_data.py -v`
 Expected: FAIL — `ImportError: cannot import name 'evaluate_fundamentals'`
 
-- [ ] **Step 3: Add the config field**
+- [ ] **Step 3: Add the config field and validation**
 
 In `config.py`, next to `min_earnings_growth`:
 
@@ -137,54 +176,84 @@ In `config.py`, next to `min_earnings_growth`:
     fundamental_missing_policy: str = _env_str("FUNDAMENTAL_MISSING_POLICY", "reject")
 ```
 
+And in `validate()`:
+
+```python
+        if self.fundamental_missing_policy not in ("reject", "allow"):
+            raise ValueError(
+                f"FUNDAMENTAL_MISSING_POLICY must be 'reject' or 'allow', "
+                f"got {self.fundamental_missing_policy!r}"
+            )
+```
+
 - [ ] **Step 4: Write the implementation**
 
 Append to `screener/fundamentals.py`:
 
 ```python
+import math
+
+
+def is_missing(value) -> bool:
+    """True when a numeric field is absent, NaN, infinite, or non-numeric.
+
+    yfinance returns NaN rather than None for many absent fields, and every
+    comparison against NaN is False — so a plain `is None` check lets NaN slip
+    through every threshold gate untouched.
+    """
+    if value is None:
+        return True
+    try:
+        return not math.isfinite(float(value))
+    except (TypeError, ValueError):
+        return True
+
+
 def evaluate_fundamentals(info: dict, config) -> dict:
     """Evaluate fundamentals, reporting missing fields explicitly.
 
-    Codex finding 8: the boolean filter skips the yield and growth checks when
-    the value is absent, so a company with no growth data passes a nominal
-    growth filter silently. This version names every missing field and applies
+    Codex finding 8: the boolean filter skips the yield and growth checks when a
+    value is absent, so a company with no growth data passes a nominal growth
+    filter silently. This version names every missing field and applies
     config.fundamental_missing_policy:
 
       'reject' — missing optional data fails the candidate (default)
       'allow'  — missing optional data passes, but is still reported
 
-    trailingPE is required under both policies; valuation is non-negotiable.
-    Threshold failures take precedence over missing-data failures in `reason`,
-    because a value that is present and bad is a different signal from absent.
+    Any other policy value fails closed, matching 'reject'. trailingPE is
+    required under every policy. Threshold failures take precedence over
+    missing-data failures in `reason`: a value that is present and bad is a
+    different signal from one that is absent.
     """
     missing = []
-
     pe = info.get("trailingPE")
     raw_div = info.get("dividendYield")
     growth = info.get("earningsGrowth")
 
-    if pe is None:
+    if is_missing(pe):
         missing.append("trailingPE")
-    if raw_div is None:
+    if is_missing(raw_div):
         missing.append("dividendYield")
-    if growth is None:
+    if is_missing(growth):
         missing.append("earningsGrowth")
 
-    if pe is None:
+    if is_missing(pe):
         return {"passed": False, "reason": "missing_required_pe", "missing": missing}
 
-    if pe > config.max_pe_ratio:
+    if float(pe) > config.max_pe_ratio:
         return {"passed": False, "reason": "pe_too_high", "missing": missing}
 
-    div_yield = normalize_dividend_yield(raw_div)
-    if div_yield is not None and div_yield < config.min_dividend_yield:
-        return {"passed": False, "reason": "yield_too_low", "missing": missing}
+    if not is_missing(raw_div):
+        div_yield = normalize_dividend_yield(float(raw_div))
+        if div_yield < config.min_dividend_yield:
+            return {"passed": False, "reason": "yield_too_low", "missing": missing}
 
-    if growth is not None and growth < config.min_earnings_growth:
+    if not is_missing(growth) and float(growth) < config.min_earnings_growth:
         return {"passed": False, "reason": "growth_too_low", "missing": missing}
 
     optional_missing = [f for f in missing if f != "trailingPE"]
-    if optional_missing and config.fundamental_missing_policy == "reject":
+    # Fail closed: only the explicit string 'allow' permits missing optional data.
+    if optional_missing and config.fundamental_missing_policy != "allow":
         return {"passed": False, "reason": "insufficient_data", "missing": optional_missing}
 
     return {"passed": True, "reason": "ok", "missing": optional_missing}
@@ -193,11 +262,11 @@ def evaluate_fundamentals(info: dict, config) -> dict:
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `pytest tests/test_fundamental_missing_data.py -v`
-Expected: 8 passed
+Expected: 14 passed
 
 - [ ] **Step 6: Use it in `run_scan`**
 
-In `main.py`, replace the `passes_fundamental_filter` call with:
+In `main.py`, replace the `passes_fundamental_filter` call:
 
 ```python
             fundamentals = evaluate_fundamentals(info, config)
@@ -213,8 +282,8 @@ In `main.py`, replace the `passes_fundamental_filter` call with:
 - [ ] **Step 7: Run the full suite**
 
 Run: `pytest -q`
-Expected: green. If `tests/test_scan.py` expects tickers with missing growth to pass, those
-assertions encode the old policy — update them and note the change.
+Expected: green. Tests expecting tickers with missing growth to pass encode the old policy —
+update them and note the change.
 
 - [ ] **Step 8: Commit**
 
@@ -225,147 +294,30 @@ git commit -m "feat: explicit missing-data policy for the fundamental filter"
 
 ---
 
-### Task 2: Detect a partial session bar
+### Task 2: Completed-bar volume statistics
 
 **Files:**
-- Create: `screener/session.py`
-- Test: `tests/test_session_state.py`
-
-**Interfaces:**
-- Consumes: nothing (pure; stdlib `zoneinfo` only)
-- Produces:
-  - `MARKET_TZ: ZoneInfo`
-  - `is_partial_bar(bar_date, now_et) -> bool`
-  - `session_state(now_et) -> str` returning `pre_open | open | closed | weekend`
-
-- [ ] **Step 1: Write the failing test**
-
-```python
-# tests/test_session_state.py
-from datetime import datetime, date
-from zoneinfo import ZoneInfo
-from screener.session import is_partial_bar, session_state, MARKET_TZ
-
-ET = ZoneInfo("America/New_York")
-
-
-def _et(y, m, d, hh, mm):
-    return datetime(y, m, d, hh, mm, tzinfo=ET)
-
-
-def test_todays_bar_during_market_hours_is_partial():
-    # Wednesday 2026-08-12, 11:00 ET — mid-session
-    assert is_partial_bar(date(2026, 8, 12), _et(2026, 8, 12, 11, 0)) is True
-
-
-def test_todays_bar_after_close_is_complete():
-    assert is_partial_bar(date(2026, 8, 12), _et(2026, 8, 12, 16, 30)) is False
-
-
-def test_todays_bar_before_open_is_not_partial():
-    """Before 09:30 there is no session bar for today yet; anything dated today is stale."""
-    assert is_partial_bar(date(2026, 8, 12), _et(2026, 8, 12, 8, 0)) is False
-
-
-def test_yesterdays_bar_is_always_complete():
-    assert is_partial_bar(date(2026, 8, 11), _et(2026, 8, 12, 11, 0)) is False
-
-
-def test_session_state_values():
-    assert session_state(_et(2026, 8, 12, 8, 0)) == "pre_open"
-    assert session_state(_et(2026, 8, 12, 11, 0)) == "open"
-    assert session_state(_et(2026, 8, 12, 17, 0)) == "closed"
-    # 2026-08-15 is a Saturday
-    assert session_state(_et(2026, 8, 15, 11, 0)) == "weekend"
-
-
-def test_exactly_at_open_is_open():
-    assert session_state(_et(2026, 8, 12, 9, 30)) == "open"
-
-
-def test_exactly_at_close_is_closed():
-    assert session_state(_et(2026, 8, 12, 16, 0)) == "closed"
-
-
-def test_market_tz_is_new_york():
-    assert str(MARKET_TZ) == "America/New_York"
-```
-
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `pytest tests/test_session_state.py -v`
-Expected: FAIL — `ModuleNotFoundError: No module named 'screener.session'`
-
-- [ ] **Step 3: Write the implementation**
-
-```python
-# screener/session.py
-"""US market session state, used to keep signals independent of scan time.
-
-Codex finding 13: the volume filter compares the latest daily bar against a
-20-bar average. Mid-session that latest bar is a partial day, so a qualifying
-stock is rejected purely because the scan ran early.
-
-Uses regular-hours boundaries only and does not model market holidays — a
-holiday simply produces no bar for that date, which the partial-bar check
-handles correctly since it compares against the bar's own date.
-"""
-from __future__ import annotations
-
-from datetime import date, datetime, time
-from zoneinfo import ZoneInfo
-
-MARKET_TZ = ZoneInfo("America/New_York")
-
-_OPEN = time(9, 30)
-_CLOSE = time(16, 0)
-
-
-def session_state(now_et: datetime) -> str:
-    """Return 'weekend' | 'pre_open' | 'open' | 'closed' for an ET datetime."""
-    if now_et.weekday() >= 5:
-        return "weekend"
-    current = now_et.time()
-    if current < _OPEN:
-        return "pre_open"
-    if current >= _CLOSE:
-        return "closed"
-    return "open"
-
-
-def is_partial_bar(bar_date: date, now_et: datetime) -> bool:
-    """True when bar_date is today's bar and the session is still in progress.
-
-    Only a bar dated today can be partial, and only while the market is open.
-    Before the open, a bar dated today would be a data artifact rather than a
-    live session, so it is treated as complete rather than dropped.
-    """
-    return bar_date == now_et.date() and session_state(now_et) == "open"
-```
-
-- [ ] **Step 4: Run tests to verify they pass**
-
-Run: `pytest tests/test_session_state.py -v`
-Expected: 8 passed
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add screener/session.py tests/test_session_state.py
-git commit -m "feat: market session state and partial-bar detection"
-```
-
----
-
-### Task 3: Drop the partial bar from volume statistics
-
-**Files:**
-- Modify: `screener/technicals.py:99-135` (`fetch_technical_data`)
+- Modify: `screener/technicals.py:99-135`
 - Test: `tests/test_volume_completed_bar.py`
 
 **Interfaces:**
-- Consumes: `screener.session.is_partial_bar`, `screener.session.MARKET_TZ`
-- Produces: `fetch_technical_data` gains `data_timestamp: str` and `session_state: str` keys
+- Produces: `fetch_technical_data` gains `volume_bar_date: str | None` and `dropped_partial_bar: bool`
+
+**Design change from v1.** v1 proposed a `screener/session.py` that decided partiality from
+the wall clock (09:30–16:00 ET). External review found that misclassifies exchange half-days
+— after a 13:00 close it would keep discarding the completed bar until 16:00 — and mislabels
+weekday holidays as `open`.
+
+v2 removes the clock entirely: **a bar dated today is never used for volume statistics.**
+
+This is both simpler and better suited to the system. Scans run at 09:00 and 09:30 local, so
+a bar dated today is either absent or seconds old. The rule needs no exchange calendar, no
+timezone handling, and no annual half-day table — and it is *deterministic*, which is the
+actual goal of finding 13. The cost is that an after-close scan uses yesterday's volume
+rather than today's; for a daily screener comparing against a 20-day average, that is
+immaterial.
+
+Price still uses the latest close. Only volume statistics change.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -373,17 +325,15 @@ git commit -m "feat: market session state and partial-bar detection"
 # tests/test_volume_completed_bar.py
 import pandas as pd
 import pytest
-from datetime import datetime
+from datetime import date, timedelta
 from unittest.mock import patch
-from zoneinfo import ZoneInfo
 from screener.technicals import fetch_technical_data
 
-ET = ZoneInfo("America/New_York")
 
-
-def _hist(n=60, last_volume=1_000):
-    """n daily bars ending today; all but the last have volume 1,000,000."""
-    idx = pd.date_range(end=pd.Timestamp("2026-08-12"), periods=n, freq="D")
+def _hist(n=60, last_volume=1_000, end=None):
+    """n daily bars ending at `end` (default: today), volume 1,000,000 except the last."""
+    end = end or pd.Timestamp(date.today())
+    idx = pd.date_range(end=end, periods=n, freq="D")
     return pd.DataFrame(
         {
             "Close": [100.0 + i * 0.1 for i in range(n)],
@@ -397,114 +347,129 @@ class _FakeTicker:
     pass
 
 
-def test_partial_bar_excluded_from_volume_during_session():
-    """A tiny partial-session volume must not be compared against full sessions."""
-    with patch("screener.technicals._fetch_history", return_value=_hist()), \
-         patch("screener.technicals._now_et", return_value=datetime(2026, 8, 12, 11, 0, tzinfo=ET)):
+def test_todays_bar_excluded_from_volume():
+    """A partial-session bar must never be compared against full sessions."""
+    with patch("screener.technicals._fetch_history", return_value=_hist(last_volume=1)):
         data = fetch_technical_data(_FakeTicker())
-    assert data["volume"] == 1_000_000       # yesterday's completed bar
-    assert data["session_state"] == "open"
+    assert data["volume"] == 1_000_000
+    assert data["dropped_partial_bar"] is True
 
 
-def test_completed_bar_used_after_close():
-    with patch("screener.technicals._fetch_history", return_value=_hist(last_volume=2_000_000)), \
-         patch("screener.technicals._now_et", return_value=datetime(2026, 8, 12, 17, 0, tzinfo=ET)):
+def test_avg_volume_also_excludes_todays_bar():
+    with patch("screener.technicals._fetch_history", return_value=_hist(last_volume=1)):
         data = fetch_technical_data(_FakeTicker())
-    assert data["volume"] == 2_000_000       # today's bar is complete
-    assert data["session_state"] == "closed"
+    assert data["avg_volume"] == 1_000_000
 
 
-def test_avg_volume_also_excludes_the_partial_bar():
-    with patch("screener.technicals._fetch_history", return_value=_hist(last_volume=1)), \
-         patch("screener.technicals._now_et", return_value=datetime(2026, 8, 12, 11, 0, tzinfo=ET)):
+def test_history_ending_yesterday_is_used_in_full():
+    yesterday = pd.Timestamp(date.today() - timedelta(days=1))
+    with patch("screener.technicals._fetch_history",
+               return_value=_hist(last_volume=2_000_000, end=yesterday)):
         data = fetch_technical_data(_FakeTicker())
-    assert data["avg_volume"] == 1_000_000   # not dragged down by the 1-share bar
+    assert data["volume"] == 2_000_000
+    assert data["dropped_partial_bar"] is False
 
 
-def test_data_timestamp_recorded():
-    with patch("screener.technicals._fetch_history", return_value=_hist()), \
-         patch("screener.technicals._now_et", return_value=datetime(2026, 8, 12, 11, 0, tzinfo=ET)):
+def test_volume_bar_date_is_recorded():
+    with patch("screener.technicals._fetch_history", return_value=_hist()):
         data = fetch_technical_data(_FakeTicker())
-    assert data["data_timestamp"].startswith("2026-08-11")   # the bar actually used
+    expected = (date.today() - timedelta(days=1)).isoformat()
+    assert data["volume_bar_date"].startswith(expected)
 
 
 def test_price_still_uses_the_latest_close():
-    """Only volume statistics change; price must stay live."""
     hist = _hist()
-    with patch("screener.technicals._fetch_history", return_value=hist), \
-         patch("screener.technicals._now_et", return_value=datetime(2026, 8, 12, 11, 0, tzinfo=ET)):
+    with patch("screener.technicals._fetch_history", return_value=hist):
         data = fetch_technical_data(_FakeTicker())
     assert data["price"] == pytest.approx(hist["Close"].iloc[-1])
+
+
+def test_result_is_identical_regardless_of_call_time():
+    """The whole point of finding 13: no wall-clock dependence."""
+    hist = _hist()
+    with patch("screener.technicals._fetch_history", return_value=hist):
+        first = fetch_technical_data(_FakeTicker())
+        second = fetch_technical_data(_FakeTicker())
+    assert first["volume"] == second["volume"]
+    assert first["avg_volume"] == second["avg_volume"]
+
+
+def test_single_bar_history_does_not_drop_everything():
+    """Defensive: never leave the volume series empty."""
+    hist = _hist(n=51)
+    with patch("screener.technicals._fetch_history", return_value=hist):
+        data = fetch_technical_data(_FakeTicker())
+    assert data["volume"] is not None
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_volume_completed_bar.py -v`
-Expected: FAIL — `AttributeError: module 'screener.technicals' has no attribute '_now_et'`
+Expected: FAIL — `KeyError: 'dropped_partial_bar'`
 
 - [ ] **Step 3: Write the implementation**
 
 In `screener/technicals.py`, add near the top:
 
 ```python
-from datetime import datetime
-from screener.session import MARKET_TZ, is_partial_bar, session_state
+from datetime import date as _date
 
 
-def _now_et() -> datetime:
-    """Current time in market timezone. Separate function so tests can patch it."""
-    return datetime.now(MARKET_TZ)
+def _today() -> _date:
+    """Local calendar date. Separate function so tests can patch it."""
+    return _date.today()
 ```
 
 Replace the volume block at lines 119-120:
 
 ```python
-    now_et = _now_et()
+    # Codex finding 13: a bar dated today may be a partial session, and comparing
+    # it against 20 full sessions rejects qualifying stocks purely because the
+    # scan ran early. Dropping today's bar outright makes the result independent
+    # of call time without needing an exchange calendar — after-close scans use
+    # yesterday's volume, which is immaterial against a 20-day average.
     volumes = hist["Volume"]
-    last_bar_date = hist.index[-1].date()
-
-    # Codex finding 13: a mid-session bar is a partial day. Comparing it against
-    # 20 full sessions rejects qualifying stocks purely because the scan ran early.
-    if is_partial_bar(last_bar_date, now_et) and len(volumes) > 1:
+    dropped_partial_bar = False
+    if len(volumes) > 1 and volumes.index[-1].date() == _today():
         volumes = volumes.iloc[:-1]
+        dropped_partial_bar = True
 
     volume = volumes.iloc[-1]
     avg_volume = volumes.tail(20).mean()
-    data_timestamp = volumes.index[-1].isoformat()
+    volume_bar_date = volumes.index[-1].isoformat()
 ```
 
 Add to the returned dict:
 
 ```python
-        "data_timestamp": data_timestamp,
-        "session_state": session_state(now_et),
+        "volume_bar_date": volume_bar_date,
+        "dropped_partial_bar": dropped_partial_bar,
 ```
 
-Also add both keys to the early-return dict at lines 104-113 with values `None` and
-`session_state(_now_et())` respectively, so the shape is consistent.
+Add both keys to the early-return dict at lines 104-113 with `None` and `False`.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `pytest tests/test_volume_completed_bar.py -v`
-Expected: 5 passed
+Expected: 7 passed
 
 - [ ] **Step 5: Run the full suite**
 
 Run: `pytest -q`
-Expected: green. `tests/test_screener_technicals.py` builds synthetic histories whose last
-index may be dated today — if any fail, they are asserting on the partial-bar path and
-should patch `_now_et` to an after-close time.
+Expected: green. `tests/test_screener_technicals.py` builds synthetic histories that may end
+today — if any assert on volume, they now see the second-to-last bar. Update them or set
+their index to end in the past.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add screener/technicals.py tests/test_volume_completed_bar.py
-git commit -m "fix: exclude partial session bars from volume statistics"
+git commit -m "fix: compute volume statistics from completed bars only"
 ```
 
 ---
 
-### Task 4: Documentation
+### Task 3: Documentation
 
 **Files:** `CLAUDE.md`, `.env.example`
 
@@ -514,19 +479,22 @@ git commit -m "fix: exclude partial session bars from volume statistics"
 
 ```markdown
 `screener/technicals.py` calculates RSI using Wilder's smoothing (not simple EWM) and
-requires a minimum of 51 price data points (50-day MA + 1). Volume statistics exclude the
-current session's partial bar (`screener/session.is_partial_bar`), so a scan at 09:05 and a
-scan at 15:55 see the same volume figures. Every technical result carries `data_timestamp`
-(the bar actually used) and `session_state`.
+requires a minimum of 51 price data points (50-day MA + 1). Volume statistics ignore any bar
+dated today, so a scan at 09:05 and a scan at 15:55 produce identical volume figures. No
+exchange calendar is involved — the rule is date-based, not clock-based. Results carry
+`volume_bar_date` and `dropped_partial_bar`. Price still uses the latest close.
 ```
 
 And add to Key Design Decisions:
 
 ```markdown
 - **Explicit missing-data policy**: `evaluate_fundamentals` names every absent field and
-  applies `FUNDAMENTAL_MISSING_POLICY` (`reject` default, `allow` for legacy behavior).
-  `trailingPE` is required under both. The older boolean `passes_fundamental_filter` remains
-  for compatibility but new code should use the structured version.
+  applies `FUNDAMENTAL_MISSING_POLICY` (`reject` default, `allow` for legacy behavior; any
+  other value fails closed and is rejected by `Config.validate`). Missing detection uses
+  `is_missing`, which catches NaN — yfinance returns NaN rather than None for many absent
+  fields, and every comparison against NaN is False. `trailingPE` is required under every
+  policy. The boolean `passes_fundamental_filter` remains for compatibility; new code should
+  use the structured version.
 ```
 
 - [ ] **Step 3: Run the full suite and linter**
@@ -537,7 +505,7 @@ Run: `pytest -q && ruff check .`
 
 ```bash
 git add CLAUDE.md .env.example
-git commit -m "docs: document missing-data policy and session-aware volume"
+git commit -m "docs: document missing-data policy and completed-bar volume"
 ```
 
 ---
@@ -548,22 +516,29 @@ git commit -m "docs: document missing-data policy and session-aware volume"
 - Finding 8 (missing values silently pass) → Task 1 ✓
 - Finding 8 (track missing explicitly) → Task 1, `missing` list ✓
 - Finding 8 (reject insufficient data) → Task 1, `reject` policy ✓
-- Finding 13 (partial bar in volume comparison) → Tasks 2, 3 ✓
-- Finding 13 (record data timestamp and session state) → Task 3 ✓
+- Finding 13 (partial bar in volume comparison) → Task 2 ✓
+- Finding 13 (record data timestamp) → Task 2, `volume_bar_date` ✓
+
+**v1 defects fixed in v2:**
+- `is None`-only missing detection letting NaN through every gate → `is_missing()` ✓
+- Unknown policy string silently behaving as `allow` → fails closed + `validate()` rejects ✓
+- Clock-based session detection breaking on half-days and holidays → date-based rule, no
+  calendar needed ✓
+- `screener/session.py` and its `zoneinfo` dependency → removed entirely ✓
 
 **Deliberately not covered:**
-- Finding 8's "add liquidity and financial-quality requirements" and "use sector-aware
-  valuation measures" — these are factor design, which belongs to Workstream D and needs the
-  research harness to justify any specific threshold.
-- Finding 8's "validate all yfinance field units with recorded fixtures and contract tests" —
-  worth doing, but it is a test-infrastructure project of its own. The
-  `normalize_dividend_yield` docstring at `screener/fundamentals.py:19-22` shows the risk is
-  already understood; a contract-test suite should be scoped separately.
-- Finding 13's "compare intraday volume against time-of-day-normalized historical volume" —
-  the completed-bar approach solves the stated problem far more simply. Only worth revisiting
-  if you later want intraday scans.
+- Finding 8's "add liquidity and financial-quality requirements" and "sector-aware valuation"
+  — factor design, belongs to Workstream D and needs the research harness to justify
+  thresholds. The Schwab `FUNDAMENTAL` projection noted above is the likely data source.
+- Finding 8's "validate all yfinance field units with recorded fixtures" — a test-
+  infrastructure project of its own. `normalize_dividend_yield`'s docstring at
+  `screener/fundamentals.py:19-22` shows the risk is already understood.
+- Finding 13's "time-of-day-normalized historical volume" — only worth revisiting if you
+  later want intraday scans.
+- `session_state` metadata — v1 proposed it; v2 drops it because a clock-based value is wrong
+  on holidays and half-days, and nothing consumes it.
 
-**Type consistency:** `evaluate_fundamentals` returns `{"passed", "reason", "missing"}` in
-Task 1 and is consumed with those keys in `main.py` ✓. `is_partial_bar(bar_date, now_et)`
-and `session_state(now_et)` signatures in Task 2 match their call sites in Task 3 ✓.
-`_now_et` is defined in Task 3 and patched by name in the Task 3 tests ✓.
+**Type consistency:** `is_missing(value) -> bool` is defined in Task 1 and used throughout
+`evaluate_fundamentals` ✓. `evaluate_fundamentals` returns `{"passed", "reason", "missing"}`,
+consumed with those keys in `main.py` ✓. `_today()` is defined in Task 2 and patched by name
+in no test — the tests construct histories relative to the real `date.today()` instead ✓.
