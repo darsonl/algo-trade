@@ -146,9 +146,14 @@ def initialize_db(db_path: str) -> None:
             -- committed until this flips. See order_accounting.order_commitment.
             fills_observed    INTEGER NOT NULL DEFAULT 0,
             failure_reason    TEXT,
+            -- Set when this row is the successor Schwab created to replace another.
+            -- Editing an order does not mutate it: the original is killed and a new
+            -- one appears under a new id, so the chain has to be walkable.
+            predecessor_order_id INTEGER,
             submitted_at      TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at        TEXT NOT NULL DEFAULT (datetime('now')),
-            FOREIGN KEY (recommendation_id) REFERENCES recommendations(id)
+            FOREIGN KEY (recommendation_id) REFERENCES recommendations(id),
+            FOREIGN KEY (predecessor_order_id) REFERENCES orders(id)
         );
 
         -- Range predicate over (side, submitted_at) is how the session-bucketed
@@ -182,6 +187,17 @@ def initialize_db(db_path: str) -> None:
             ON order_resolution_events(order_id, id);
     """)
     conn.commit()
+    # CREATE TABLE IF NOT EXISTS does nothing when the table already exists, so a
+    # column added to the schema block above never reaches a database created
+    # before it. Every such column needs this idiom.
+    try:
+        conn.execute(
+            "ALTER TABLE orders ADD COLUMN predecessor_order_id INTEGER"
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
     try:
         conn.execute(
             "ALTER TABLE recommendations ADD COLUMN earnings_growth REAL"

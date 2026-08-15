@@ -11,6 +11,7 @@ from database.order_accounting import (
     remaining_buy_reservation,
 )
 from market_time import market_session_bounds_utc, market_session_date
+from schwab_client.order_payload import extract_fills, extract_replacement
 
 
 def create_recommendation(
@@ -628,3 +629,95 @@ def get_resolution_events(conn, order_id: int) -> list[dict]:
         (order_id,),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+# --- Replacement chains ---
+
+def _chain_broker_ids(conn, order_id: int, max_depth: int) -> list[str] | None:
+    """Broker ids already in this order's chain, walking back to its root.
+
+    Returns None if the chain is longer than max_depth. Both the visited set and
+    the depth bound exist because a chain is broker-controlled data: a loop or a
+    pathological length must not be walked forever.
+    """
+    seen: list[str] = []
+    current = get_order(conn, order_id)
+    depth = 0
+    while current is not None:
+        if depth > max_depth:
+            return None
+        if current["broker_order_id"]:
+            seen.append(current["broker_order_id"])
+        predecessor_id = current["predecessor_order_id"]
+        current = get_order(conn, predecessor_id) if predecessor_id else None
+        depth += 1
+    return seen
+
+
+def adopt_replacement(conn, order_id: int, payload: dict, max_depth: int = 10) -> int | None:
+    """Follow a REPLACED order to its successor. Returns the successor row id.
+
+    Returns None when the payload reports no replacement.
+
+    On success the predecessor is closed at its ACTUAL fills and the successor is
+    inserted with its OWN quantity and limit. Carrying the predecessor's numbers
+    forward is the defect this exists to prevent: 5 shares at $100 replaced by 10
+    at $150 would keep $500 reserved while $1,500 is actionable.
+
+    Anything ambiguous — several successors, a missing id, absent economics, a
+    changed symbol or side, a loop, an over-long chain — moves the predecessor to
+    submit_unknown, which keeps its FULL commitment and asks for a human. We
+    cannot say what is live at the broker, so we assume the worst.
+    """
+    order = get_order(conn, order_id)
+    if order is None:
+        raise ValueError(f"no order with id {order_id}")
+
+    replacement, reason = extract_replacement(payload)
+    if replacement is None and reason is None:
+        return None
+
+    def _unresolved(why: str) -> None:
+        _mark(conn, order_id, "submit_unknown", f"replacement not adoptable: {why}")
+
+    if replacement is None:
+        _unresolved(reason)
+        return None
+
+    if replacement.symbol != order["ticker"] or replacement.side != order["side"]:
+        _unresolved(
+            f"successor is {replacement.side} {replacement.symbol}, "
+            f"predecessor was {order['side']} {order['ticker']}"
+        )
+        return None
+
+    chain = _chain_broker_ids(conn, order_id, max_depth)
+    if chain is None:
+        _unresolved(f"replacement chain deeper than {max_depth}")
+        return None
+    if replacement.successor_id in chain:
+        _unresolved(f"successor {replacement.successor_id} already appears in this chain")
+        return None
+
+    # Predecessor first: its fills really happened and must survive the transition.
+    filled_shares, filled_notional = extract_fills(payload)
+    observe_fills(conn, order_id, filled_shares, filled_notional, "cancelled")
+
+    successor_id = create_order(
+        conn,
+        recommendation_id=order["recommendation_id"],
+        ticker=replacement.symbol,
+        side=replacement.side,
+        order_type="limit" if replacement.limit_price is not None else "market",
+        requested_shares=replacement.quantity,
+        reference_price=replacement.limit_price or order["reference_price"],
+        limit_price=replacement.limit_price,
+    )
+    conn.execute(
+        """UPDATE orders
+              SET status = 'submitted', broker_order_id = ?, predecessor_order_id = ?,
+                  updated_at = datetime('now')
+            WHERE id = ?""",
+        (replacement.successor_id, order_id, successor_id),
+    )
+    return successor_id
