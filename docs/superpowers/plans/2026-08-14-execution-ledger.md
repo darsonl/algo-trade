@@ -13,6 +13,24 @@
 **Revision note (v2):** v1 was reviewed externally and had four Critical and five High defects,
 all fixed here. See "What v2 changes" below.
 
+---
+
+> ## ⚠️ Split 2026-08-15 — read before executing any task
+>
+> Review round 4 of the Phase 1 safety spec found that **Phase 1 cannot be implemented until
+> the `orders` table exists** — six of its ten Critical findings reduce to that one fact. This
+> plan's Global Constraints previously asserted the opposite ("Phase 1 must land first"). The
+> dependency runs the other way, and this plan is now executed in three pieces:
+>
+> | Task | Executed under | Note |
+> |---|---|---|
+> | **1, 2, 4** | **`plans/2026-08-15-phase0-order-ledger-foundation.md`** | Adopted as written **plus that document's Deltas 1–5**. Do not execute them from here. |
+> | **6** | **Phase 1** (`specs/2026-08-14-live-trading-safety-design.md`) | **Do not execute as written — it is defective.** See the note on Task 6 below. |
+> | **8** | **Phase 1** | It is a preflight guard input, and round-4 finding 9 changes what it must read. |
+> | **3, 5, 7, 9** | This plan, after Phase 1 | Fill application, poller, scheduling, docs. Unchanged. |
+>
+> New sequence: **Phase 0 → Phase 1 → the remainder of this plan.**
+
 ## Global Constraints
 
 - Python 3.11; SQLite via `database/models.py:get_cursor` — never open raw connections
@@ -26,7 +44,7 @@ all fixed here. See "What v2 changes" below.
   UTC `datetime('now')`.
 - New tables via `CREATE TABLE IF NOT EXISTS`; new columns via `try: ALTER TABLE / except sqlite3.OperationalError: pass`
 - Test files use module-level `DB_PATH` with an `autouse` `fresh_db` fixture, matching `tests/test_positions.py`
-- **Prerequisite:** Phase 1 (`docs/superpowers/specs/2026-08-14-live-trading-safety-design.md`) must land first. Task 6 modifies the approval handler Phase 1 rewrites.
+- **Prerequisite (corrected 2026-08-15):** **Phase 0** (`plans/2026-08-15-phase0-order-ledger-foundation.md`) then **Phase 1** (`specs/2026-08-14-live-trading-safety-design.md`) land first, in that order. The earlier constraint here said Phase 1 must precede this plan; review round 4 established the reverse for the storage layer — Phase 1 needs the `orders` table. Task 6 does not "modify the approval handler Phase 1 rewrites"; it has **moved into** Phase 1, so exactly one document owns that handler.
 - **Prerequisite:** resolve the schwab-py pin. `requirements.txt:172` pins `1.4.0`; every API fact here was verified against `1.5.1`, which is what is installed. Bump the pin and regenerate the lock, or re-verify `get_order` and the status enum against 1.4.0.
 - Commit after every task
 
@@ -1332,6 +1350,23 @@ git commit -m "feat: poll broker orders and build positions from confirmed fills
 
 ### Task 6: Approve button creates an order before submitting
 
+> **🚫 MOVED TO PHASE 1 — DO NOT EXECUTE AS WRITTEN (round-4 finding 2).**
+>
+> The `except` branch below marks the order `submit_failed`, sets the recommendation back to
+> `pending`, and tells the operator to retry. It catches **every** exception, including a
+> timeout that fired *after* Schwab accepted the order. The next click then submits a second
+> real order for the same recommendation — the exact duplicate-submission defect the safety
+> spec removed by deleting `@_retry` from submission.
+>
+> It also branches on `config.use_limit_buy` and calls `place_order` (market), both of which
+> Phase 1 deletes.
+>
+> Rewrite it against Phase 1's classified submission outcome: only a definitive 4xx that is
+> **not** 408/429 releases the claim as `submit_failed`; timeouts, 5xx, 408, 429, and a 2xx
+> with no `Location` header become `submit_unknown` and the recommendation **stays claimed**.
+> Retained here for the order-row-before-submission structure, which is correct and is the
+> reason the row is created first.
+
 **Files:**
 - Modify: `discord_bot/bot.py` (both approval views)
 - Test: `tests/test_approve_creates_order.py`
@@ -1589,6 +1624,17 @@ git commit -m "feat: schedule the order poller on the bot event loop"
 ---
 
 ### Task 8: Exposure from broker positions and reserved orders
+
+> **➡️ MOVED TO PHASE 1**, where the preflight guards that consume it live.
+>
+> **Round-4 finding 9 changes what it must read.** As written it sources working orders from
+> the bot's own `orders` table only. This is a personal brokerage account: a manual buy placed
+> in the Schwab app can be working and unfilled, in which case broker *positions* are still
+> empty and the local ledger has no row — so guards 9/10 pass and the bot submits a second buy
+> of a symbol that already has a live order.
+>
+> Phase 1 must fetch **broker** working orders on every preflight, merge them with local
+> reservations by broker order id, and fail closed when that read fails or the two disagree.
 
 **Files:** `risk/preflight.py` (Phase 1), `discord_bot/bot.py`; Test: `tests/test_exposure_from_broker.py`
 
