@@ -209,9 +209,26 @@ async def analyze_with_cache(
     return analysis
 
 
+async def _drain_ops_outbox(bot: TradingBot) -> None:
+    """Retry ops alerts stranded by an earlier Discord outage.
+
+    A scan is the natural retry point: it is the recurring beat of the system,
+    and an alert about the previous scan is exactly what an outage would have
+    eaten. Failures are contained — a broken outbox must not abort the scan it
+    would be reporting on.
+    """
+    try:
+        redelivered = await bot.drain_ops_alerts()
+        if redelivered:
+            logger.info("Redelivered %d backlogged ops alert(s)", redelivered)
+    except Exception as exc:
+        logger.error("Ops-alert outbox drain failed: %s", exc)
+
+
 async def run_scan(bot: TradingBot, config: Config) -> None:
     """Run the full screening pipeline and post qualifying tickers to Discord."""
     logger.info("Starting scan...")
+    await _drain_ops_outbox(bot)
     queries.expire_stale_recommendations(config.db_path)
 
     watchlist_path = str(Path(__file__).parent / "watchlist.txt")
@@ -526,6 +543,7 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
 async def run_scan_etf(bot: TradingBot, config: Config) -> None:
     """Run the ETF screening pipeline and post qualifying tickers to Discord (per ETF-02)."""
     logger.info("Starting ETF scan...")
+    await _drain_ops_outbox(bot)
     queries.expire_stale_recommendations(config.db_path)
 
     etf_watchlist_path = str(Path(__file__).parent / "etf_watchlist.txt")

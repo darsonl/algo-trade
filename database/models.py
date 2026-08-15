@@ -209,6 +209,27 @@ def initialize_db(db_path: str) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_order_candidates_order
             ON order_candidates(order_id, id);
+
+        -- Durable outbox for operational alerts. The row is written BEFORE
+        -- delivery is attempted, for the same reason the orders row is written
+        -- before submission: a swallowed delivery error makes "Discord was
+        -- down" indistinguishable from "nothing was wrong", and several safety
+        -- states now depend on an alert actually ARRIVING.
+        CREATE TABLE IF NOT EXISTS ops_alerts (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            message      TEXT NOT NULL,
+            -- NULL until a send has demonstrably succeeded. Undelivered rows
+            -- are what the drain retries.
+            delivered_at TEXT,
+            attempts     INTEGER NOT NULL DEFAULT 0,
+            last_error   TEXT,
+            created_at   TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        -- The drain reads only undelivered rows; a partial index keeps that
+        -- scan proportional to the backlog, not to all alerts ever sent.
+        CREATE INDEX IF NOT EXISTS idx_ops_alerts_undelivered
+            ON ops_alerts(id) WHERE delivered_at IS NULL;
     """)
     conn.commit()
     # CREATE TABLE IF NOT EXISTS does nothing when the table already exists, so a

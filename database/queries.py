@@ -788,3 +788,63 @@ def _clear_reservation_override(conn, order_id: int) -> None:
     conn.execute(
         "UPDATE orders SET reserved_notional_override = NULL WHERE id = ?", (order_id,)
     )
+
+
+# ---------------------------------------------------------------------------
+# Ops-alert outbox. Like the order CRUD above, these take a CONNECTION rather
+# than a db_path, so an alert can be enqueued inside the same transaction as
+# the state change that warranted it.
+# ---------------------------------------------------------------------------
+
+def enqueue_ops_alert(conn, message: str) -> int:
+    """Persist an ops alert as undelivered and return its id.
+
+    Called BEFORE the delivery attempt. The ordering is the entire safety
+    property: a send that fails after this insert leaves a durable row behind,
+    whereas the reverse order loses the alert with nothing to show for it.
+    """
+    cur = conn.execute("INSERT INTO ops_alerts (message) VALUES (?)", (message,))
+    return cur.lastrowid
+
+
+def mark_ops_alert_delivered(conn, alert_id: int) -> None:
+    """Record that delivery demonstrably succeeded."""
+    conn.execute(
+        "UPDATE ops_alerts SET delivered_at = datetime('now') WHERE id = ?",
+        (alert_id,),
+    )
+
+
+def record_ops_alert_failure(conn, alert_id: int, error: str) -> None:
+    """Count a failed delivery attempt WITHOUT consuming the alert.
+
+    `delivered_at` stays NULL on purpose, so the drain picks the alert up
+    again. attempts/last_error exist to make a persistently failing alert
+    visible to an operator rather than silently retried forever.
+    """
+    conn.execute(
+        "UPDATE ops_alerts SET attempts = attempts + 1, last_error = ? WHERE id = ?",
+        (error, alert_id),
+    )
+
+
+def get_ops_alert(conn, alert_id: int) -> dict | None:
+    row = conn.execute(
+        "SELECT * FROM ops_alerts WHERE id = ?", (alert_id,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def get_undelivered_ops_alerts(conn, limit: int = 20) -> list[dict]:
+    """Alerts still awaiting delivery, oldest first.
+
+    Oldest-first because ops alerts read as a narrative — replaying a backlog
+    out of order misleads whoever is trying to reconstruct what happened. The
+    limit bounds a single drain pass so a long outage cannot dump an unbounded
+    backlog into one burst of Discord calls.
+    """
+    rows = conn.execute(
+        "SELECT * FROM ops_alerts WHERE delivered_at IS NULL ORDER BY id LIMIT ?",
+        (limit,),
+    ).fetchall()
+    return [dict(r) for r in rows]

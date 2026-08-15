@@ -10,6 +10,7 @@ have shown it — the column is right there in the CREATE statement.
 """
 import os
 import sqlite3
+from contextlib import closing
 
 import pytest
 
@@ -98,4 +99,39 @@ def test_a_fresh_database_gets_every_ledger_table():
     conn = sqlite3.connect(DB_PATH)
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     conn.close()
-    assert {"orders", "order_resolution_events"} <= tables
+    assert {"orders", "order_resolution_events", "ops_alerts"} <= tables
+
+
+def _tables() -> set[str]:
+    conn = sqlite3.connect(DB_PATH)
+    names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    conn.close()
+    return names
+
+
+def test_ops_alerts_table_is_added_to_an_existing_database():
+    """A whole new table reaches an old DB where a new COLUMN would not."""
+    _legacy_db_with_one_order()
+    assert "ops_alerts" not in _tables()
+
+    initialize_db(DB_PATH)
+
+    assert "ops_alerts" in _tables()
+
+
+def test_ops_alerts_upgrade_preserves_existing_rows():
+    _legacy_db_with_one_order()
+    initialize_db(DB_PATH)
+
+    # closing(): a statement that raises between connect and close leaks the
+    # connection, and on Windows the locked file then survives `cleanup` and
+    # breaks every later run in the session. Same reason get_cursor exists.
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        conn.execute("INSERT INTO ops_alerts (message) VALUES ('survivor')")
+        conn.commit()
+
+    initialize_db(DB_PATH)  # a later startup must not clobber the outbox
+
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        rows = conn.execute("SELECT message, delivered_at FROM ops_alerts").fetchall()
+    assert rows == [("survivor", None)]
