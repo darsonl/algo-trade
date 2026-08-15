@@ -6,6 +6,7 @@ from datetime import datetime
 from database.models import get_cursor
 from database.order_accounting import (
     BLOCKING_ORDER_STATUSES,
+    UNRESOLVED_ORDER_STATUSES,
     order_commitment,
     remaining_buy_reservation,
 )
@@ -544,3 +545,86 @@ def sweep_stale_pending_submits(conn, older_than_seconds: int = 300) -> list[int
         _mark(conn, order_id, "submit_unknown",
               "stranded in pending_submit; process likely died before the broker replied")
     return ids
+
+
+# --- Operator resolution of orders the system cannot resolve itself ---
+
+# `adopt`            the order exists; attach its broker id so it becomes pollable.
+# `confirmed_absent` verified no such order exists; release the capital.
+# `keep_blocked`     cannot tell yet; change nothing, stay reserved.
+RESOLUTIONS = ("adopt", "confirmed_absent", "keep_blocked")
+
+
+def resolve_order_manually(
+    conn,
+    order_id: int,
+    resolution: str,
+    actor: str,
+    evidence: str,
+    broker_order_id: str | None = None,
+) -> int:
+    """Apply an operator's decision about an unresolved order. Returns the event id.
+
+    `/resolve` is report-only: matching fields establish an order's shape, not
+    its provenance, and Schwab exposes no client-supplied correlation id. So a
+    human owns this call, and every use of it is audited.
+
+    Only orders in UNRESOLVED_ORDER_STATUSES are eligible. A pending_submit row
+    stranded by a crash reaches that state through sweep_stale_pending_submits;
+    resolving an already-resolved order would let an operator overwrite state the
+    broker actually reported.
+    """
+    if resolution not in RESOLUTIONS:
+        raise ValueError(f"unknown resolution {resolution!r}; expected one of {RESOLUTIONS}")
+    if not (actor or "").strip():
+        raise ValueError("actor is required: an unattributed override is not an audit trail")
+    if not (evidence or "").strip():
+        raise ValueError("evidence is required: record what was checked and where")
+
+    order = get_order(conn, order_id)
+    if order is None:
+        raise ValueError(f"no order with id {order_id}")
+
+    previous_status = order["status"]
+    if previous_status not in UNRESOLVED_ORDER_STATUSES:
+        raise ValueError(
+            f"order {order_id} is {previous_status!r}, not unresolved; "
+            "manual resolution would overwrite state the broker reported"
+        )
+
+    if resolution == "adopt":
+        if not (broker_order_id or "").strip():
+            raise ValueError("adopt requires the broker order id to attach")
+        # Deliberately does NOT touch fills_observed: adopting says where the
+        # order is, not what it filled, so the full commitment stands until
+        # someone actually reads fill data.
+        attach_broker_order_id(conn, order_id, broker_order_id)
+        new_status = "submitted"
+    elif resolution == "confirmed_absent":
+        # The one zero-fill a human can vouch for. submit_failed is the existing
+        # "definitively never landed" status, so capital releases through the
+        # same rule as a broker refusal rather than a second special case.
+        _mark(conn, order_id, "submit_failed",
+              f"operator confirmed absent at broker: {evidence}")
+        new_status = "submit_failed"
+    else:  # keep_blocked
+        new_status = previous_status
+
+    cur = conn.execute(
+        """INSERT INTO order_resolution_events
+               (order_id, resolution, actor, evidence, broker_order_id,
+                previous_status, new_status)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (order_id, resolution, actor.strip(), evidence.strip(), broker_order_id,
+         previous_status, new_status),
+    )
+    return cur.lastrowid
+
+
+def get_resolution_events(conn, order_id: int) -> list[dict]:
+    """Every operator decision about this order, oldest first."""
+    rows = conn.execute(
+        "SELECT * FROM order_resolution_events WHERE order_id = ? ORDER BY id",
+        (order_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]

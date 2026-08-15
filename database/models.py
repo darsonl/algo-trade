@@ -160,6 +160,26 @@ def initialize_db(db_path: str) -> None:
         -- `adopt` against attaching the same order twice.
         CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_broker_id
             ON orders(broker_order_id) WHERE broker_order_id IS NOT NULL;
+
+        -- Append-only audit of operator overrides. /resolve is report-only, so a
+        -- human decides what an ambiguous submission actually was; this records
+        -- who decided, on what evidence, and what it changed. Never updated or
+        -- deleted — a later decision appends, so the earlier one survives.
+        CREATE TABLE IF NOT EXISTS order_resolution_events (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id        INTEGER NOT NULL,
+            resolution      TEXT NOT NULL,
+            actor           TEXT NOT NULL,
+            evidence        TEXT NOT NULL,
+            broker_order_id TEXT,
+            previous_status TEXT NOT NULL,
+            new_status      TEXT NOT NULL,
+            created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (order_id) REFERENCES orders(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_resolution_events_order
+            ON order_resolution_events(order_id, id);
     """)
     conn.commit()
     try:
