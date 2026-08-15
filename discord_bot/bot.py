@@ -9,6 +9,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from config import Config
 from database import queries
+from database.models import get_cursor
 from discord_bot.embeds import build_recommendation_embed, build_positions_embed, build_sell_embed, build_etf_recommendation_embed, build_stats_embed, build_history_embed
 from schwab_client.orders import place_limit_order, place_order, place_sell_order
 
@@ -19,6 +20,31 @@ _retry = retry(
     stop=stop_after_attempt(3),
     reraise=True,
 )
+
+
+# The ops-alert CRUD takes a connection rather than a db_path, so that a caller
+# can one day enqueue an alert inside the same transaction as the state change
+# that warranted it. The bot has no such need, so these adapt it to the
+# db_path-taking shape every other DB call here dispatches via to_thread.
+
+def _enqueue_alert(db_path: str, message: str) -> int:
+    with get_cursor(db_path) as conn:
+        return queries.enqueue_ops_alert(conn, message)
+
+
+def _mark_alert_delivered(db_path: str, alert_id: int) -> None:
+    with get_cursor(db_path) as conn:
+        queries.mark_ops_alert_delivered(conn, alert_id)
+
+
+def _record_alert_failure(db_path: str, alert_id: int, error: str) -> None:
+    with get_cursor(db_path) as conn:
+        queries.record_ops_alert_failure(conn, alert_id, error)
+
+
+def _pending_alerts(db_path: str, limit: int) -> list[dict]:
+    with get_cursor(db_path) as conn:
+        return queries.get_undelivered_ops_alerts(conn, limit=limit)
 
 
 @_retry
@@ -516,10 +542,60 @@ class TradingBot(discord.Client):
         msg = await _send_message(channel, embed, view)
         return str(msg.id)
 
-    async def send_ops_alert(self, message: str) -> None:
-        """Send a plain-text operational alert to the configured Discord channel."""
+    async def _deliver_ops_alert(self, alert_id: int, message: str) -> bool:
+        """Attempt delivery of one already-persisted alert. True if it landed.
+
+        Failure is recorded against the row instead of being swallowed, so the
+        alert stays in the outbox for drain_ops_alerts to retry.
+        """
         try:
             channel = await self._resolve_channel()
             await channel.send(f"[OPS ALERT] {message}")
         except Exception as exc:
             logger.error("Failed to send ops alert: %s", exc)
+            await asyncio.to_thread(
+                _record_alert_failure,
+                self.config.db_path,
+                alert_id,
+                f"{type(exc).__name__}: {exc}",
+            )
+            return False
+        await asyncio.to_thread(
+            _mark_alert_delivered, self.config.db_path, alert_id
+        )
+        return True
+
+    async def send_ops_alert(self, message: str) -> None:
+        """Persist an operational alert, then try to deliver it to Discord.
+
+        The persist-then-send ordering is the safety property. Several states
+        are only safe because an operator finds out about them — stuck orders,
+        unresolved submissions, reconciliation failures — and this method used
+        to catch every delivery error and merely log it, which made a Discord
+        outage indistinguishable from a quiet system. Now a failed send leaves
+        a durable row behind.
+
+        Still never raises: run_scan posts alerts from inside its per-ticker
+        loop, so a raising alert would abort the scan it was reporting on.
+        """
+        alert_id = await asyncio.to_thread(
+            _enqueue_alert, self.config.db_path, message
+        )
+        await self._deliver_ops_alert(alert_id, message)
+
+    async def drain_ops_alerts(self, limit: int = 20) -> int:
+        """Retry undelivered alerts, oldest first. Returns how many landed.
+
+        Stops at the first alert that still fails: Discord being unreachable is
+        not a per-alert condition, so continuing would burn attempts on the
+        whole backlog and deliver it out of order once it recovered.
+        """
+        pending = await asyncio.to_thread(
+            _pending_alerts, self.config.db_path, limit
+        )
+        delivered = 0
+        for row in pending:
+            if not await self._deliver_ops_alert(row["id"], row["message"]):
+                break
+            delivered += 1
+        return delivered
