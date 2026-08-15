@@ -34,6 +34,31 @@ def get_cursor(db_path: str):
         conn.close()
 
 
+@contextmanager
+def immediate_transaction(db_path: str):
+    """Yield a connection inside a BEGIN IMMEDIATE write transaction.
+
+    Takes the write lock UP FRONT, before any read. `get_cursor` cannot do this
+    job: it runs in autocommit until the first write, so two processes can each
+    read the same daily total and each then reserve against it — the cap check
+    and the reservation are not atomic. BEGIN IMMEDIATE makes the second writer
+    block (or time out) at the START of the sequence instead.
+
+    Rolls back on any exception, so a guard that rejects AFTER inserting the
+    order row leaves no reservation behind.
+    """
+    conn = get_connection(db_path)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        yield conn
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
 def initialize_db(db_path: str) -> None:
     """Create the recommendations, trades, and analyst_cache tables if absent, and run the earnings_growth migration on existing DBs."""
     conn = get_connection(db_path)
@@ -98,6 +123,43 @@ def initialize_db(db_path: str) -> None:
             count INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY (date, provider)
         );
+
+        -- Durable state for anything that may have reached the broker. The row is
+        -- created BEFORE submission, so a broker-accepted order can never exist
+        -- outside the ledger; the cost is a crash window handled by
+        -- sweep_stale_pending_submits.
+        CREATE TABLE IF NOT EXISTS orders (
+            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+            recommendation_id INTEGER,
+            ticker            TEXT NOT NULL,
+            side              TEXT NOT NULL,
+            order_type        TEXT NOT NULL,
+            requested_shares  REAL NOT NULL,
+            reference_price   REAL NOT NULL,
+            limit_price       REAL,
+            status            TEXT NOT NULL DEFAULT 'pending_submit',
+            broker_order_id   TEXT,
+            filled_shares     REAL NOT NULL DEFAULT 0,
+            filled_notional   REAL NOT NULL DEFAULT 0,
+            -- 0 means nobody has read fill data for this order yet. An unverified
+            -- zero is NOT evidence of no fill, so terminal statuses stay fully
+            -- committed until this flips. See order_accounting.order_commitment.
+            fills_observed    INTEGER NOT NULL DEFAULT 0,
+            failure_reason    TEXT,
+            submitted_at      TEXT NOT NULL DEFAULT (datetime('now')),
+            updated_at        TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (recommendation_id) REFERENCES recommendations(id)
+        );
+
+        -- Range predicate over (side, submitted_at) is how the session-bucketed
+        -- daily notional query reads; keeping submitted_at unwrapped keeps it usable.
+        CREATE INDEX IF NOT EXISTS idx_orders_side_submitted
+            ON orders(side, submitted_at);
+
+        -- One real broker order backs at most one ledger row. Guards manual
+        -- `adopt` against attaching the same order twice.
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_broker_id
+            ON orders(broker_order_id) WHERE broker_order_id IS NOT NULL;
     """)
     conn.commit()
     try:

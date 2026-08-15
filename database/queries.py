@@ -4,6 +4,11 @@ import sqlite3
 from datetime import datetime
 
 from database.models import get_cursor
+from database.order_accounting import (
+    BLOCKING_ORDER_STATUSES,
+    order_commitment,
+    remaining_buy_reservation,
+)
 from market_time import market_session_bounds_utc, market_session_date
 
 
@@ -375,3 +380,167 @@ def increment_analyst_call_count(
                ON CONFLICT(date, provider) DO UPDATE SET count = count + 1""",
             (today, provider),
         )
+
+
+# ---------------------------------------------------------------------------
+# Order ledger
+#
+# These functions take a CONNECTION, not a db_path — unlike everything above.
+# The daily-notional read and the insert that reserves against it must be one
+# transaction (round-5 finding 2). A db_path-taking function opens its own
+# second connection, which then blocks on the caller's write lock and raises
+# "database is locked" after busy_timeout. Callers use
+# `with immediate_transaction(db_path) as conn:` for the guard->reserve
+# sequence, or `with get_cursor(db_path) as conn:` for plain reads.
+# ---------------------------------------------------------------------------
+
+def create_order(
+    conn,
+    recommendation_id: int | None,
+    ticker: str,
+    side: str,
+    order_type: str,
+    requested_shares: float,
+    reference_price: float,
+    limit_price: float | None = None,
+) -> int:
+    """Insert a 'pending_submit' order and return its id.
+
+    Called BEFORE the broker request. If the process dies between this insert
+    and the broker response, the row survives and the order is recoverable; the
+    reverse order can leave a real position with no ledger entry at all.
+    """
+    cur = conn.execute(
+        """INSERT INTO orders (recommendation_id, ticker, side, order_type,
+                               requested_shares, reference_price, limit_price)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (recommendation_id, ticker, side, order_type,
+         requested_shares, reference_price, limit_price),
+    )
+    return cur.lastrowid
+
+
+def attach_broker_order_id(conn, order_id: int, broker_order_id: str) -> None:
+    """Record the broker's id and move the order to 'submitted'."""
+    conn.execute(
+        """UPDATE orders
+              SET broker_order_id = ?, status = 'submitted',
+                  updated_at = datetime('now')
+            WHERE id = ?""",
+        (broker_order_id, order_id),
+    )
+
+
+def _mark(conn, order_id: int, status: str, reason: str) -> None:
+    conn.execute(
+        "UPDATE orders SET status = ?, failure_reason = ?, updated_at = datetime('now') "
+        "WHERE id = ?",
+        (status, reason, order_id),
+    )
+
+
+def mark_order_submit_unknown(conn, order_id: int, reason: str) -> None:
+    """The submission outcome was ambiguous — the order MAY exist at the broker.
+
+    Never terminal. Only an operator resolves it; nothing sweeps it away.
+    """
+    _mark(conn, order_id, "submit_unknown", reason)
+
+
+def mark_order_submit_failed(conn, order_id: int, reason: str) -> None:
+    """The broker definitively refused. This is the one zero-fill we can trust."""
+    _mark(conn, order_id, "submit_failed", reason)
+
+
+def observe_fills(conn, order_id: int, filled_shares: float,
+                  filled_notional: float, status: str) -> None:
+    """Record fill data read from the broker, and flip `fills_observed`.
+
+    The flag is the point: until someone has actually looked, a terminal order
+    keeps its full commitment, because a default zero is indistinguishable from
+    a verified zero.
+    """
+    conn.execute(
+        """UPDATE orders
+              SET filled_shares = ?, filled_notional = ?, fills_observed = 1,
+                  status = ?, updated_at = datetime('now')
+            WHERE id = ?""",
+        (filled_shares, filled_notional, status, order_id),
+    )
+
+
+def get_order(conn, order_id: int) -> dict | None:
+    row = conn.execute("SELECT * FROM orders WHERE id = ?", (order_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def get_orders_by_status(conn, statuses: tuple[str, ...]) -> list[dict]:
+    placeholders = ",".join("?" for _ in statuses)
+    rows = conn.execute(
+        f"SELECT * FROM orders WHERE status IN ({placeholders}) ORDER BY id",
+        tuple(statuses),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_day_notional(conn, instant: datetime | None = None) -> float:
+    """This SESSION's committed buy notional.
+
+    "Today" is the US market session date, never the host calendar date: on a
+    UTC+8 host the 21:45 and 03:30 scans are one session but two local dates, so
+    a localtime bucket resets the ceiling mid-session.
+
+    Every buy row in the session is summed through order_commitment rather than
+    filtered by status, because status alone cannot answer how much capital an
+    order holds — a partially filled then cancelled order is terminal and still
+    committed.
+    """
+    start, end = market_session_bounds_utc(instant)
+    rows = conn.execute(
+        """SELECT * FROM orders
+            WHERE side = 'buy' AND submitted_at >= ? AND submitted_at < ?""",
+        (start, end),
+    ).fetchall()
+    return sum(order_commitment(dict(r)) for r in rows)
+
+
+def get_open_buy_reservation(conn) -> float:
+    """Buy exposure not yet visible as a broker position.
+
+    Deliberately NOT order_commitment: broker position market value already
+    includes filled shares, so reserving those again double-charges the
+    portfolio ceiling.
+    """
+    rows = conn.execute(
+        "SELECT * FROM orders WHERE side = 'buy' AND status IN ({})".format(
+            ",".join("?" for _ in BLOCKING_ORDER_STATUSES)
+        ),
+        BLOCKING_ORDER_STATUSES,
+    ).fetchall()
+    return sum(remaining_buy_reservation(dict(r)) for r in rows)
+
+
+def sweep_stale_pending_submits(conn, older_than_seconds: int = 300) -> list[int]:
+    """Make orders stranded by a crash resolvable. Returns the ids swept.
+
+    A row committed before submission whose process then died stays
+    'pending_submit' with no broker id — unreachable, because the status sweep
+    needs an id and manual resolution only accepts unresolved rows. Moving it to
+    'submit_unknown' does NOT resubmit anything; it says "this may exist, a human
+    must check", which is the truthful state.
+
+    Recent rows are left alone: they are probably just mid-flight, and sweeping
+    them would invent an unknown that never happened.
+    """
+    rows = conn.execute(
+        """SELECT id FROM orders
+            WHERE status = 'pending_submit'
+              AND broker_order_id IS NULL
+              AND submitted_at <= datetime('now', ?)""",
+        (f"-{int(older_than_seconds)} seconds",),
+    ).fetchall()
+    ids = [r["id"] for r in rows]
+    for order_id in ids:
+        _mark(conn, order_id, "submit_unknown",
+              "stranded in pending_submit; process likely died before the broker replied")
+    return ids
