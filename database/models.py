@@ -150,6 +150,11 @@ def initialize_db(db_path: str) -> None:
             -- Editing an order does not mutate it: the original is killed and a new
             -- one appears under a new id, so the chain has to be walkable.
             predecessor_order_id INTEGER,
+            -- Worst-case reservation while a submission outcome is ambiguous: the
+            -- summed commitment of every broker order that might be this one.
+            -- Durable and monotonic, because candidates leave the working-order
+            -- endpoint and a later empty observation is not evidence of absence.
+            reserved_notional_override REAL,
             submitted_at      TEXT NOT NULL DEFAULT (datetime('now')),
             updated_at        TEXT NOT NULL DEFAULT (datetime('now')),
             FOREIGN KEY (recommendation_id) REFERENCES recommendations(id),
@@ -185,6 +190,25 @@ def initialize_db(db_path: str) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_resolution_events_order
             ON order_resolution_events(order_id, id);
+
+        -- Broker orders that MIGHT be an ambiguous submission. Append-only: each
+        -- observation is kept so the reservation can be justified after the fact,
+        -- once the candidates themselves have left the broker's endpoint.
+        CREATE TABLE IF NOT EXISTS order_candidates (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id        INTEGER NOT NULL,
+            broker_order_id TEXT,
+            symbol          TEXT,
+            side            TEXT,
+            quantity        REAL,
+            limit_price     REAL,
+            notional        REAL NOT NULL,
+            observed_at     TEXT NOT NULL DEFAULT (datetime('now')),
+            FOREIGN KEY (order_id) REFERENCES orders(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_order_candidates_order
+            ON order_candidates(order_id, id);
     """)
     conn.commit()
     # CREATE TABLE IF NOT EXISTS does nothing when the table already exists, so a
@@ -193,6 +217,14 @@ def initialize_db(db_path: str) -> None:
     try:
         conn.execute(
             "ALTER TABLE orders ADD COLUMN predecessor_order_id INTEGER"
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+
+    try:
+        conn.execute(
+            "ALTER TABLE orders ADD COLUMN reserved_notional_override REAL"
         )
         conn.commit()
     except sqlite3.OperationalError:

@@ -600,6 +600,9 @@ def resolve_order_manually(
         # order is, not what it filled, so the full commitment stands until
         # someone actually reads fill data.
         attach_broker_order_id(conn, order_id, broker_order_id)
+        # The ambiguity is settled: we know WHICH order is ours, so its own
+        # economics govern and the worst-case candidate reservation lapses.
+        _clear_reservation_override(conn, order_id)
         new_status = "submitted"
     elif resolution == "confirmed_absent":
         # The one zero-fill a human can vouch for. submit_failed is the existing
@@ -607,6 +610,7 @@ def resolve_order_manually(
         # same rule as a broker refusal rather than a second special case.
         _mark(conn, order_id, "submit_failed",
               f"operator confirmed absent at broker: {evidence}")
+        _clear_reservation_override(conn, order_id)
         new_status = "submit_failed"
     else:  # keep_blocked
         new_status = previous_status
@@ -721,3 +725,66 @@ def adopt_replacement(conn, order_id: int, payload: dict, max_depth: int = 10) -
         (replacement.successor_id, order_id, successor_id),
     )
     return successor_id
+
+
+# --- Worst-case reservation for ambiguous submissions ---
+
+def record_candidate_observation(conn, order_id: int, candidates: list[dict]) -> float:
+    """Persist the broker orders that might be this one, and reserve for all of them.
+
+    Returns the resulting reservation.
+
+    `/resolve` is report-only, so nothing here changes the order's status — but
+    the RESERVATION has to be durable. Candidates leave the working-order
+    endpoint once they fill or cancel, and a later observation finding none of
+    them is not evidence that none were ours. So the override only ever rises
+    while the order is unresolved; only a human resolution clears it.
+
+    Floored at the order's own commitment: our order may be precisely the one
+    the endpoint did not return.
+    """
+    order = get_order(conn, order_id)
+    if order is None:
+        raise ValueError(f"no order with id {order_id}")
+    if order["status"] not in UNRESOLVED_ORDER_STATUSES:
+        raise ValueError(
+            f"order {order_id} is {order['status']!r}, not unresolved; "
+            "candidate reservation applies only to an ambiguous submission"
+        )
+
+    total = 0.0
+    for candidate in candidates:
+        quantity = float(candidate.get("quantity") or 0.0)
+        price = candidate.get("limit_price")
+        notional = quantity * float(price if price is not None else order["reference_price"])
+        total += notional
+        conn.execute(
+            """INSERT INTO order_candidates
+                   (order_id, broker_order_id, symbol, side, quantity, limit_price, notional)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (order_id, candidate.get("broker_order_id"), candidate.get("symbol"),
+             candidate.get("side"), quantity, price, notional),
+        )
+
+    own = order_commitment({**dict(order), "reserved_notional_override": None})
+    reservation = max(total, own, float(order["reserved_notional_override"] or 0.0))
+    conn.execute(
+        "UPDATE orders SET reserved_notional_override = ?, updated_at = datetime('now') "
+        "WHERE id = ?",
+        (reservation, order_id),
+    )
+    return reservation
+
+
+def get_candidate_observations(conn, order_id: int) -> list[dict]:
+    """Every candidate ever observed for this order, oldest first."""
+    rows = conn.execute(
+        "SELECT * FROM order_candidates WHERE order_id = ? ORDER BY id", (order_id,)
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _clear_reservation_override(conn, order_id: int) -> None:
+    conn.execute(
+        "UPDATE orders SET reserved_notional_override = NULL WHERE id = ?", (order_id,)
+    )

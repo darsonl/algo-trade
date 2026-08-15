@@ -61,6 +61,20 @@ def _unit_price(row: dict) -> float:
     return float(limit) if limit is not None else _num(row.get("reference_price"))
 
 
+def _with_override(row: dict, computed: float) -> float:
+    """Take the worst case between what we can compute and what we observed.
+
+    `reserved_notional_override` is the summed commitment of every broker order
+    that might be this one, recorded while its submission outcome is ambiguous.
+    It is a floor, never a replacement: if the order's own numbers imply more,
+    those win.
+    """
+    override = row.get("reserved_notional_override")
+    if override is None:
+        return computed
+    return max(computed, float(override))
+
+
 def _remaining_shares(row: dict) -> float:
     remaining = _num(row.get("requested_shares")) - _num(row.get("filled_shares"))
     return max(remaining, 0.0)
@@ -82,10 +96,12 @@ def order_commitment(row: dict) -> float:
 
     if status in TERMINAL_ORDER_STATUSES:
         if not row.get("fills_observed"):
-            return _num(row.get("requested_shares")) * _unit_price(row)
-        return _num(row.get("filled_notional"))
+            return _with_override(row, _num(row.get("requested_shares")) * _unit_price(row))
+        return _with_override(row, _num(row.get("filled_notional")))
 
-    return _num(row.get("filled_notional")) + _remaining_shares(row) * _unit_price(row)
+    return _with_override(
+        row, _num(row.get("filled_notional")) + _remaining_shares(row) * _unit_price(row)
+    )
 
 
 def remaining_buy_reservation(row: dict) -> float:
@@ -105,4 +121,4 @@ def remaining_buy_reservation(row: dict) -> float:
     if status in TERMINAL_ORDER_STATUSES and row.get("fills_observed"):
         return 0.0
 
-    return _remaining_shares(row) * _unit_price(row)
+    return _with_override(row, _remaining_shares(row) * _unit_price(row))
