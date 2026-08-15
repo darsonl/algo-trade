@@ -33,6 +33,7 @@ certifi==2026.5.20
     #   httpcore
     #   httpx
     #   requests
+    #   schwab-py
 cffi==2.0.0
     # via
     #   cryptography
@@ -128,8 +129,6 @@ platformdirs==4.10.0
     # via yfinance
 pluggy==1.6.0
     # via pytest
-prompt-toolkit==3.0.52
-    # via schwab-py
 propcache==0.5.2
     # via
     #   aiohttp
@@ -169,7 +168,7 @@ requests==2.34.2
     # via yfinance
 ruff==0.15.17
     # via -r requirements.in
-schwab-py==1.4.0
+schwab-py==1.5.1
     # via -r requirements.in
 six==1.17.0
     # via
@@ -208,8 +207,6 @@ urllib3==2.7.0
     # via
     #   requests
     #   schwab-py
-wcwidth==0.8.1
-    # via prompt-toolkit
 websockets==16.0
     # via
     #   schwab-py
