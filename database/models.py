@@ -230,6 +230,32 @@ def initialize_db(db_path: str) -> None:
         -- scan proportional to the backlog, not to all alerts ever sent.
         CREATE INDEX IF NOT EXISTS idx_ops_alerts_undelivered
             ON ops_alerts(id) WHERE delivered_at IS NULL;
+
+        -- The kill switch, as durable state rather than a process variable.
+        -- Single row (CHECK id = 1): there is exactly one answer to "is trading
+        -- on", and it has to be the same answer in every process, since a halt
+        -- typed into one process must stop the others too. No row at all means
+        -- UNINITIALIZED, which is NOT enabled — forgetting to seed it must fail
+        -- closed.
+        CREATE TABLE IF NOT EXISTS kill_switch (
+            id         INTEGER PRIMARY KEY CHECK (id = 1),
+            state      TEXT NOT NULL,
+            actor      TEXT,
+            reason     TEXT,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        -- Append-only record of every transition, including the initial seed.
+        -- How trading came to be on is as much a part of the incident record as
+        -- who turned it off.
+        CREATE TABLE IF NOT EXISTS kill_switch_events (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            previous_state TEXT NOT NULL,
+            new_state      TEXT NOT NULL,
+            actor          TEXT NOT NULL,
+            reason         TEXT NOT NULL,
+            created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+        );
     """)
     conn.commit()
     # CREATE TABLE IF NOT EXISTS does nothing when the table already exists, so a
