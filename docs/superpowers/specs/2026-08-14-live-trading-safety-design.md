@@ -1,9 +1,12 @@
-# Design: Live-Trading Safety Hardening (Codex Phase 1) — v3
+# Design: Live-Trading Safety Hardening (Codex Phase 1) — v4
 
-**Date:** 2026-08-14 (v3 revised 2026-08-15)
-**Status:** Approved (v3, revised after third external review)
+**Date:** 2026-08-14 (v4 revised 2026-08-15)
+**Status:** Draft — v4, revising after the **fourth** external review returned *request changes*
+(10 Critical, 1 High, 1 Medium)
 **Milestone:** v1.4 (candidate)
+**Prerequisite:** **`plans/2026-08-15-phase0-order-ledger-foundation.md` must land first.**
 **Source:** `docs/superpowers/codex_recommendations.md` — findings 1, 2, 3, 10, roadmap item 1.6
+**Review record:** `reviews/2026-08-15-spec-v3-review-prompt.md`
 
 ---
 
@@ -78,6 +81,48 @@ Three of those five are the same shape as C1/C2/H1 — a claim that read as sett
 mechanism that made it true. The rule caught them in the author's own draft, which is some
 evidence it works, and no evidence at all that it is sufficient.
 
+### v4 revisions
+
+The fourth external review returned **request changes: 10 Critical, 1 High, 1 Medium.** It
+confirmed three things as sound — the four-status terminal allowlist, guard 5's ordering ahead
+of every broker-data consumer, and the bare-UTC expiry predicate being correctly distinct from
+day bucketing. Everything else in the surrounding state model, accounting, and resolution paths
+was defective.
+
+**Six of the ten Criticals are one defect.** Findings 1, 2, 5, 6, 9 and 11 all reduce to: *this
+design requires durable per-order state, and this design's Scope excluded the table that holds
+it.* Verified — `database/models.py` creates `recommendations`, `trades`, `analyst_cache`,
+`positions`, `analyst_calls`, and nothing else. §9 step 8 nonetheless created "an order row",
+§10 queried `FROM orders`, and §8 said the data came "from `trades`", which has no status column
+and cannot express `submit_unknown` at all.
+
+The scope boundary was inherited from v1 and survived three review rounds unexamined, because
+each round reviewed this document's *contents* rather than its *edges*.
+
+**Structural consequence:** the order ledger is extracted into
+`plans/2026-08-15-phase0-order-ledger-foundation.md` and lands **before** this phase, inverting
+the dependency both documents previously asserted. Ledger Task 6 (approval rewiring) and Task 8
+(exposure inputs) move **into** this phase, so exactly one document owns the approval handler —
+two documents owning it is what produced finding 2.
+
+| # | Round-4 finding | Fix | Section |
+|---|---|---|---|
+| 1 | No storage can represent `submit_unknown` | Phase 0 prerequisite supplies the `orders` table | Scope, §4 |
+| 2 | Ledger Task 6 reopens to `pending` after an ambiguous failure, inviting a duplicate real order | Task 6 absorbed here and rewritten against §3's classification | §9 |
+| 3 | `/resolve` can safely auto-resolve neither a match nor a zero | **Report-only.** Five fields establish shape, not provenance | §4 |
+| 4 | `REPLACED` routed to the original-submission matcher marks a live replacement as failed | Follow `replacingOrderCollection.orderId`; never match on the original | §11 |
+| 5 | Daily notional priced at the reference quote, below the executable maximum | `order_commitment()` prices open orders at the limit | §10 |
+| 6 | A partially-filled-then-cancelled order releases its **entire** daily budget | Commitment retains filled notional through terminal statuses | §10, §11 |
+| 7 | Kill switch is neither linearizable nor durable | Halt persisted; one submission gate spanning check→dispatch | §2, §12 |
+| 8 | Cross-process approvals can jointly exceed the ceilings | Cap check + reservation in one `BEGIN IMMEDIATE` transaction | §7 |
+| 9 | Manual **broker** working orders are invisible to guards 9/10 | Preflight fetches broker working orders and merges by broker id | §8 |
+| 10 | After-hours DAY orders queue to the next session, breaking session bucketing | **Q3 alternative rejected**; attribution recorded as unresolved | §11, Open Questions |
+| 11 | The claimed manual exit for blocked statuses was never designed | Phase 0 Delta 3 — audited `resolve_order_manually` | §11 |
+| 12 | The limit-sell premise is not encoded anywhere in the sell path | Premise corrected against `main.py:441`; marketable-limit policy | §6 |
+
+Findings 4 and 11 were defects in fixes added *by v3 during the same session that wrote the
+process rule against them.*
+
 ---
 
 ## The scheduling problem
@@ -108,21 +153,31 @@ but sit inside one US session.
 **Modified**
 - `config.py` — `EXECUTION_MODE`, new safety fields, `validate()` rules
 - `schwab_client/orders.py` — **sink guard**, retry removal, `raise_for_status`, DAY-duration
-  limit orders (buy **and** sell), `get_order_status`, `find_recent_orders`
+  limit orders (buy) and marketable limits (sell), `find_recent_orders` (report-only)
 - `schwab_client/quotes.py` — **new**, live quote fetch
 - `risk/preflight.py` — **new**, the pure guard table
 - `risk/kill_switch.py` — **new**, runtime kill-switch state (§12)
 - `discord_bot/bot.py` — both approval views, both scan commands, `/halt`, `/resume`, `/resolve`
 - `database/queries.py` — claim predicate, day-notional query, recommendation completion
-- `database/models.py` — partial unique index, `broker_order_id` column
+- `database/models.py` — partial unique index (the `orders` table itself comes from Phase 0)
 - `main.py` — startup warning, scan lock wiring, terminal sweep
 - `README.md`, `CLAUDE.md`, `.env.example`, `.planning/codebase/*.md` — doc debt
 
-**Newly in scope for v3 (was Workstream A):** the minimum order-status read needed to make
-`completed` real — one column, one broker call, one sweep function. See §11 for why this
-cannot be deferred.
+**Supplied by the Phase 0 prerequisite, not built here:** the `orders` table and its CRUD, the
+status constants, `order_commitment()` / `get_day_notional()`, `mark_order_submit_unknown`, the
+audited `resolve_order_manually`, broker status mapping, and `fetch_order`.
 
-**Not in scope:** the full `orders` table, fill quantities, real fill prices (Workstream A);
+v3 tried to get by with a single `recommendations.broker_order_id` column; round-4 finding 1
+established that the real minimum is the table. **That column is withdrawn** — Phase 0's
+`orders` row carries the broker id, and a second place to record it would be a second source of
+truth for exactly the state this phase must not get wrong.
+
+**Absorbed from the ledger plan into this phase:** Task 6 (approve button creates an order
+before submitting) and Task 8 (exposure from broker positions and reserved orders). Both touch
+the approval path this document rewrites. Leaving Task 6 in a second document is what let it
+specify an ambiguous-failure retry that contradicts §3 — finding 2.
+
+**Not in scope:** fill application and the status poller (Workstream A, ledger Tasks 3/5/7);
 backtesting; ETF gating; cache keying; universe ranking; exit rules.
 
 ---
@@ -214,29 +269,55 @@ This is what makes "structurally incapable of ordering" true rather than aspirat
 on one instance would not be visible on another. `risk/kill_switch.py` holds one process-wide
 value:
 
+**Round-4 finding 7 broke v3's version of this in two ways.** Both are fixed here.
+
+*It was not durable.* `_enabled` defaulted to `True` and a restart restored the env default,
+also `True`. An operator halts during an incident, the process restarts, the persistent Discord
+buttons are still live — and trading silently re-enables without anyone running `/resume`. A
+kill switch that a crash can clear is not a kill switch. **Halt state is persisted** and re-read
+at startup; the env value is only the initial seed for a database that has never been written.
+
+*It was not linearizable.* The sink read a boolean, then constructed a client, then dispatched
+HTTP — with `await` boundaries throughout. `/halt` is a separate coroutine and can land in any
+of them, so the worker could check `True`, `/halt` could set `False` and reply "halted", and the
+worker could then submit. **One gate spans the final check through dispatch**, and `/halt`
+acquires it, so `/halt` returns only once no submission is mid-flight. Requests already
+dispatched are reported as in-flight/unknown rather than as stopped.
+
 ```python
 # risk/kill_switch.py — imports nothing from schwab_client, discord, or config
-_enabled: bool = True
+_state: str = "UNINITIALIZED"          # UNINITIALIZED | ENABLED | HALTED
+_gate = threading.RLock()              # spans final check -> HTTP dispatch
 
 
-def init(enabled: bool) -> None:      # called once from main.py startup with config.trading_enabled
-    global _enabled
-    _enabled = enabled
+def init(db_path: str, env_default: bool) -> None:
+    """Load persisted halt state; seed from env only on first ever run.
+
+    Defaults to UNINITIALIZED, and is_enabled() is False until init() runs, so a
+    code path that forgets to initialise fails closed rather than trading.
+    """
 
 
 def is_enabled() -> bool:
-    return _enabled
+    return _state == "ENABLED"
 
 
-def halt() -> None:                   # /halt
-    global _enabled
-    _enabled = False
+def submission_gate():
+    """Context manager held across the final is_enabled() check and the broker
+    call. /halt acquires the same gate, so it cannot interleave."""
+    return _gate
 
 
-def resume() -> None:                 # /resume
-    global _enabled
-    _enabled = True
+def halt(db_path: str, actor: str) -> None:     # /halt — persists, then acquires the gate
+    ...
+
+
+def resume(db_path: str, actor: str) -> None:   # /resume — persists
+    ...
 ```
+
+`_state` starting at `UNINITIALIZED` rather than `ENABLED` is the point: v3's default meant a
+missed `init()` call left trading on.
 
 `risk/preflight.py` imports it for guard 2; `schwab_client/orders.py` imports it for the sink.
 Neither direction creates a cycle because `kill_switch` imports nothing.
@@ -298,64 +379,63 @@ BLOCKING_ORDER_STATUSES   = OPEN_ORDER_STATUSES + UNRESOLVED_ORDER_STATUSES
 order produces no position, which is indistinguishable from no order at all. Resolution needs
 the *order* endpoint.
 
+**`/resolve` is report-only.** *(round-4 finding 3 / Q1 — this reverses v3.)*
+
+v3 auto-resolved on an exact five-field match and on a twice-confirmed zero. Both were rejected,
+and the reasoning is worth keeping because it generalises:
+
+- **Five matching fields establish *shape*, not *provenance*.** This is not our order book — it
+  is your brokerage account, and a manual order you place in the Schwab app can be identical on
+  symbol, side, quantity, type and limit price. Narrowing the match reduces the probability of
+  mis-attribution; it cannot make the inference valid. Schwab exposes no client-supplied
+  correlation id, so nothing in the payload can say "this one is mine."
+- **Two zeros are two samples from an API with no documented visibility bound.** v3 claimed the
+  second reading "removes the assumption." It does not — it shortens the window in which a
+  late-appearing order is wrongly marked `submit_failed` and has its capital released.
+- **Two exact candidates may be two *bot* submissions.** v3 treated 2+ as merely ambiguous while
+  reserving one order's notional. If both are ours, twice the capital is committed and the
+  ledger reserves once.
+
+So `/resolve` reads, ranks, and reports. It never writes order state on its own:
+
 ```python
 # schwab_client/orders.py
 @_retry
 def find_recent_orders(config, symbol, since, until, client=None) -> list[dict]:
-    """Return orders entered in [since, until] whose symbol matches.
+    """Broker orders entered in [since, until] whose symbol matches.
 
-    Wraps Client.get_orders_for_account (verified present in schwab-py 1.5.1).
-    The endpoint filters only by time and status; symbol and every other field
-    are matched client-side by the caller.
+    Wraps Client.get_orders_for_account (schwab-py 1.5.1) through the validating
+    wrapper. Every other field is compared by the caller, for display only.
     """
 ```
 
-**Matching is exact on five fields, not one.** This is not *our* order book — it is *your
-brokerage account*, and you can place orders in the Schwab app at any time. A symbol-and-time
-match would let a manual buy of the same ticker minutes later be adopted as the bot's order.
-That failure is silent and compounding: the bot's own possibly-live order becomes untracked
-(no capital reserved, both ceilings understated by its full notional), the §11 sweep then
-watches *your* order, and completing on your fill frees the ticker while the bot's order may
-still be working. It reads as a clean resolution.
+`main.py::report_unknown_submissions(config)` renders, per unresolved order, the candidates it
+found and how each differs from what was submitted, then stops. A human resolves it with the
+audited Phase 0 command:
 
-A candidate matches only if **symbol, side, quantity, order type (`LIMIT`), and limit price**
-all equal what was submitted. Anything less than an exact match on all five is treated as
-*ambiguous*, never as a match.
+```
+/resolve <order-id> <adopt|confirmed-absent|keep-blocked> [broker-order-id]
+```
 
-The search window is `[submitted_at − 30s, submitted_at + 120s]`, not five minutes. The
-question being resolved is "did my HTTP call land," which is a seconds-scale question; a wide
-window buys nothing and admits unrelated activity.
+which writes through `database/queries.py::resolve_order_manually` (Phase 0 Delta 3), refuses
+any source status outside `UNRESOLVED_ORDER_STATUSES`, and records actor, timestamp and the
+evidence string. Finding 11: v3 asserted this override existed and designed none.
 
-`main.py::resolve_unknown_submissions(config)` then applies, per unresolved row:
+**Reservation while unresolved is worst-case, not expected-case.** With multiple plausible
+candidates the design cannot know how many are ours, so it reserves as if all of them are:
+`sum(order_commitment(c) for c in candidates)`, floored at the submitted order's own commitment.
+Over-reserving blocks trades that would have been fine; under-reserving places trades that blow
+the ceiling. Only one of those is recoverable.
 
-| Broker result | Resolution |
-|---|---|
-| Call **raises** | Stay `submit_unknown`. Never resolve on a failed read. |
-| **0** matches, **first** observation | Stay `submit_unknown`; record the observation and retry no sooner than `RESOLVE_CONFIRM_DELAY_S` later |
-| **0** matches, confirmed **twice** ≥ delay apart | The order never landed → `submit_failed`; capital released; recommendation → `completed` |
-| **Exactly 1** exact 5-field match | Attach its `orderId` → `submitted`; the §11 sweep takes over |
-| **1 partial** match, or **2+** of anything | Ambiguous → stay `submit_unknown`; ops alert naming every candidate order id; a human decides |
+**Blast radius while unresolved:** capital reserved against *both* ceilings globally; the
+*affected symbol* blocked from new buys and sells. Halting all trading would be
+disproportionate — the ledger is untrustworthy for one symbol, not for the book. An unresolved
+row surviving past one market session escalates to a repeated ops alert on every scan.
 
-**Why 0 matches needs confirming twice.** A single 0 was the one result that looked
-unambiguously safe — the call succeeded, so there is no order. That reasoning assumes Schwab's
-order list is *immediately* consistent with order acceptance. If it is eventually consistent,
-a query moments after submission can return 0 for an order that does exist, and we would
-release its capital and mark `submit_failed` on a live order. Requiring the same answer twice,
-separated in time, removes the assumption at the cost of one extra scan cycle.
-`RESOLVE_CONFIRM_DELAY_S` defaults to 60. **Verify Schwab's actual consistency behavior during
-implementation**; if the order appears synchronously, this can collapse to a single read.
-
-Exposed as `/resolve` (allowlisted, §12) and run automatically at the top of
-`run_reconciliation()`.
-
-**Blast radius while unresolved:** the notional is reserved against *both* ceilings globally,
-but only the *affected symbol* is blocked from new buys. Halting all trading would be
-disproportionate — the ledger is untrustworthy for one symbol, not for the book. An
-unresolved row surviving past one market session escalates to a repeated ops alert on every
-scan.
-
-**Open for review (see Open Questions):** whether `/resolve` should auto-resolve *at all*, or
-only ever report candidates for a human to confirm.
+**Accepted cost of report-only:** an unresolved row freezes its capital and blocks its symbol
+until a human acts, which on a long-horizon strategy can be days. That is the price of keeping
+provenance a human judgement, and it is the right trade while the API offers no way to make the
+judgement mechanically.
 
 ### 5. Every broker read validates before it parses  *(fixes C3)*
 
@@ -410,11 +490,33 @@ Market orders carry no price, so a validated quote cannot constrain the fill. Wi
 order that may expire unfilled. That is correct — you approved against a closed-market price.
 It is no longer *silent*: the §11 sweep reports `expired`.
 
-**Accepted consequence, sells:** a limit sell can miss a fast decline. This is acceptable
-*for this strategy specifically* — the stop-loss decision (finding 9) was "won't fix, by
-design: long-term hold," which means a sell is a thesis change, not an emergency exit. If a
-protective-exit requirement is ever added, this decision must be revisited; a limit order is
-the wrong instrument for one.
+**Sells: v3's justification was wrong — round-4 finding 12.** v3 accepted that a limit sell can
+miss a fast decline, on the grounds that "a sell is a thesis change, not an emergency exit,"
+citing the long-term-hold decision that closed the stop-loss finding.
+
+That premise is not encoded anywhere. `main.py:441` gates the sell pass on `check_exit_signals`
+— RSI above threshold **and** MACD bearish — then asks the analyst. That is a short-horizon
+technical reversal trigger. When it fires on a fast decline, a `quote × 0.995` DAY limit is
+exactly the order most likely to miss, and the position stays open through the move the signal
+fired on. The design justified a policy with a strategy the code does not implement.
+
+Two coherent resolutions; this design takes the second and flags the first:
+
+1. **Redefine sell generation** around durable thesis invalidation, matching the buy-and-hold
+   premise. That is a signal-design change and belongs to Workstream D, not here.
+2. **Match the instrument to the trigger that actually exists.** Sells use a **marketable
+   limit** — priced *through* the bid by `APPROVAL_SLIPPAGE_BUFFER_PCT` rather than at
+   `quote − buffer` — so it behaves like a market order for fill purposes while still carrying a
+   worst-case price the guards validated. The bound is on how bad the fill may be, not on
+   whether it happens.
+
+Buys keep the passive `quote × (1 + buffer)` limit: a missed buy costs an opportunity, a missed
+sell holds a position through the decline that triggered the exit. The asymmetry is deliberate
+and is stated here so it is not "fixed" into symmetry later.
+
+**This becomes wrong again if the sell trigger changes.** Whoever redefines exits per (1) must
+revisit this section; a marketable limit is the wrong instrument for a genuine thesis-change
+sell that has no urgency.
 
 Verify Schwab's exact after-hours DAY handling during implementation and document what it does.
 
@@ -426,8 +528,32 @@ ceiling, each add $400, and both pass — $2,300 total. A per-ticker index canno
 cross-ticker cap breach.
 
 One module-level `asyncio.Lock` in `discord_bot/bot.py` wraps the entire read→evaluate→claim→
-submit sequence for both buy and sell approvals. Human click rates make contention
-irrelevant, and the alternative (a DB-level reservation table) is Workstream A's job.
+submit sequence for both buy and sell approvals. Human click rates make contention irrelevant.
+
+**That lock is not sufficient on its own — round-4 finding 8.** It is process-local, and the
+unique index that backstops it is per-*ticker*, so it cannot stop a cross-*ticker* cap breach
+between two processes. During an overlapping restart or deploy, two processes each read $1,500
+against a $2,000 cap, each reserve $400, and both submit: $2,300.
+
+So the cap check and the reservation are **one SQLite `BEGIN IMMEDIATE` transaction** against
+the Phase 0 `orders` table:
+
+```
+BEGIN IMMEDIATE                       -- write lock taken up front, cross-process
+  read day_notional + reservations    -- via order_commitment (§10)
+  evaluate ceilings
+  INSERT the order row (pending_submit)   -- the reservation IS the row
+COMMIT
+                                      -- only then submit to the broker
+```
+
+`BEGIN IMMEDIATE` acquires the write lock before the reads, so two processes serialise rather
+than both reading a stale total. The reservation is the order row itself — there is no separate
+reservation table to keep consistent. v3 said a DB-level reservation was "Workstream A's job";
+with Phase 0 landing first, the table already exists and there is nothing left to defer.
+
+The `asyncio.Lock` stays for in-process ordering and to keep the broker reads (quote, positions,
+working orders) from interleaving; the transaction is what makes the ceiling actually global.
 
 ### 8. `risk/preflight.py` — the guard table
 
@@ -481,8 +607,21 @@ Schwab"), and 11 applies to sells too — selling into an unknown order state ca
 **Guard 12.** The sell view captures `self.shares` at post time; the position can shrink
 before you click. Revalidate against the broker.
 
-`day_notional` and reservations come from the `orders` table once Workstream A lands. Until
-then they come from `trades`, and the build sequence notes the swap.
+`day_notional` and reservations come from the Phase 0 `orders` table via `order_commitment()`
+(§10). v3 said they would come "from `trades`" in the interim — round-4 finding 1 established
+that `trades` cannot express the states involved, which is why Phase 0 exists.
+
+**Working orders must include the broker's, not only ours — round-4 finding 9.** v3 (and ledger
+Task 8) sourced working orders from the bot's local table alone. A buy you place manually in the
+Schwab app can be *working and unfilled*: broker positions are empty, the local ledger has no
+row, so guards 9 and 10 both pass and the bot submits a second order for a symbol that already
+has one live. Preflight therefore fetches broker working orders on every evaluation, merges them
+with local reservations **by broker order id** to avoid double-counting the same order, and
+fails closed via guard 5 when that read fails.
+
+Merging by broker id is what makes the union safe: a local row that has already been attached to
+a broker id and the broker's own record of it are the same order, and counting it twice would
+reject legitimate trades — the recoverable direction, but still wrong.
 
 ### 9. Approval path
 
@@ -530,24 +669,28 @@ forbidden for market-day bucketing. On this UTC+8 host the 21:45 and 03:30 scans
 US session but two local dates, so a `'localtime'` ceiling **resets mid-session** and admits
 double the configured notional — the same failure that was doubling `ANALYST_DAILY_LIMIT`.
 
-```python
-from market_time import market_session_bounds_utc
+The query is `database/queries.py::get_day_notional`, supplied by **Phase 0 Delta 2**. It selects
+the session's buy orders by a range predicate over `market_session_bounds_utc()` — which leaves
+`submitted_at` unwrapped and therefore index-usable — and sums `order_commitment()` over them.
+Like every other session-bucketed query in this repo it takes an optional `instant`, so tests
+pin time without freezegun.
 
-start, end = market_session_bounds_utc(instant)
-...
-"""SELECT COALESCE(SUM(requested_shares * reference_price), 0.0) AS total
-     FROM orders
-    WHERE side = 'buy'
-      AND status IN (...)
-      AND submitted_at >= ? AND submitted_at < ?"""
-```
+**Two round-4 defects live in how that sum is computed**, and both are fixed in Phase 0 rather
+than here:
 
-The range predicate leaves `submitted_at` unwrapped and therefore index-usable, per
-`market_time.market_session_bounds_utc`'s docstring. Like every other session-bucketed query
-in this repo, it takes an optional `instant` so tests can pin time without freezegun.
+*Finding 5 — priced below the executable maximum.* v3's query summed
+`requested_shares * reference_price` while §8 asserted the guards price at the limit. An order
+can fill at `quote × 1.005`, so reserving the quote lets a second order through at the ceiling
+boundary when both can fill above the cap. `order_commitment()` prices open and unresolved
+orders at the **broker-rounded limit**.
 
-**`docs/superpowers/plans/2026-08-14-execution-ledger.md:304` must be corrected in the same
-change** — it is the source this query was to be copied from.
+*Finding 6 — a partial fill releases the whole budget.* `cancelled` and `expired` are terminal
+and previously dropped the order's entire notional, even when four of ten shares had filled.
+`order_commitment()` returns `filled_notional` for terminal orders, so what actually filled
+stays committed and only the unfilled remainder is released.
+
+Both defects also existed in `plans/2026-08-14-execution-ledger.md`, which is where the query
+was to be copied from. That plan is now superseded for this function by Phase 0.
 
 ### 11. Concurrency, duplicate prevention, and a real `completed`  *(fixes H1)*
 
@@ -571,16 +714,20 @@ and no ledger-plan step created it. As written, the first buy of any ticker woul
 ticker forever. This is why the minimum order-status read is pulled into Phase 1 rather than
 deferred: **the index change is unsafe without it, and they must ship together.**
 
-Three named pieces:
+Two named pieces, on top of Phase 0:
 
-1. **`database/models.py`** — `ALTER TABLE recommendations ADD COLUMN broker_order_id TEXT`,
-   using the existing try/`sqlite3.OperationalError`/pass migration idiom.
-2. **`schwab_client/orders.py::get_order_status(order_id, config) -> str`** — wraps
-   `Client.get_order(order_id, account_hash)` (verified present in 1.5.1) through `_checked`.
-3. **`main.py::sweep_terminal_recommendations(config)`** — for every recommendation with
-   `status='approved' AND broker_order_id IS NOT NULL`, read the broker status and call
+1. **`schwab_client/orders.py::fetch_order(config, broker_order_id) -> dict`** — Phase 0
+   Delta 5. Returns the **full validated payload**, not a status string. v3 specified `-> str`;
+   round-4 finding 4 showed a bare string cannot carry `replacingOrderCollection` or
+   `filledQuantity`, both of which the caller needs.
+2. **`main.py::sweep_terminal_recommendations(config)`** — for every recommendation whose
+   `orders` row is in `OPEN_ORDER_STATUSES`, map the payload's status and call
    `database/queries.py::complete_recommendation(db_path, rec_id, broker_status)` when it is
    terminal.
+
+**`recommendations.broker_order_id` is withdrawn.** v3 added it as the minimum that would make
+`completed` real; the broker id now lives on the Phase 0 `orders` row, which is the same place
+the reservation lives. Two columns recording one fact is a divergence waiting to happen.
 
 **Terminal is an allowlist, never a denylist:**
 
@@ -593,70 +740,69 @@ spells it `CANCELED` with one L). A denylist — "terminal means not in the work
 classify `UNKNOWN`, and any status Schwab adds later, as terminal and free the ticker on the
 strength of no information. The allowlist defaults the unrecognized case to "still open."
 
-**`REPLACED` is deliberately excluded.** An earlier v3 draft listed it as terminal. It is not:
-`REPLACED` means the original order is dead *and a new order took its place*, still working,
-under an order id we do not hold. Completing on it would free the ticker while a live
-replacement sits at the broker — fail-open in exactly the spot this allowlist exists to
-protect. `REPLACED` routes to `submit_unknown` and §4's human resolution instead. The same
-applies to `PENDING_REPLACE`, which is simply not terminal.
+**`REPLACED` is excluded — and must not be handed to any matcher.** An earlier v3 draft listed
+it as terminal, which is fail-open: `REPLACED` means the original order is dead *and a new order
+took its place*, still working, under an id we do not hold. v3 then corrected it by routing
+`REPLACED` to `submit_unknown` and §4's resolution — **which round-4 finding 4 showed is a
+second fail-open.** The replacement carries a different price and lies outside any window
+anchored on the original submission, so a matcher finds nothing, and "nothing found" would mark
+the submission failed while the replacement is live.
 
-**Known gap — partial fills.** `CANCELED` and `EXPIRED` are terminal and free the ticker, but
-either can follow a *partial* fill. Phase 1 reads order **status** and deliberately not order
-**quantity** (`filledQuantity` is Workstream A's). So a partially-filled-then-cancelled order
-leaves a real position that this phase never records, and it is invisible to every exposure
-guard thereafter.
+The payload, not a search, resolves it. Phase 0 Delta 4's `map_broker_status` extracts
+`replacingOrderCollection[].orderId` and returns it alongside the status, so the sweep follows
+the chain to the successor id and keeps watching. Only when the payload carries **no** successor
+id does the order become `submit_unknown` for human resolution — never terminal. `PENDING_REPLACE`
+is likewise not terminal.
 
-This is a genuine limitation of the scope call, not an oversight, and it is stated rather than
-hidden: **status alone is not sufficient to know whether a position exists.** Two mitigations
-apply until Workstream A lands — `run_reconciliation()` compares broker positions against the
-DB and already reports untracked holdings, which is exactly what a stranded partial fill looks
-like; and guards 9 and 10 read *broker* positions, not DB positions, so exposure and the
-duplicate-symbol check see the real holding even when the DB does not. Reviewers should judge
-whether that is sufficient or whether `filledQuantity` must come forward too.
+The general rule this establishes: **when the broker tells you where the order went, follow the
+pointer; never re-derive it by searching.** Searching was what made both the manual-order
+mis-attribution (finding 3) and this defect possible.
 
-**Fail-closed everywhere in the sweep:** a failed broker read leaves the row `approved`, which
-keeps the ticker blocked. Blocking is the safe direction. Rows with `status='approved' AND
-broker_order_id IS NULL` are exactly the `submit_unknown` cases and are never touched here —
-only §4 resolves those.
+**Partial fills — closed, not accepted.** v3 documented `CANCELED`/`EXPIRED` after a partial
+fill as a known gap, on the grounds that `filledQuantity` was Workstream A's. Round-4 finding 6
+established the gap is not survivable: the status-only rule released the order's *entire*
+notional from the daily ceiling while leaving a real, unrecorded position, so a second approval
+could consume the whole daily allowance again.
+
+Phase 0's `order_commitment()` (Delta 2) reads `filled_shares` / `filled_notional`, so a
+terminal order keeps whatever actually filled committed and releases only the remainder. Q2 from
+round 4 confirmed the two mitigations v3 cited do exist — `run_reconciliation()` reports the
+holding as untracked (`schwab_client/reconcile.py:21`), and guards 9/10 read broker positions —
+but they cover duplicate-symbol and exposure while leaving **daily-notional accounting** wrong.
+That is the part that had to come forward.
+
+**Fail-closed everywhere in the sweep:** a failed broker read leaves the recommendation
+`approved` and its order row open, which keeps the ticker blocked. Blocking is the safe
+direction. Orders in `UNRESOLVED_ORDER_STATUSES` are never touched here — only §4 reports them
+and only an operator resolves them.
 
 **Fail-closed is still a silent failure.** A ticker parked in `AWAITING_MANUAL_REVIEW` for days
-keeps its row `approved`, and the index blocks that symbol with no notification. Not
-double-buying is the right direction, but "silently stop trading a symbol forever" is not an
-acceptable resting state. An `approved` recommendation older than `STUCK_APPROVAL_ALERT_H`
-(default 24) raises a repeated ops alert naming the ticker, its broker order id, and the last
-status seen, and `/resolve` accepts a manual override.
+keeps its row open, and the index blocks that symbol with no notification. Not double-buying is
+the right direction, but "silently stop trading a symbol forever" is not an acceptable resting
+state. An order open longer than `STUCK_APPROVAL_ALERT_H` (default 24) raises a repeated ops
+alert naming the ticker, its broker order id, and the last status seen. The exit is Phase 0's
+audited `resolve_order_manually` — finding 11 was that v3 claimed this override existed and
+designed none.
 
 The sweep runs at the top of each scan (before the buy pass, so releases are visible to the
 inserts that follow) and inside `/reconcile`. Insert catches `sqlite3.IntegrityError` and
 skips the ticker. The table has 0 rows, so this applies with no backfill.
 
-#### Alternative under review: scope the index to the session
+#### Rejected: the session-scoped index
 
-The scope call above — pulling `broker_order_id` and a broker read into Phase 1 — buys index
-safety at the cost of a second source of truth that Workstream A's `orders` table will later
-duplicate. There is an alternative that may buy the same safety for less:
+v3 floated `UNIQUE(ticker, session_date)` as a way to get index safety without a broker read,
+arguing from §6's DAY-duration decision that no working order can outlive its session.
 
-```sql
-CREATE UNIQUE INDEX IF NOT EXISTS idx_active_rec_per_ticker_session
-  ON recommendations(ticker, session_date) WHERE status IN ('pending', 'approved');
-```
+**Round-4 finding 10 rejected it: the premise is false.** Schwab accepts regular-session orders
+at any time and queues them for the *next* regular session, and `market_time.market_session_date()`
+returns an Eastern **calendar** date with midnight-to-midnight bounds — not an exchange-session
+assignment. A Friday-night or weekend order buckets to Friday or Saturday while remaining
+actionable on Monday. The index would free the ticker, and the daily cap would reset, while the
+queued order is still live.
 
-**The argument for it** composes with a decision already made in §6: *all orders are DAY
-duration*, so no working order can outlive the session that created it. If nothing being
-guarded can survive a session boundary, then per-session uniqueness is not an approximation —
-it matches the real lifetime of the thing. A stuck `approved` row would block its ticker for
-that session only, which also dissolves the silent-failure problem above. `submit_unknown` is
-blocked independently by guard 11, which never consults the index.
-
-**What has to be true for it to hold**, and what a reviewer should test: Schwab's after-hours
-DAY handling. §6 already flags this as needing verification, but under this alternative it stops
-being a documentation detail and becomes load-bearing — if an order placed at 22:00 is queued
-for the *next* session's open rather than dying at the boundary, the premise fails at exactly
-one edge and the index becomes fail-open there.
-
-**Disclosure:** this option was identified after the v3 draft was written and has not been
-validated. It is presented as an open alternative, not a recommendation. It is the only one of
-v3's open questions whose answer could make this phase *smaller*.
+Recorded here rather than deleted because the reasoning generalises: **a calendar date is not a
+trading session**, and `market_time.py` deliberately has no exchange calendar. The same gap makes
+after-hours *ceiling attribution* an open question — see Open Questions.
 
 ### 12. Kill switch
 
@@ -664,13 +810,30 @@ v3's open questions whose answer could make this phase *smaller*.
 second false-by-default flag would just be another thing to forget. (v1 said `true` in its
 config table and `false` in its prose; this resolves that.)
 
-`main.py` calls `kill_switch.init(config.trading_enabled)` once at startup. `/halt` calls
-`kill_switch.halt()`; `/resume` calls `kill_switch.resume()`; both reset to the env value on
-restart. **`/halt`, `/resume`, and `/resolve` are all subject to the authorization
+`main.py` calls `kill_switch.init(config.db_path, config.trading_enabled)` once at startup.
+`/halt` and `/resume` **persist** their new state, and `init` reads the persisted value —
+`TRADING_ENABLED` seeds it only on a database that has never recorded one.
+
+v3 said both "reset to the env value on restart," which round-4 finding 7 identified as a defect
+rather than a feature: with the env default also `true`, an operator's halt evaporated on the
+next restart while the persistent Discord buttons stayed live, silently re-enabling trading
+without anyone running `/resume`. **A kill switch a crash can clear is not a kill switch.**
+
+**`/halt`, `/resume`, and `/resolve` are all subject to the authorization
 allowlist** — v1 allowlisted only `/halt`, so anyone could have cleared a halt.
 
 Guard 2 reads `kill_switch.is_enabled()`, and **the sink reads it again** at submission time
 (§2). Both readers now genuinely exist; in v2 only the first did.
+
+The sink's re-read happens **inside `submission_gate()`**, held from that check through the
+broker dispatch. v3 had the re-read but not the gate, so `/halt` could land in one of the
+`await` boundaries between them — the worker checks `True`, `/halt` sets `False` and replies
+"halted", the worker submits. `/halt` acquires the same gate, so it returns only once nothing is
+mid-flight, and reports anything already dispatched as in-flight/unknown rather than stopped.
+
+`/halt` cannot recall an order the broker has already accepted. Saying so plainly matters more
+than the switch feeling absolute: the honest guarantee is *no new submissions after `/halt`
+returns*, not *no orders exist*.
 
 ---
 
@@ -686,7 +849,6 @@ Guard 2 reads `kill_switch.is_enabled()`, and **the sink reads it again** at sub
 | `approval_slippage_buffer_pct` | `APPROVAL_SLIPPAGE_BUFFER_PCT` | `0.5` |
 | `quote_max_age_s` | `QUOTE_MAX_AGE_S` | `60` (regular hours only) |
 | `max_daily_notional_usd` | `MAX_DAILY_NOTIONAL_USD` | `2000.0` |
-| `resolve_confirm_delay_s` | `RESOLVE_CONFIRM_DELAY_S` | `60` (§4 — how long before a second 0-match reading is trusted) |
 | `stuck_approval_alert_h` | `STUCK_APPROVAL_ALERT_H` | `24` (§11 — age at which an `approved` row starts alerting) |
 
 `validate()` requires a non-empty allowlist when `execution_mode == "live"`. An empty
@@ -710,8 +872,7 @@ Everything fails **closed**.
 | Order submission definitively refused (4xx) | Order → `submit_failed`, capital released, recommendation → `completed` |
 | Order submission ambiguous (timeout, 5xx, 408, 429, missing `Location`) | Order → `submit_unknown`, capital **reserved**, symbol blocked, ops alert, recommendation **stays claimed** |
 | `/resolve` broker read raises | Row stays `submit_unknown`. Never resolved on a failed read. |
-| `/resolve` finds 2+ candidates, or 1 partial-field match | Row stays `submit_unknown`, ops alert lists every candidate id |
-| `/resolve` finds 0, first observation | Row stays `submit_unknown` until a second 0 confirms it ≥ `RESOLVE_CONFIRM_DELAY_S` later |
+| `/resolve` finds any number of candidates | **Reports only.** Row stays `submit_unknown` regardless; worst-case candidate notional stays reserved; only `resolve_order_manually` can transition it |
 | Order-status sweep read raises | Recommendation stays `approved`; ticker stays blocked |
 | Broker status unrecognized (incl. `UNKNOWN`) | Treated as non-terminal; ticker stays blocked |
 | Broker status `REPLACED` / `PENDING_REPLACE` | **Not terminal.** Routed to `submit_unknown` — a live replacement order exists under an id we do not hold |
@@ -753,7 +914,7 @@ TDD throughout.
 | `test_broker_read_failures.py` | **New (C3).** `raise_for_status` fires on 401/429/500 for account, quote, order, and order-list reads; `parse_positions` raises on a body with no `securitiesAccount`; `evaluate_trade` returns `broker_unavailable` rather than evaluating guards 8–11 on absent data |
 | `test_preflight.py` | All 12 guards table-driven, plus boundaries: drift exactly at tolerance, exposure exactly at ceiling, quote exactly at max age, shares rounding to 0, session-aware staleness in and out of hours, guard-5-before-guard-9 ordering |
 | `test_submission_outcomes.py` | **New (C2).** The §3 classification matrix; `submit_unknown` counted by `COMMITTING_ORDER_STATUSES` and `BLOCKING_ORDER_STATUSES`; `submit_failed` releases |
-| `test_resolve_matching.py` | **New (v3).** §4 matching is exact on all five fields — a same-symbol manual order differing only in quantity, or in limit price, or in side is **not** adopted; the ±30s/+120s window excludes an order outside it; a single 0-match does not resolve, two ≥ `RESOLVE_CONFIRM_DELAY_S` apart do; a raising broker call never resolves |
+| `test_resolve_reporting.py` | **New (v4, finding 3).** `/resolve` **never** mutates order status — asserted for 0, 1 exact, 1 partial and 2+ candidates, and for a raising broker call; worst-case reservation is the sum over candidates, floored at the order's own commitment; only `resolve_order_manually` transitions a row, and it refuses any source status outside `UNRESOLVED_ORDER_STATUSES` |
 | `test_execution_mode.py` | Legacy var rejection, `simulated` startup failure, `dry_run` derivation, empty allowlist under `live` |
 | `test_approval_flow.py` | Unauthorized user, wrong guild, expired button, drift block, quote outage, submission failure paths, recommendation NOT reopened |
 | `test_approval_serialization.py` | Two concurrent approvals for different tickers cannot jointly exceed `MAX_DAILY_NOTIONAL_USD` |
@@ -772,29 +933,39 @@ Add `pytest.ini` with `asyncio_default_fixture_loop_scope = function`.
 
 ## Build sequence
 
+**Prerequisite: `plans/2026-08-15-phase0-order-ledger-foundation.md` is complete and merged.**
+Steps 8 onward read and write the `orders` table it creates. Steps 1–7 do not, so they can
+proceed in parallel with Phase 0 if useful.
+
 1. `test_broker_isolation.py` against current code — expect FAIL (no sink guard exists yet).
    This is the test that proves the defect before fixing it.
-2. `risk/kill_switch.py` + sink guard in `schwab_client/orders.py` + `EXECUTION_MODE` + config
-   + `validate()` + doc debt
-3. `_checked` / `raise_for_status` on all broker reads + strict `parse_positions` **(C3 — this
-   is a live defect in shipped code and can land independently of everything else)**
+2. `risk/kill_switch.py` — persisted state, `UNINITIALIZED` default, `submission_gate()` —
+   plus the sink guard in `schwab_client/orders.py`, `EXECUTION_MODE`, config, `validate()`,
+   doc debt
+3. `_checked` / `raise_for_status` on all broker reads + strict `parse_positions`
+   **(round-3 C3 — a live defect in shipped code. Independent of Phase 0 and of every open
+   question; land it first and alone if nothing else moves.)**
 4. Remove `@_retry` from submission; the §3 outcome classification
 5. `schwab_client/quotes.py`
-6. `risk/preflight.py` with its full 12-guard test table, guard 5 ordering included
-7. Limit + DAY construction for buy **and** sell; remove `USE_LIMIT_BUY`; delete the market
-   builders
-8. Rewire `ApproveRejectView`, then `SellApproveRejectView`; add the approval lock
-9. SQL claim predicate + `<=` expiry fix + session-bucketed day notional (**and correct
-   `execution-ledger.md:304`**)
-10. `broker_order_id` column + `get_order_status` + `sweep_terminal_recommendations` +
+6. Limit + DAY construction for buys, **marketable limit for sells** (§6); remove
+   `USE_LIMIT_BUY`; delete the market builders
+7. `risk/preflight.py` with its full 12-guard test table, guard 5 ordering included
+8. Broker working-order fetch + merge-by-broker-id into the guard inputs (absorbed ledger
+   Task 8; round-4 finding 9)
+9. Rewire `ApproveRejectView`, then `SellApproveRejectView` — order row created before
+   submission (absorbed ledger Task 6, **rewritten** against §3), approval lock, and the
+   `BEGIN IMMEDIATE` cap-check-plus-reservation transaction (§7)
+10. SQL claim predicate + `<=` expiry fix
+11. `fetch_order` chain-following + `sweep_terminal_recommendations` +
     `complete_recommendation` — **then** the partial unique index, in that order, never the
     reverse
-11. `submit_unknown` reservation sets + `/resolve` + reconcile wiring
-12. Scan lock + `/halt` + `/resume`
-13. Full `pytest -q` and `ruff check .`
+12. `/resolve` report-only rendering + reconcile wiring + the stuck-order alert
+13. Scan lock + `/halt` + `/resume`
+14. Full `pytest -q` and `ruff check .`
 
-Steps 10 and 11 are the ones v2 assumed away. Neither the index (step 10's tail) nor the
-`approved`-covering uniqueness is safe to ship before the release valve that precedes it.
+Step 11's ordering is the one v2 assumed away: the `approved`-covering uniqueness is not safe to
+ship before the release valve that precedes it. Step 9 is the one v3 got wrong by leaving it in
+a second document.
 
 ---
 
@@ -819,58 +990,58 @@ the payload, always.
 
 ## Open questions
 
-### Decisions this design makes that a reviewer should overturn or confirm
+### Resolved by review round 4 — do not relitigate
 
-These three are judgment calls with a real cost on both sides, not defects with a fix. They are
-the least-reviewed parts of v3 and are stated as questions on purpose.
+v3 posed three judgment calls and asked the reviewer to argue rather than confirm them. All
+three came back **against** v3's choice.
 
-**Q1 — Should `/resolve` auto-resolve at all, or only ever report?**
-§4 auto-resolves on an exact five-field match and on a twice-confirmed zero. The alternative is
-that it never writes state: it reports candidates and a human confirms. Auto-resolving is
-inference about the one state the design has already declared untrustworthy, and the account
-contains orders this system did not place. Against that, human-only resolution means an
-unresolved row keeps reserving capital and blocking its symbol until someone acts, which on a
-long-horizon strategy could be days. **The question is who owns the ambiguity, not how precise
-the matcher is.**
+| | v3 proposed | Round-4 answer |
+|---|---|---|
+| **Q1** `/resolve` auto-resolve? | Auto-resolve on an exact 5-field match and a twice-confirmed zero | **Report-only.** Matching fields establish shape, not provenance; Schwab exposes no client correlation id and publishes no visibility bound that would make a zero meaningful (§4) |
+| **Q2** status-only sweep? | Sufficient; `filledQuantity` is Workstream A's | **Bring it forward.** The cited mitigations are real but cover duplicate-symbol and exposure, not daily-notional accounting (§10, §11) |
+| **Q3** session-scoped index? | Attractive; only option that shrinks the phase | **Rejected.** Schwab queues after-hours orders for the next regular session, so "nothing outlives a session" is false (§11) |
 
-**Q2 — Is a status-only sweep sufficient, or must `filledQuantity` come forward?**
-§11 reads order status and not fill quantity, which leaves partially-filled-then-cancelled
-orders unrecorded (stated as a known gap there). The mitigations are indirect: `/reconcile`
-reports the holding as untracked, and guards 9/10 read broker positions rather than DB
-positions. Pulling `filledQuantity` forward closes it properly but drags more of Workstream A
-into this phase.
+Q3's rejection is the expensive one: it was the only path that made this phase smaller, and its
+failure is why Phase 0 exists instead.
 
-**Q3 — Scope: `broker_order_id` + sweep, or a session-scoped index?**
-See the alternative at the end of §11. The adopted design buys index safety with a column and a
-broker read that Workstream A will later duplicate. The alternative
-(`UNIQUE(ticker, session_date)`) needs neither, and leans on §6's DAY-duration decision to argue
-that nothing being guarded can outlive a session. It requires a `session_date` column populated
-at insert from `market_time.market_session_date()`, and its correctness hinges entirely on
-Schwab's after-hours DAY behavior. **This is the only open question whose answer could make the
-phase smaller.** It was identified after the v3 draft and is unvalidated.
+### Still open
 
-### Environment and data questions
-
-1. **Schwab `FUNDAMENTAL` projection** — `Client.get_instruments(symbols, projection=FUNDAMENTAL)`
+1. **After-hours ceiling attribution.** An order entered Friday night is bucketed to Friday's
+   session by submission time but is actionable Monday. Which session's
+   `MAX_DAILY_NOTIONAL_USD` should it consume? `market_session_date()` returns an Eastern
+   *calendar* date and `market_time.py` deliberately has no exchange calendar, so this cannot be
+   answered correctly today. Resolving it likely means an `intended_session_date` mapped through
+   a real trading calendar. **Tracked in Phase 0 Open Question 1**; it is the residue of
+   finding 10 that rejecting Q3 did not dispose of.
+2. **Sell-signal coherence.** §6 now matches the sell instrument to the exit trigger that
+   actually exists (`main.py:441`, RSI + MACD), rather than to a long-term-hold premise the code
+   does not implement. The deeper incoherence stands: a buy-and-hold income strategy with a
+   sensitive upside exit and no downside exit is backwards. Redefining exits is Workstream D,
+   and doing so **requires revisiting §6**.
+3. **Schwab `FUNDAMENTAL` projection** — `Client.get_instruments(symbols, projection=FUNDAMENTAL)`
    returns `epsChangePercentTTM`, `returnOnEquity`, `currentRatio`, `marketCap`. Could restore
    candidates lost to the `reject` missing-data policy *and* supply the scale-independent
    factors findings 7/8 want. **Unverified** — the Schwab token is ~125 days old and expired.
-2. **Sell-pass coherence.** Given long-term hold, the RSI>70 + MACD-bearish exit is a
-   short-horizon reversal trigger that does not match the thesis: no downside exit, sensitive
-   upside exit. Recorded in the roadmap, unresolved. §6's limit-sell decision depends on this
-   answer staying "sells are thesis changes, not emergency exits."
-3. **schwab-py pin drift.** `requirements.txt:172` / `requirements.in:12` pin `1.4.0`; **1.5.1
+4. **schwab-py pin drift.** `requirements.txt:172` / `requirements.in:12` pin `1.4.0`; **1.5.1
    is installed** and every API fact in this document was verified against 1.5.1. Bump the pin
    and regenerate the lock with `uv pip compile` before implementing.
+5. **Schwab order-list consistency.** `/resolve` is report-only partly because no visibility
+   bound is published. If one exists and is short, a narrower automatic path may become
+   defensible later — but that is a change to make on evidence, not on convenience.
 
 ---
 
 ## Backlog
 
-Sequenced in `docs/superpowers/plans/2026-08-14-codex-backlog-roadmap.md`. Workstream A
-(execution ledger) is the direct successor and supplies the `orders` table this design's
-guards 8–11 will read from. v3 pulls forward only the single column and single broker read
-that the unique index cannot ship without; the rest of the ledger is unchanged.
+Sequenced in `docs/superpowers/plans/2026-08-14-codex-backlog-roadmap.md`.
+
+**The order changed in v4.** The ledger is no longer the successor to this phase — its storage
+layer is the **prerequisite**. `plans/2026-08-15-phase0-order-ledger-foundation.md` takes ledger
+Tasks 1, 2 and 4 (plus corrections) and lands first; this phase absorbs ledger Tasks 6 and 8;
+the remainder of `plans/2026-08-14-execution-ledger.md` — fill application, the poller, its
+scheduling — follows this phase as Workstream A.
+
+Sequence: **Phase 0 → Phase 1 → Workstream A remainder → B / C / D.**
 
 **Standing constraint from finding 6:** no backtest has been run and no forward sample exists.
 The 569 passing tests validate software behavior, not predictive power. Every recommendation
