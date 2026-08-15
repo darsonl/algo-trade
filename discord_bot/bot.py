@@ -13,7 +13,8 @@ from database.models import get_cursor
 from risk import kill_switch
 from risk.kill_switch import TradingHalted
 from discord_bot.embeds import build_recommendation_embed, build_positions_embed, build_sell_embed, build_etf_recommendation_embed, build_stats_embed, build_history_embed
-from schwab_client.orders import place_limit_order, place_order, place_sell_order
+from schwab_client.orders import place_limit_order, place_marketable_sell_order, place_order
+from schwab_client.quotes import QuoteUnavailable
 
 logger = logging.getLogger(__name__)
 
@@ -286,9 +287,26 @@ class SellApproveRejectView(discord.ui.View):
                 # Same gate as the buy path — one switch halts both directions.
                 async with kill_switch.submission_gate():
                     kill_switch.require_enabled(self.config)
+                    # Marketable LIMIT, priced through the bid (spec §6): the
+                    # RSI+MACD trigger is a momentum exit, so a resting order
+                    # that misses is the worst outcome — but the fill price
+                    # still needs a validated bound.
                     order_id = await asyncio.to_thread(
-                        place_sell_order, self.ticker, self.shares, self.config
+                        place_marketable_sell_order, self.ticker, self.shares, self.config
                     )
+        except QuoteUnavailable as exc:
+            # No usable bid means no validated worst case, and there is no
+            # market-order fallback on purpose. Re-open so a human can decide.
+            await asyncio.to_thread(
+                queries.update_recommendation_status, self.config.db_path, self.rec_id, "pending"
+            )
+            logger.warning("Sell blocked for %s: no usable quote (%s)", self.ticker, exc)
+            await interaction.followup.send(
+                f"Sell for {self.ticker} blocked: no usable quote ({exc}). No order "
+                "was sent — the recommendation stays open. Sell manually in Schwab "
+                "if this is urgent."
+            )
+            return
         except TradingHalted as exc:
             await asyncio.to_thread(
                 queries.update_recommendation_status, self.config.db_path, self.rec_id, "pending"

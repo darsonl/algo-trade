@@ -2,12 +2,13 @@ from __future__ import annotations
 import logging
 
 from schwab.client import Client as SchwabClient
-from schwab.orders.equities import equity_buy_limit, equity_buy_market, equity_sell_market
+from schwab.orders.equities import equity_buy_limit, equity_buy_market, equity_sell_limit, equity_sell_market
 from schwab.orders.common import Duration
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from risk import kill_switch
 from risk.kill_switch import TradingHalted
+from schwab_client.quotes import fetch_quote, marketable_sell_limit
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,60 @@ def build_limit_buy(ticker: str, shares: int, limit_price_str: str) -> dict:
 def build_market_sell(ticker: str, shares: int) -> dict:
     """Return the JSON spec for a market sell order (no network call)."""
     return equity_sell_market(ticker, shares).build()
+
+
+def build_marketable_sell(ticker: str, shares: int, limit_price_str: str) -> dict:
+    """Return the JSON spec for a DAY marketable-limit sell (no network call).
+
+    DAY, deliberately, where buys use GTC. A marketable limit that has not
+    filled by the close has already missed the move it was reacting to; leaving
+    it resting for weeks would sell into an unrelated future market. A late buy
+    is still a buy at a price you set, which is why the buy side differs.
+    """
+    spec = equity_sell_limit(ticker, shares, limit_price_str)
+    spec.set_duration(Duration.DAY)
+    return spec.build()
+
+
+def place_marketable_sell_order(ticker: str, shares: int, config, client=None,
+                                now=None) -> str:
+    """Sell via a limit priced THROUGH the bid, or refuse.
+
+    Order of operations is chosen so the cheapest refusal happens first: the
+    kill switch is checked before the quote round-trip, because a halted system
+    should not be spending broker calls.
+
+    There is no market-order fallback. Without a usable quote there is no
+    validated worst case, and an unbounded market sell on a stock already
+    flagged as falling is precisely the fill this instrument exists to bound.
+    The caller re-opens the recommendation so a human can act.
+    """
+    kill_switch.require_enabled(config)
+
+    if client is None:
+        from schwab_client.auth import get_client
+        client = get_client(config)
+
+    quote = fetch_quote(ticker, config, client=client, now=now)
+    limit_price = marketable_sell_limit(
+        quote.bid, getattr(config, "approval_slippage_buffer_pct", 0.5)
+    )
+    limit_price_str = f"{limit_price:.2f}"
+    spec = build_marketable_sell(ticker, shares, limit_price_str)
+
+    try:
+        resp = _call_place_order(client, config, spec)
+        order_id = resp.headers.get("Location", "").split("/")[-1]
+        logger.info(
+            "Placed marketable sell %s: %s x%d @ %s (bid %.2f)",
+            order_id, ticker, shares, limit_price_str, quote.bid,
+        )
+        return order_id or None
+    except TradingHalted:
+        raise
+    except Exception as exc:
+        logger.error("Marketable sell failed for %s: %s", ticker, exc)
+        raise RuntimeError(f"Marketable sell failed for {ticker}: {exc}") from exc
 
 
 def parse_positions(account_response: dict) -> list[dict]:

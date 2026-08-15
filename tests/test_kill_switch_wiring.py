@@ -201,7 +201,7 @@ async def test_halted_sell_approval_does_not_place_an_order(db_path):
     interaction = _interaction()
 
     with (
-        patch("discord_bot.bot.place_sell_order") as place,
+        patch("discord_bot.bot.place_marketable_sell_order") as place,
         patch("discord_bot.bot.queries") as q,
     ):
         q.claim_recommendation.return_value = True
