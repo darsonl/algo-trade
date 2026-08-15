@@ -6,6 +6,9 @@ from schwab.orders.equities import equity_buy_limit, equity_buy_market, equity_s
 from schwab.orders.common import Duration
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+from risk import kill_switch
+from risk.kill_switch import TradingHalted
+
 logger = logging.getLogger(__name__)
 
 _retry = retry(
@@ -83,8 +86,24 @@ def parse_positions(account_response: dict) -> list[dict]:
     return result
 
 
+def _call_place_order(client, config, spec) -> object:
+    """The single choke point every order dispatch passes through.
+
+    The kill switch is checked HERE rather than only in the approval path, so a
+    call site that forgets the gate still fails closed. Round-4 C1 was this
+    defect in an earlier design: the sink was documented as re-reading the
+    switch while no term for it existed in the predicate, and /halt during a
+    pending approval did nothing.
+
+    The check sits OUTSIDE the retry deliberately — a halt is a decision, not a
+    transient fault, and retrying it three times would only delay the refusal.
+    """
+    kill_switch.require_enabled(config)
+    return _dispatch(client, config.schwab_account_hash, spec)
+
+
 @_retry
-def _call_place_order(client, account_hash: str, spec) -> object:
+def _dispatch(client, account_hash: str, spec) -> object:
     return client.place_order(account_hash, spec)
 
 
@@ -99,10 +118,12 @@ def place_order(ticker: str, shares: int, config, client=None) -> str:
 
     spec = build_market_buy(ticker, shares)
     try:
-        resp = _call_place_order(client, config.schwab_account_hash, spec)
+        resp = _call_place_order(client, config, spec)
         order_id = resp.headers.get("Location", "").split("/")[-1]
         logger.info("Placed order %s: %s x%d", order_id, ticker, shares)
         return order_id or None
+    except TradingHalted:
+        raise  # a refusal is not a broker failure; do not rewrap it
     except Exception as exc:
         logger.error("Order placement failed for %s: %s", ticker, exc)
         raise RuntimeError(f"Order placement failed for {ticker}: {exc}") from exc
@@ -121,10 +142,12 @@ def place_limit_order(ticker: str, shares: int, limit_price: float, config, clie
     limit_price_str = f"{limit_price:.2f}"
     spec = build_limit_buy(ticker, shares, limit_price_str)
     try:
-        resp = _call_place_order(client, config.schwab_account_hash, spec)
+        resp = _call_place_order(client, config, spec)
         order_id = resp.headers.get("Location", "").split("/")[-1]
         logger.info("Placed limit order %s: %s x%d @ %s", order_id, ticker, shares, limit_price_str)
         return order_id or None
+    except TradingHalted:
+        raise
     except Exception as exc:
         logger.error("Limit order placement failed for %s: %s", ticker, exc)
         raise RuntimeError(f"Limit order placement failed for {ticker}: {exc}") from exc
@@ -142,10 +165,12 @@ def place_sell_order(ticker: str, shares: int, config, client=None) -> str:
 
     spec = build_market_sell(ticker, shares)
     try:
-        resp = _call_place_order(client, config.schwab_account_hash, spec)
+        resp = _call_place_order(client, config, spec)
         order_id = resp.headers.get("Location", "").split("/")[-1]
         logger.info("Placed sell order %s: %s x%d", order_id, ticker, shares)
         return order_id or None
+    except TradingHalted:
+        raise
     except Exception as exc:
         logger.error("Sell order placement failed for %s: %s", ticker, exc)
         raise RuntimeError(f"Sell order placement failed for {ticker}: {exc}") from exc

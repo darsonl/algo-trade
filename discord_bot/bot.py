@@ -10,6 +10,8 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from config import Config
 from database import queries
 from database.models import get_cursor
+from risk import kill_switch
+from risk.kill_switch import TradingHalted
 from discord_bot.embeds import build_recommendation_embed, build_positions_embed, build_sell_embed, build_etf_recommendation_embed, build_stats_embed, build_history_embed
 from schwab_client.orders import place_limit_order, place_order, place_sell_order
 
@@ -50,6 +52,28 @@ def _pending_alerts(db_path: str, limit: int) -> list[dict]:
 @_retry
 async def _send_message(channel, embed, view):
     return await channel.send(embed=embed, view=view)
+
+
+def is_authorized(config, user_id: int) -> bool:
+    """Whether this Discord user may operate the kill switch.
+
+    Empty allowlist authorizes nobody. An unparseable entry is skipped rather
+    than treated as a wildcard — a typo must narrow access, never widen it.
+
+    Both /halt AND /resume are guarded. The design's first version allowlisted
+    only /halt, which protects the wrong direction: it left anyone able to
+    clear a halt in the middle of an incident.
+    """
+    allowed = set()
+    for part in str(getattr(config, "ops_user_ids", "") or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            allowed.add(int(part))
+        except ValueError:
+            logger.warning("Ignoring malformed OPS_USER_IDS entry %r", part)
+    return user_id in allowed
 
 
 def compute_share_quantity(price: float, max_position_usd: float) -> int:
@@ -125,16 +149,38 @@ class ApproveRejectView(discord.ui.View):
         order_type_val = "market"   # D-06: see above
         try:
             if not self.config.dry_run:
-                if self.config.use_limit_buy:
-                    order_id = await asyncio.to_thread(
-                        place_limit_order, self.ticker, shares, self.price, self.config
-                    )
-                    limit_price_val = self.price
-                    order_type_val = "limit"
-                else:
-                    order_id = await asyncio.to_thread(
-                        place_order, self.ticker, shares, self.config
-                    )
+                # The gate spans the final kill-switch read through the broker
+                # dispatch. Without it /halt could land in one of the await
+                # boundaries below: the worker reads ENABLED, /halt persists
+                # HALTED and replies "halted", and the worker submits anyway.
+                # /halt acquires the same gate, so it returns only once nothing
+                # is in flight.
+                async with kill_switch.submission_gate():
+                    kill_switch.require_enabled(self.config)
+                    if self.config.use_limit_buy:
+                        order_id = await asyncio.to_thread(
+                            place_limit_order, self.ticker, shares, self.price, self.config
+                        )
+                        limit_price_val = self.price
+                        order_type_val = "limit"
+                    else:
+                        order_id = await asyncio.to_thread(
+                            place_order, self.ticker, shares, self.config
+                        )
+        except TradingHalted as exc:
+            # Nothing was dispatched, so re-open the recommendation and say so
+            # plainly. The generic handler's "verify in Schwab" would send the
+            # operator looking for an order that was never sent.
+            await asyncio.to_thread(
+                queries.update_recommendation_status, self.config.db_path, self.rec_id, "pending"
+            )
+            logger.warning("Buy blocked for %s: %s", self.ticker, exc)
+            await interaction.followup.send(
+                f"Buy for {self.ticker} blocked: trading is halted. No order was "
+                f"sent. ({exc}) The recommendation stays open — approve again "
+                "after /resume."
+            )
+            return
         except Exception as exc:
             # Release the claim so the button can be retried after the failure.
             await asyncio.to_thread(
@@ -237,9 +283,23 @@ class SellApproveRejectView(discord.ui.View):
         order_id = None
         try:
             if not self.config.dry_run:
-                order_id = await asyncio.to_thread(
-                    place_sell_order, self.ticker, self.shares, self.config
-                )
+                # Same gate as the buy path — one switch halts both directions.
+                async with kill_switch.submission_gate():
+                    kill_switch.require_enabled(self.config)
+                    order_id = await asyncio.to_thread(
+                        place_sell_order, self.ticker, self.shares, self.config
+                    )
+        except TradingHalted as exc:
+            await asyncio.to_thread(
+                queries.update_recommendation_status, self.config.db_path, self.rec_id, "pending"
+            )
+            logger.warning("Sell blocked for %s: %s", self.ticker, exc)
+            await interaction.followup.send(
+                f"Sell for {self.ticker} blocked: trading is halted. No order was "
+                f"sent. ({exc}) The recommendation stays open — approve again "
+                "after /resume."
+            )
+            return
         except Exception as exc:
             # Release the claim so the button can be retried after the failure.
             await asyncio.to_thread(
@@ -372,6 +432,20 @@ class TradingBot(discord.Client):
                 name="reconcile",
                 description="Compare bot positions against the Schwab account",
                 callback=self._reconcile_command,
+            )
+        )
+        self.tree.add_command(
+            app_commands.Command(
+                name="halt",
+                description="Stop all new order submissions (durable, all processes)",
+                callback=self._halt_command,
+            )
+        )
+        self.tree.add_command(
+            app_commands.Command(
+                name="resume",
+                description="Re-enable order submissions after a halt",
+                callback=self._resume_command,
             )
         )
         await self.tree.sync()
@@ -541,6 +615,65 @@ class TradingBot(discord.Client):
         view = ApproveRejectView(rec_id, ticker, price or 0.0, self.config)
         msg = await _send_message(channel, embed, view)
         return str(msg.id)
+
+    async def _halt_command(self, interaction, reason: str = "no reason given") -> None:
+        """/halt — stop new order submissions, durably and across processes.
+
+        Order of operations matters. The halt is PERSISTED FIRST, then the gate
+        is awaited. Doing it the other way round would leave trading enabled
+        for as long as an in-flight broker call takes, which is exactly the
+        window an operator is trying to close. Persisting first means even a
+        /halt still queued behind a slow submission has already stopped the
+        next one.
+
+        Awaiting the gate afterwards is what lets the reply be truthful: it
+        returns only once no submission is mid-flight.
+        """
+        if not is_authorized(self.config, interaction.user.id):
+            logger.warning("Unauthorized /halt from user %s", interaction.user.id)
+            await interaction.response.send_message(
+                "You are not authorized to halt trading.", ephemeral=True
+            )
+            return
+
+        actor = f"discord:{interaction.user.id}"
+        await asyncio.to_thread(
+            kill_switch.halt, self.config.db_path, actor, reason
+        )
+        await interaction.response.send_message(
+            f"Trading HALTED by <@{interaction.user.id}> ({reason}). "
+            "Waiting for any in-flight submission to finish..."
+        )
+
+        async with kill_switch.submission_gate():
+            pass  # returns once nothing is mid-flight
+
+        await interaction.followup.send(
+            "Halt complete: no submission is in flight. Note this cannot recall "
+            "orders the broker has **already** accepted — check open orders in "
+            "Schwab for anything outstanding. /resume re-enables trading."
+        )
+
+    async def _resume_command(self, interaction, reason: str = "no reason given") -> None:
+        """/resume — re-enable submissions.
+
+        Guarded by the same allowlist as /halt. A switch anyone can clear
+        protects nothing.
+        """
+        if not is_authorized(self.config, interaction.user.id):
+            logger.warning("Unauthorized /resume from user %s", interaction.user.id)
+            await interaction.response.send_message(
+                "You are not authorized to resume trading.", ephemeral=True
+            )
+            return
+
+        actor = f"discord:{interaction.user.id}"
+        await asyncio.to_thread(
+            kill_switch.resume, self.config.db_path, actor, reason
+        )
+        await interaction.response.send_message(
+            f"Trading RESUMED by <@{interaction.user.id}> ({reason})."
+        )
 
     async def _deliver_ops_alert(self, alert_id: int, message: str) -> bool:
         """Attempt delivery of one already-persisted alert. True if it landed.

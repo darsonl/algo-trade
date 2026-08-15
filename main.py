@@ -13,6 +13,7 @@ import yfinance as yf
 
 from config import Config
 from database.models import initialize_db
+from risk import kill_switch
 from database import queries
 from screener.universe import get_watchlist, get_top_sp500_by_fundamentals, get_universe, partition_watchlist
 from screener.fundamentals import passes_fundamental_filter, fetch_fundamental_info, fetch_eps_data, normalize_dividend_yield
@@ -701,6 +702,11 @@ def main() -> None:
     logging.root.addHandler(_stream_handler)
 
     initialize_db(config.db_path)
+
+    # Seeds only a database that has never been written; a persisted halt wins
+    # over TRADING_ENABLED, so a restart cannot quietly re-arm the bot.
+    state = kill_switch.init(config.db_path, config.trading_enabled)
+    logger.info("Kill switch state at startup: %s", state)
 
     bot = TradingBot(config)
     bot._scan_callback = lambda: run_scan(bot, config)

@@ -99,7 +99,10 @@ def test_a_fresh_database_gets_every_ledger_table():
     conn = sqlite3.connect(DB_PATH)
     tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     conn.close()
-    assert {"orders", "order_resolution_events", "ops_alerts"} <= tables
+    assert {
+        "orders", "order_resolution_events", "ops_alerts",
+        "kill_switch", "kill_switch_events",
+    } <= tables
 
 
 def _tables() -> set[str]:
@@ -107,6 +110,38 @@ def _tables() -> set[str]:
     names = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     conn.close()
     return names
+
+
+def test_kill_switch_tables_are_added_to_an_existing_database():
+    """An existing deployment must gain the switch, not silently lack it.
+
+    Absent tables read as UNINITIALIZED, which is not-enabled, so the failure
+    mode here is refusing to trade rather than trading unguarded — but an
+    operator still needs /halt to work after an upgrade.
+    """
+    _legacy_db_with_one_order()
+    assert "kill_switch" not in _tables()
+
+    initialize_db(DB_PATH)
+
+    assert {"kill_switch", "kill_switch_events"} <= _tables()
+
+
+def test_a_persisted_halt_survives_a_later_initialize_db():
+    """Startup runs initialize_db. It must never reset an operator's halt."""
+    initialize_db(DB_PATH)
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        conn.execute(
+            "INSERT INTO kill_switch (id, state, actor, reason) "
+            "VALUES (1, 'HALTED', 'operator', 'incident')"
+        )
+        conn.commit()
+
+    initialize_db(DB_PATH)
+
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        state = conn.execute("SELECT state FROM kill_switch WHERE id = 1").fetchone()[0]
+    assert state == "HALTED"
 
 
 def test_ops_alerts_table_is_added_to_an_existing_database():
