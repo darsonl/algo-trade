@@ -73,6 +73,12 @@ class Config:
     # operator's halt at the next restart. Defaults to false so a brand-new
     # deployment must be armed deliberately with /resume.
     trading_enabled: bool = _env_bool("TRADING_ENABLED", "false")
+    # How far THROUGH the bid a marketable sell is priced. It bounds how bad
+    # the fill may be, not whether it happens.
+    approval_slippage_buffer_pct: float = _env_float("APPROVAL_SLIPPAGE_BUFFER_PCT", "0.5")
+    # A quote older than this is refused rather than priced against. A stale
+    # quote is more dangerous than a missing one because it looks usable.
+    quote_max_age_s: int = _env_int("QUOTE_MAX_AGE_S", "30")
 
     anthropic_api_key: str = _env_str("ANTHROPIC_API_KEY")
 

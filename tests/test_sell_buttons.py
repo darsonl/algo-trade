@@ -112,8 +112,8 @@ async def test_sell_approve_sends_confirmation_message(config, mock_interaction,
 
 
 @pytest.mark.asyncio
-@patch("discord_bot.bot.place_sell_order", return_value="ORDER123")
-async def test_sell_approve_live_calls_place_sell_order(mock_place, db_path, mock_interaction):
+@patch("discord_bot.bot.place_marketable_sell_order", return_value="ORDER123")
+async def test_sell_approve_live_calls_place_marketable_sell_order(mock_place, db_path, mock_interaction):
     c = Config()
     c.db_path = db_path
     c.dry_run = False
@@ -123,7 +123,7 @@ async def test_sell_approve_live_calls_place_sell_order(mock_place, db_path, moc
 
     await _get_approve_callback(view)(view, mock_interaction, MagicMock())
 
-    mock_place.assert_called_once_with("AAPL", 10, c)
+    mock_place.assert_called_once_with("AAPL", 10, c)  # marketable limit, priced through the bid
 
 
 @pytest.mark.asyncio
@@ -168,14 +168,14 @@ async def test_sell_reject_position_stays_open(config, mock_interaction, db_path
 
 
 @pytest.mark.asyncio
-async def test_sell_approve_dry_run_does_not_call_place_sell_order(
+async def test_sell_approve_dry_run_does_not_call_place_marketable_sell_order(
     config, mock_interaction, db_path
 ):
     rec_id = create_recommendation(db_path, "AAPL", "SELL", "Overbought", 170.0, None, None)
     create_position(db_path, "AAPL", 10, 150.0)
     view = SellApproveRejectView(rec_id, "AAPL", 10.0, 170.0, config)
 
-    with patch("discord_bot.bot.place_sell_order") as mock_place:
+    with patch("discord_bot.bot.place_marketable_sell_order") as mock_place:
         await _get_approve_callback(view)(view, mock_interaction, MagicMock())
         mock_place.assert_not_called()
 
@@ -231,7 +231,7 @@ async def test_sell_approve_double_click_records_one_trade(config, mock_interact
 
 
 @pytest.mark.asyncio
-@patch("discord_bot.bot.place_sell_order", side_effect=RuntimeError("Schwab down"))
+@patch("discord_bot.bot.place_marketable_sell_order", side_effect=RuntimeError("Schwab down"))
 async def test_sell_approve_order_failure_reopens_recommendation(mock_place, db_path, mock_interaction):
     """Failed sell order: status back to pending, position still open, no trade recorded."""
     c = Config()
