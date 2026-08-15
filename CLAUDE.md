@@ -5,18 +5,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Commands
 
 ```bash
-# Install dependencies (requirements.txt is a generated lock — see note below)
-pip install -r requirements.txt
+# ALWAYS work inside .venv. It is pinned to Python 3.12 to match CI, and it is
+# the only environment where requirements.txt is installable — see below.
+uv venv --python 3.12 .venv                 # first time only
+uv pip install --python .venv/Scripts/python.exe -r requirements.txt
 
 # Update dependencies: edit requirements.in (direct deps only), then regenerate
 # the fully-pinned lock with uv. Never hand-edit requirements.txt.
 #   uv pip compile requirements.in --universal --python-version 3.11 -o requirements.txt
 
 # Run the bot (opens browser on first run for Schwab OAuth2)
-python main.py
+.venv/Scripts/python.exe main.py
 
 # Run all tests
-pytest
+.venv/Scripts/python.exe -m pytest
 
 # Run a single test file
 pytest tests/test_screener_technicals.py
@@ -27,6 +29,22 @@ pytest -v
 # Run a single test by name
 pytest tests/test_analyst_claude.py::test_parse_buy_signal -v
 ```
+
+### Why the venv is not optional
+
+The machine's only system Python is **3.14**, and the lock pins `pandas==2.2.3`, which
+publishes no cp314 wheel (cp39–cp313 only). Installing the lock into system Python therefore
+cannot succeed, and `pip install` outside the venv silently resolves *forward* instead — which
+is how 36 of 77 pins came to drift, including pandas to a major version ahead (3.0.1),
+`anthropic` 0.40.0 → 0.86.0, and `pytest-asyncio` across its 0.x → 1.x breaking change.
+
+That drift meant local tests and CI were two different experiments, and it hid a real bug:
+`get_positions` referenced `schwab.Client`, which does not exist in schwab-py 1.5.1, so
+reconciliation raised on every call for months. Nothing caught it — CI was green because no
+test exercised the function, and `main.py` swallowed the exception into a log warning.
+
+`.venv` on 3.12 matches CI exactly (verified: 75 pins, 0 drifted). Keep it that way.
+**Never `pip install` into system Python for this project.**
 
 ## Architecture
 

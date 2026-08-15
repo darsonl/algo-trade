@@ -9,7 +9,11 @@
 # and Python 3.11+ (CI runs Linux on 3.11 and 3.12); --python-version sets the floor.
 # CI itself needs no uv — it just runs `pip install -r requirements.txt`.
 
-schwab-py==1.4.0
+# 1.5.1: what the bot actually runs, and the version every schwab-py API fact in
+# the Phase 0 / Phase 1 design docs was verified against (get_order,
+# get_orders_for_account, cancel_order, equity_sell_limit, and the status enum
+# spelling CANCELED with one L plus a literal UNKNOWN member).
+schwab-py==1.5.1
 anthropic==0.40.0
 openai>=2.0.0    # match CI's pre-lock 2.x resolution; uv --universal otherwise undershoots to 1.x (code uses the stable chat.completions client)
 discord.py==2.4.0

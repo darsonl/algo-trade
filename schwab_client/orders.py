@@ -1,7 +1,7 @@
 from __future__ import annotations
 import logging
 
-import schwab
+from schwab.client import Client as SchwabClient
 from schwab.orders.equities import equity_buy_limit, equity_buy_market, equity_sell_market
 from schwab.orders.common import Duration
 from tenacity import retry, stop_after_attempt, wait_exponential
@@ -13,6 +13,17 @@ _retry = retry(
     stop=stop_after_attempt(3),
     reraise=True,
 )
+
+
+def _checked(resp):
+    """Validate the transport before anything parses the payload.
+
+    A JSON error body is structurally a valid dict, so parsing first and
+    inspecting later lets a 401/429/500 masquerade as data. Every broker READ
+    goes through here.
+    """
+    resp.raise_for_status()
+    return resp.json()
 
 
 def build_market_buy(ticker: str, shares: int) -> dict:
@@ -44,11 +55,18 @@ def parse_positions(account_response: dict) -> list[dict]:
     asset_type is the Schwab instrument assetType (e.g. 'EQUITY', 'CASH_EQUIVALENT'),
     or '' when absent — reconciliation uses it to ignore cash/sweep instruments.
     """
-    raw_positions = (
-        account_response
-        .get("securitiesAccount", {})
-        .get("positions", [])
-    )
+    account = account_response.get("securitiesAccount")
+    if not isinstance(account, dict):
+        # An HTTP error body is a valid dict too. Without this check its missing
+        # keys flow through the .get() chain below and come out as [] — "the
+        # account holds nothing" — which makes a broker outage look like a clean
+        # empty account and OPENS the exposure and holdings guards.
+        raise ValueError(
+            "Schwab account response has no 'securitiesAccount' object; "
+            f"got keys {sorted(account_response)!r}"
+        )
+
+    raw_positions = account.get("positions", [])
     result = []
     for pos in raw_positions:
         instrument = pos.get("instrument", {})
@@ -141,6 +159,6 @@ def get_positions(config, client=None) -> list[dict]:
 
     resp = client.get_account(
         config.schwab_account_hash,
-        fields=[schwab.Client.Account.Fields.POSITIONS],
+        fields=[SchwabClient.Account.Fields.POSITIONS],
     )
-    return parse_positions(resp.json())
+    return parse_positions(_checked(resp))

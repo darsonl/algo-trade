@@ -134,6 +134,13 @@ async def run_reconciliation(bot: TradingBot, config: Config, alert_on_discrepan
     except Exception as exc:
         msg = f"Reconciliation failed: could not fetch Schwab positions ({exc})."
         logger.warning(msg)
+        # This is the RISK-05 safety monitor. A failure to RUN is not the same as
+        # a clean result, and staying quiet about it manufactures confidence:
+        # get_positions raised on every call for months and nothing surfaced it.
+        # Gated on alert_on_discrepancy so /reconcile, which renders this string
+        # itself, does not also post it.
+        if alert_on_discrepancy:
+            await bot.send_ops_alert(msg)
         return msg
 
     db_rows = await asyncio.to_thread(queries.get_open_positions, config.db_path)

@@ -13,15 +13,38 @@
 **Revision note (v2):** v1 was reviewed externally and had four Critical and five High defects,
 all fixed here. See "What v2 changes" below.
 
+---
+
+> ## ⚠️ Split 2026-08-15 — read before executing any task
+>
+> Review round 4 of the Phase 1 safety spec found that **Phase 1 cannot be implemented until
+> the `orders` table exists** — six of its ten Critical findings reduce to that one fact. This
+> plan's Global Constraints previously asserted the opposite ("Phase 1 must land first"). The
+> dependency runs the other way, and this plan is now executed in three pieces:
+>
+> | Task | Executed under | Note |
+> |---|---|---|
+> | **1, 2, 4** | **`plans/2026-08-15-phase0-order-ledger-foundation.md`** | Adopted as written **plus that document's Deltas 1–5**. Do not execute them from here. |
+> | **6** | **Phase 1** (`specs/2026-08-14-live-trading-safety-design.md`) | **Do not execute as written — it is defective.** See the note on Task 6 below. |
+> | **8** | **Phase 1** | It is a preflight guard input, and round-4 finding 9 changes what it must read. |
+> | **3, 5, 7, 9** | This plan, after Phase 1 | Fill application, poller, scheduling, docs. Unchanged. |
+>
+> New sequence: **Phase 0 → Phase 1 → the remainder of this plan.**
+
 ## Global Constraints
 
 - Python 3.11; SQLite via `database/models.py:get_cursor` — never open raw connections
 - All broker I/O inside async functions wrapped in `await asyncio.to_thread(...)`
 - Tests set `config.dry_run = True` or patch the broker call; the suite never reaches live Schwab
-- Day-bucketing uses `'localtime'`; timestamp comparisons use bare UTC `datetime('now')`
+- **Day-bucketing uses the US market session** via `market_time.market_session_bounds_utc()`,
+  as a range predicate (`col >= ? AND col < ?`). **Neither `'localtime'` nor bare UTC** — see
+  CLAUDE.md and commit `36761da`. A v2 draft of this plan used `'localtime'`; on this UTC+8
+  host that splits one US session across two local dates and resets any daily ceiling
+  mid-session. Instant comparisons (expiry, `expires_at`) are a different thing and stay bare
+  UTC `datetime('now')`.
 - New tables via `CREATE TABLE IF NOT EXISTS`; new columns via `try: ALTER TABLE / except sqlite3.OperationalError: pass`
 - Test files use module-level `DB_PATH` with an `autouse` `fresh_db` fixture, matching `tests/test_positions.py`
-- **Prerequisite:** Phase 1 (`docs/superpowers/specs/2026-08-14-live-trading-safety-design.md`) must land first. Task 6 modifies the approval handler Phase 1 rewrites.
+- **Prerequisite (corrected 2026-08-15):** **Phase 0** (`plans/2026-08-15-phase0-order-ledger-foundation.md`) then **Phase 1** (`specs/2026-08-14-live-trading-safety-design.md`) land first, in that order. The earlier constraint here said Phase 1 must precede this plan; review round 4 established the reverse for the storage layer — Phase 1 needs the `orders` table. Task 6 does not "modify the approval handler Phase 1 rewrites"; it has **moved into** Phase 1, so exactly one document owns that handler.
 - **Prerequisite:** resolve the schwab-py pin. `requirements.txt:172` pins `1.4.0`; every API fact here was verified against `1.5.1`, which is what is installed. Bump the pin and regenerate the lock, or re-verify `get_order` and the status enum against 1.4.0.
 - Commit after every task
 
@@ -215,11 +238,28 @@ Append to `database/queries.py`:
 
 ```python
 # --- Order ledger (Workstream A) ---
+from datetime import datetime
+
+from market_time import market_session_bounds_utc
 
 OPEN_ORDER_STATUSES = ("pending_submit", "submitted", "working", "partially_filled")
+UNRESOLVED_ORDER_STATUSES = ("submit_unknown",)
 TERMINAL_ORDER_STATUSES = ("filled", "cancelled", "rejected", "submit_failed")
+
 # Statuses that still commit capital, for daily-notional and exposure reservation.
-COMMITTING_ORDER_STATUSES = OPEN_ORDER_STATUSES + ("filled",)
+# submit_unknown is included deliberately: the broker call was ambiguous, so the
+# order MAY exist and MAY have committed real capital. Assuming otherwise is the
+# fail-open direction — it lets a possibly-live $500 order count $0 against both
+# ceilings. See spec section 4.
+COMMITTING_ORDER_STATUSES = OPEN_ORDER_STATUSES + UNRESOLVED_ORDER_STATUSES + ("filled",)
+
+# Statuses that block a second buy of the same symbol (preflight guards 10/11).
+BLOCKING_ORDER_STATUSES = OPEN_ORDER_STATUSES + UNRESOLVED_ORDER_STATUSES
+
+# submit_unknown is intentionally absent from TERMINAL_ORDER_STATUSES: nothing may
+# sweep it away automatically. Only main.py::resolve_unknown_submissions clears it,
+# by querying Client.get_orders_for_account — /reconcile reads positions and cannot
+# distinguish "unfilled working order" from "no order at all".
 
 
 def create_order(
@@ -286,14 +326,26 @@ def get_order(db_path: str, order_id: int) -> dict | None:
     return dict(row) if row else None
 
 
-def get_day_notional(db_path: str) -> float:
-    """Today's committed buy notional, valued at each order's reference price.
+def get_day_notional(db_path: str, instant: datetime | None = None) -> float:
+    """This SESSION's committed buy notional, valued at each order's reference price.
 
     Reads ORDERS, not trades. Phase 1's daily ceiling must be consumed at
-    approval time: if it counted fills, several market buys could all be
-    approved before any fill was visible and jointly blow through the cap.
-    Rejected, cancelled, and never-submitted orders release their budget.
+    approval time: if it counted fills, several buys could all be approved
+    before any fill was visible and jointly blow through the cap. Rejected,
+    cancelled, and never-submitted orders release their budget.
+
+    "Today" is the US MARKET SESSION date, not the host calendar date. An
+    earlier draft of this plan used date(submitted_at,'localtime') — that is
+    the convention commit 36761da removed and CLAUDE.md now forbids. This host
+    is Asia/Taipei (UTC+8), where SCAN_TIMES=21:45,03:30 are 09:45 ET and
+    15:30 ET of ONE session but TWO local dates. A localtime bucket therefore
+    resets the ceiling mid-session and admits double MAX_DAILY_NOTIONAL_USD —
+    the same defect that was doubling ANALYST_DAILY_LIMIT to 36.
+
+    The range predicate leaves submitted_at unwrapped and so index-usable.
+    `instant` is injectable so tests can pin time without freezegun.
     """
+    start, end = market_session_bounds_utc(instant)
     placeholders = ",".join("?" for _ in COMMITTING_ORDER_STATUSES)
     with get_cursor(db_path) as conn:
         row = conn.execute(
@@ -301,8 +353,8 @@ def get_day_notional(db_path: str) -> float:
                   FROM orders
                  WHERE side = 'buy'
                    AND status IN ({placeholders})
-                   AND date(submitted_at, 'localtime') = date('now', 'localtime')""",
-            COMMITTING_ORDER_STATUSES,
+                   AND submitted_at >= ? AND submitted_at < ?""",
+            (*COMMITTING_ORDER_STATUSES, start, end),
         ).fetchone()
     return float(row["total"])
 ```
@@ -1298,6 +1350,23 @@ git commit -m "feat: poll broker orders and build positions from confirmed fills
 
 ### Task 6: Approve button creates an order before submitting
 
+> **🚫 MOVED TO PHASE 1 — DO NOT EXECUTE AS WRITTEN (round-4 finding 2).**
+>
+> The `except` branch below marks the order `submit_failed`, sets the recommendation back to
+> `pending`, and tells the operator to retry. It catches **every** exception, including a
+> timeout that fired *after* Schwab accepted the order. The next click then submits a second
+> real order for the same recommendation — the exact duplicate-submission defect the safety
+> spec removed by deleting `@_retry` from submission.
+>
+> It also branches on `config.use_limit_buy` and calls `place_order` (market), both of which
+> Phase 1 deletes.
+>
+> Rewrite it against Phase 1's classified submission outcome: only a definitive 4xx that is
+> **not** 408/429 releases the claim as `submit_failed`; timeouts, 5xx, 408, 429, and a 2xx
+> with no `Location` header become `submit_unknown` and the recommendation **stays claimed**.
+> Retained here for the order-row-before-submission structure, which is correct and is the
+> reason the row is created first.
+
 **Files:**
 - Modify: `discord_bot/bot.py` (both approval views)
 - Test: `tests/test_approve_creates_order.py`
@@ -1555,6 +1624,17 @@ git commit -m "feat: schedule the order poller on the bot event loop"
 ---
 
 ### Task 8: Exposure from broker positions and reserved orders
+
+> **➡️ MOVED TO PHASE 1**, where the preflight guards that consume it live.
+>
+> **Round-4 finding 9 changes what it must read.** As written it sources working orders from
+> the bot's own `orders` table only. This is a personal brokerage account: a manual buy placed
+> in the Schwab app can be working and unfilled, in which case broker *positions* are still
+> empty and the local ledger has no row — so guards 9/10 pass and the bot submits a second buy
+> of a symbol that already has a live order.
+>
+> Phase 1 must fetch **broker** working orders on every preflight, merge them with local
+> reservations by broker order id, and fail closed when that read fails or the two disagree.
 
 **Files:** `risk/preflight.py` (Phase 1), `discord_bot/bot.py`; Test: `tests/test_exposure_from_broker.py`
 
