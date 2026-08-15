@@ -98,6 +98,7 @@ python main.py
 | `schwab_client/auth.py` | OAuth2 via `schwab-py`, token stored at `schwab_token.json` |
 | `schwab_client/orders.py` | Market buy order construction, position parsing |
 | `schwab_client/reconcile.py` | Pure DB-vs-broker position diff (`diff_positions`) + report formatting |
+| `risk/kill_switch.py` | Durable, cross-process trading halt: persisted state, fail-closed reads, `submission_gate()`, audited transitions |
 
 ### Key Design Decisions
 
@@ -116,6 +117,10 @@ python main.py
   The scheduler itself still runs machine-local unless `SCAN_TIMEZONE` (IANA name, e.g. `America/New_York`) is set. Setting it is recommended: it would make the scan times read as market times directly.
 - **ETF bypass**: ETFs are partitioned out of the stock scan by `partition_watchlist()` using `yfinance quoteType`. They run through `run_scan_etf()` which skips `passes_fundamental_filter` entirely and uses `build_etf_prompt` (no earnings/P/E context).
 - **sell_blocked flag**: After a rejected sell, `sell_blocked=True` prevents re-triggering the sell signal for the same position on the same day. Auto-resets when RSI drops back below threshold.
+- **Kill switch is durable, cross-process, and fails closed**: state lives in the `kill_switch` table, not a module variable, because a `/halt` typed into the Discord process must stop a scan running in another one and must survive a restart. `is_enabled()` re-reads the DB on every call for that reason. Everything unknown — no row, no table, unreadable DB, unrecognised value — returns False. `TRADING_ENABLED` seeds only a database that has never been written, so a restart can never undo an operator's halt.
+- **The submission gate is an `asyncio.Lock`, never a `threading.RLock`**: an RLock is reentrant *per thread* and all coroutines share the loop thread, so `/halt` would acquire the "same gate" as an in-flight submission and walk straight into the critical section — no exclusion at all, while looking correct. It is also **one lock per running loop** (`WeakKeyDictionary`), because a module-level `asyncio.Lock` binds to the first loop that *contends* on it and raises for every loop after; `acquire()`'s uncontended fast path hides this from tests. Both behaviours are pinned by `tests/test_kill_switch_gate.py`. Do not "simplify" either.
+- **Kill switch is checked in two places on purpose**: `_call_place_order` (the sink — one choke point all three `place_*` functions pass through, so a caller that forgets the gate still fails closed) and the approval path (inside the gate, spanning the final read through dispatch). `TradingHalted` is re-raised rather than rewrapped, because a refusal is not a broker failure and "verify in Schwab" would send an operator hunting an order that was never sent.
+- **Ops alerts are a durable outbox**: `send_ops_alert` persists before delivering, so a Discord outage leaves a retryable row rather than a log line; `drain_ops_alerts` retries oldest-first at each scan start and stops at the first still-failing alert (an outage is not a per-alert condition). Neither send nor drain raises — both run inside scans that must not be aborted by their own reporting.
 - **Position reconciliation (report-only)**: `run_reconciliation()` in `main.py` compares DB open positions against the Schwab account (RISK-05: positions are recorded on order acknowledgement, not fill). Runs before each scan's sell pass and via `/reconcile`. It NEVER mutates positions — discrepancies (phantom / untracked / mismatched) are posted as ops alerts for human correction. Skipped entirely when `DRY_RUN=true` (simulated positions have no broker counterpart). Tests that call `run_scan` must set `config.dry_run = True` (or patch `main.get_positions`) so the suite never touches the live Schwab API.
 - **Config reads env at construction, not import**: `Config` fields use `field(default_factory=lambda: os.getenv(...))` (via the `_env_str/_int/_float/_bool` helpers), so `Config()` reflects the environment at call time. The old `= os.getenv(...)` defaults froze at import, forcing `importlib.reload(config)` in env-dependent tests — don't reintroduce that pattern. `test_config.py`'s reload-based USE_LIMIT_BUY tests still pass (now via construction-time reads).
 - **Analyst enrichment built only on cache miss**: in `run_scan`, the `fundamental_trend` block (`fetch_eps_data` → `quarterly_income_stmt`, a slow network call) is computed inside the cache-miss branch, after `get_cached_analysis`. A cache hit skips it. The earnings block stays *before* the cache check because `earnings_date_embed` is shown on the recommendation embed even on a hit.
@@ -144,6 +149,12 @@ MAX_POSITION_SIZE_USD=500
 
 **`analyst_calls`**: PRIMARY KEY (date, provider), call_count — daily quota tracking per provider
 
+**`orders`**: the durable order ledger — status, broker_order_id, filled_shares/notional, `fills_observed`, `predecessor_order_id`, `reserved_notional_override`
+
+**`ops_alerts`**: durable outbox — message, delivered_at (NULL = pending), attempts, last_error
+
+**`kill_switch`**: single row (CHECK id=1) holding `UNINITIALIZED`/`ENABLED`/`HALTED`; **`kill_switch_events`**: append-only transition audit
+
 ### Technical Indicator Notes
 
 `screener/technicals.py` calculates RSI using Wilder's smoothing (not simple EWM) and requires a minimum of 51 price data points (50-day MA + 1). Tests in `test_screener_technicals.py` use synthetic price series to validate RSI math directly.
@@ -156,10 +167,15 @@ MAX_POSITION_SIZE_USD=500
 - `/stats` — win rate and P&L stats for closed trades
 - `/history` — last 20 closed trades
 - `/reconcile` — compare DB open positions against the Schwab account (report-only; skipped in DRY_RUN)
+- `/halt` — stop all new order submissions (durable, cross-process; allowlisted via `OPS_USER_IDS`)
+- `/resume` — re-enable submissions after a halt (same allowlist — both directions are guarded)
 
 ### Test Suite
 
-546 tests as of 2026-08-08. Run with `pytest -q` (~35s). Key test files:
+755 tests as of 2026-08-16. Run with `.venv/Scripts/python.exe -m pytest -q` (~19s). Key test files:
+- `test_kill_switch.py` / `test_kill_switch_gate.py` / `test_kill_switch_wiring.py` / `test_halt_commands.py` — the kill switch (61 tests)
+- `test_ops_alert_outbox.py` — durable ops-alert outbox (22 tests)
+- `test_db_migrations.py` — schema upgrades against a PRE-EXISTING database
 - `test_screener_technicals.py` — RSI math with synthetic price series
 - `test_exit_signals.py` — RSI + MACD gate (16 tests, 2×2 matrix)
 - `test_sell_scan.py` — run_scan sell pass integration (9 tests)
