@@ -1,16 +1,33 @@
+import os
+import tempfile
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from discord_bot.bot import ApproveRejectView
 from config import Config
+from database.models import initialize_db
+from risk import kill_switch
 
 
 # --- helpers ---
 
-def _make_config(dry_run=True, max_usd=500.0, max_portfolio_usd=20000.0, db_path=":memory:", use_limit_buy=True):
+def _make_config(dry_run=True, max_usd=500.0, max_portfolio_usd=20000.0, db_path=None, use_limit_buy=True,
+                 trading_enabled=True):
+    """Build a Config backed by a REAL database file.
+
+    ":memory:" used to be the default here, which quietly meant "a brand new
+    empty database per connection" — fine while nothing read durable state, but
+    the kill switch does, and an empty database reads UNINITIALIZED, which is
+    not-enabled. Live-mode approvals would be blocked for the wrong reason.
+    """
     c = Config()
     c.dry_run = dry_run
     c.max_position_size_usd = max_usd
     c.max_portfolio_usd = max_portfolio_usd
+    if db_path is None:
+        db_path = os.path.join(tempfile.mkdtemp(), "test.db")
+        initialize_db(db_path)
+        kill_switch.init(db_path, env_default=trading_enabled)
     c.db_path = db_path
     c.use_limit_buy = use_limit_buy
     return c

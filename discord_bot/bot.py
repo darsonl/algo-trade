@@ -10,6 +10,8 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from config import Config
 from database import queries
 from database.models import get_cursor
+from risk import kill_switch
+from risk.kill_switch import TradingHalted
 from discord_bot.embeds import build_recommendation_embed, build_positions_embed, build_sell_embed, build_etf_recommendation_embed, build_stats_embed, build_history_embed
 from schwab_client.orders import place_limit_order, place_order, place_sell_order
 
@@ -125,16 +127,38 @@ class ApproveRejectView(discord.ui.View):
         order_type_val = "market"   # D-06: see above
         try:
             if not self.config.dry_run:
-                if self.config.use_limit_buy:
-                    order_id = await asyncio.to_thread(
-                        place_limit_order, self.ticker, shares, self.price, self.config
-                    )
-                    limit_price_val = self.price
-                    order_type_val = "limit"
-                else:
-                    order_id = await asyncio.to_thread(
-                        place_order, self.ticker, shares, self.config
-                    )
+                # The gate spans the final kill-switch read through the broker
+                # dispatch. Without it /halt could land in one of the await
+                # boundaries below: the worker reads ENABLED, /halt persists
+                # HALTED and replies "halted", and the worker submits anyway.
+                # /halt acquires the same gate, so it returns only once nothing
+                # is in flight.
+                async with kill_switch.submission_gate():
+                    kill_switch.require_enabled(self.config)
+                    if self.config.use_limit_buy:
+                        order_id = await asyncio.to_thread(
+                            place_limit_order, self.ticker, shares, self.price, self.config
+                        )
+                        limit_price_val = self.price
+                        order_type_val = "limit"
+                    else:
+                        order_id = await asyncio.to_thread(
+                            place_order, self.ticker, shares, self.config
+                        )
+        except TradingHalted as exc:
+            # Nothing was dispatched, so re-open the recommendation and say so
+            # plainly. The generic handler's "verify in Schwab" would send the
+            # operator looking for an order that was never sent.
+            await asyncio.to_thread(
+                queries.update_recommendation_status, self.config.db_path, self.rec_id, "pending"
+            )
+            logger.warning("Buy blocked for %s: %s", self.ticker, exc)
+            await interaction.followup.send(
+                f"Buy for {self.ticker} blocked: trading is halted. No order was "
+                f"sent. ({exc}) The recommendation stays open — approve again "
+                "after /resume."
+            )
+            return
         except Exception as exc:
             # Release the claim so the button can be retried after the failure.
             await asyncio.to_thread(
@@ -237,9 +261,23 @@ class SellApproveRejectView(discord.ui.View):
         order_id = None
         try:
             if not self.config.dry_run:
-                order_id = await asyncio.to_thread(
-                    place_sell_order, self.ticker, self.shares, self.config
-                )
+                # Same gate as the buy path — one switch halts both directions.
+                async with kill_switch.submission_gate():
+                    kill_switch.require_enabled(self.config)
+                    order_id = await asyncio.to_thread(
+                        place_sell_order, self.ticker, self.shares, self.config
+                    )
+        except TradingHalted as exc:
+            await asyncio.to_thread(
+                queries.update_recommendation_status, self.config.db_path, self.rec_id, "pending"
+            )
+            logger.warning("Sell blocked for %s: %s", self.ticker, exc)
+            await interaction.followup.send(
+                f"Sell for {self.ticker} blocked: trading is halted. No order was "
+                f"sent. ({exc}) The recommendation stays open — approve again "
+                "after /resume."
+            )
+            return
         except Exception as exc:
             # Release the claim so the button can be retried after the failure.
             await asyncio.to_thread(

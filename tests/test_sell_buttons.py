@@ -10,6 +10,7 @@ from database.queries import (
     get_open_positions,
 )
 from discord_bot.bot import SellApproveRejectView
+from risk import kill_switch
 import tempfile
 import os
 
@@ -18,6 +19,12 @@ import os
 def db_path():
     path = os.path.join(tempfile.mkdtemp(), "test.db")
     initialize_db(path)
+    # Seeded here rather than in the config fixture because several live-mode
+    # tests build their own Config() from this path. An unseeded switch reads
+    # UNINITIALIZED, the sink refuses, and those tests would fail for a reason
+    # unrelated to what they assert. Fail-closed behaviour has its own tests in
+    # test_kill_switch.py and test_kill_switch_wiring.py.
+    kill_switch.init(path, env_default=True)
     return path
 
 

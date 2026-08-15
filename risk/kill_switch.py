@@ -37,6 +37,15 @@ UNINITIALIZED = "UNINITIALIZED"
 ENABLED = "ENABLED"
 HALTED = "HALTED"
 
+
+class TradingHalted(RuntimeError):
+    """Raised when a submission is refused because trading is not enabled.
+
+    A distinct type because the caller must tell the operator something
+    different from a broker failure: nothing was dispatched, so "verify in
+    Schwab before retrying" would be actively misleading.
+    """
+
 # ENABLED is deliberately the only member. Anything not on this list — including
 # a state added later and not thought through — reads as "not enabled".
 _ENABLED_STATES = frozenset({ENABLED})
@@ -176,6 +185,27 @@ def resume(db_path: str, actor: str, reason: str) -> None:
     """Allow submissions again. Subject to the same authorization allowlist as
     /halt — a switch anyone can clear protects nothing."""
     _transition(db_path, ENABLED, actor, reason)
+
+
+def require_enabled(config) -> None:
+    """Raise TradingHalted unless durable state says trading is on.
+
+    The sink's guard. Takes the config rather than a db_path so a call site
+    cannot satisfy it by passing some other database, and refuses outright when
+    the config carries no db_path: with no durable state there is nothing to
+    verify, and an unverifiable switch is not an open one.
+    """
+    db_path = getattr(config, "db_path", None)
+    if not db_path:
+        raise TradingHalted(
+            "order submission blocked: config has no db_path, so the kill "
+            "switch cannot be verified"
+        )
+    if not is_enabled(db_path):
+        raise TradingHalted(
+            f"order submission blocked: trading is {get_state(db_path)} "
+            "(/resume re-enables it)"
+        )
 
 
 def get_transitions(db_path: str) -> list[dict]:
