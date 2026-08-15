@@ -54,6 +54,28 @@ async def _send_message(channel, embed, view):
     return await channel.send(embed=embed, view=view)
 
 
+def is_authorized(config, user_id: int) -> bool:
+    """Whether this Discord user may operate the kill switch.
+
+    Empty allowlist authorizes nobody. An unparseable entry is skipped rather
+    than treated as a wildcard — a typo must narrow access, never widen it.
+
+    Both /halt AND /resume are guarded. The design's first version allowlisted
+    only /halt, which protects the wrong direction: it left anyone able to
+    clear a halt in the middle of an incident.
+    """
+    allowed = set()
+    for part in str(getattr(config, "ops_user_ids", "") or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            allowed.add(int(part))
+        except ValueError:
+            logger.warning("Ignoring malformed OPS_USER_IDS entry %r", part)
+    return user_id in allowed
+
+
 def compute_share_quantity(price: float, max_position_usd: float) -> int:
     """Return how many whole shares can be bought without exceeding max_position_usd."""
     if price <= 0:
@@ -412,6 +434,20 @@ class TradingBot(discord.Client):
                 callback=self._reconcile_command,
             )
         )
+        self.tree.add_command(
+            app_commands.Command(
+                name="halt",
+                description="Stop all new order submissions (durable, all processes)",
+                callback=self._halt_command,
+            )
+        )
+        self.tree.add_command(
+            app_commands.Command(
+                name="resume",
+                description="Re-enable order submissions after a halt",
+                callback=self._resume_command,
+            )
+        )
         await self.tree.sync()
         self._register_persistent_views()
 
@@ -579,6 +615,65 @@ class TradingBot(discord.Client):
         view = ApproveRejectView(rec_id, ticker, price or 0.0, self.config)
         msg = await _send_message(channel, embed, view)
         return str(msg.id)
+
+    async def _halt_command(self, interaction, reason: str = "no reason given") -> None:
+        """/halt — stop new order submissions, durably and across processes.
+
+        Order of operations matters. The halt is PERSISTED FIRST, then the gate
+        is awaited. Doing it the other way round would leave trading enabled
+        for as long as an in-flight broker call takes, which is exactly the
+        window an operator is trying to close. Persisting first means even a
+        /halt still queued behind a slow submission has already stopped the
+        next one.
+
+        Awaiting the gate afterwards is what lets the reply be truthful: it
+        returns only once no submission is mid-flight.
+        """
+        if not is_authorized(self.config, interaction.user.id):
+            logger.warning("Unauthorized /halt from user %s", interaction.user.id)
+            await interaction.response.send_message(
+                "You are not authorized to halt trading.", ephemeral=True
+            )
+            return
+
+        actor = f"discord:{interaction.user.id}"
+        await asyncio.to_thread(
+            kill_switch.halt, self.config.db_path, actor, reason
+        )
+        await interaction.response.send_message(
+            f"Trading HALTED by <@{interaction.user.id}> ({reason}). "
+            "Waiting for any in-flight submission to finish..."
+        )
+
+        async with kill_switch.submission_gate():
+            pass  # returns once nothing is mid-flight
+
+        await interaction.followup.send(
+            "Halt complete: no submission is in flight. Note this cannot recall "
+            "orders the broker has **already** accepted — check open orders in "
+            "Schwab for anything outstanding. /resume re-enables trading."
+        )
+
+    async def _resume_command(self, interaction, reason: str = "no reason given") -> None:
+        """/resume — re-enable submissions.
+
+        Guarded by the same allowlist as /halt. A switch anyone can clear
+        protects nothing.
+        """
+        if not is_authorized(self.config, interaction.user.id):
+            logger.warning("Unauthorized /resume from user %s", interaction.user.id)
+            await interaction.response.send_message(
+                "You are not authorized to resume trading.", ephemeral=True
+            )
+            return
+
+        actor = f"discord:{interaction.user.id}"
+        await asyncio.to_thread(
+            kill_switch.resume, self.config.db_path, actor, reason
+        )
+        await interaction.response.send_message(
+            f"Trading RESUMED by <@{interaction.user.id}> ({reason})."
+        )
 
     async def _deliver_ops_alert(self, alert_id: int, message: str) -> bool:
         """Attempt delivery of one already-persisted alert. True if it landed.

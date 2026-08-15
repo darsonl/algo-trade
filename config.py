@@ -64,6 +64,15 @@ class Config:
 
     discord_token: str = _env_str("DISCORD_TOKEN")
     discord_channel_id: int = _env_int("DISCORD_CHANNEL_ID", "0")
+    # Comma-separated Discord user IDs permitted to run /halt and /resume.
+    # Empty means nobody, on purpose: the opposite default would hand the kill
+    # switch to every channel member the moment this went unconfigured.
+    ops_user_ids: str = _env_str("OPS_USER_IDS", "")
+    # Seeds the kill switch ONLY on a database that has never been written.
+    # After that the persisted state wins, so this cannot silently undo an
+    # operator's halt at the next restart. Defaults to false so a brand-new
+    # deployment must be armed deliberately with /resume.
+    trading_enabled: bool = _env_bool("TRADING_ENABLED", "false")
 
     anthropic_api_key: str = _env_str("ANTHROPIC_API_KEY")
 
