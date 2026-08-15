@@ -144,6 +144,56 @@ async def test_run_reconciliation_fetch_failure_returns_message(mock_get_positio
     bot = _make_bot()
     result = await run_reconciliation(bot, _make_config())
     assert "failed" in result.lower()
+
+
+@pytest.mark.asyncio
+@patch("main.queries.get_open_positions", return_value=[])
+@patch("main.get_positions", side_effect=RuntimeError("auth expired"))
+async def test_run_reconciliation_fetch_failure_posts_ops_alert(mock_get_positions, mock_db):
+    """A safety monitor that cannot run must say so.
+
+    This previously logged a warning and returned quietly. Reconciliation is the
+    RISK-05 monitor: silent failure manufactures confidence rather than removing
+    it, and a get_positions crash went unnoticed for months because of it.
+    """
+    bot = _make_bot()
+    await run_reconciliation(bot, _make_config())
+    bot.send_ops_alert.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@patch("main.queries.get_open_positions", return_value=[])
+@patch("main.get_positions", side_effect=RuntimeError("auth expired"))
+async def test_run_reconciliation_fetch_failure_alert_names_the_cause(mock_get_positions, mock_db):
+    """The alert must carry the error, so the channel is actionable without the logs."""
+    bot = _make_bot()
+    await run_reconciliation(bot, _make_config())
+    assert "auth expired" in bot.send_ops_alert.call_args[0][0]
+
+
+@pytest.mark.asyncio
+@patch("main.queries.get_open_positions", return_value=[])
+@patch("main.get_positions", side_effect=RuntimeError("auth expired"))
+async def test_run_reconciliation_fetch_failure_distinguishable_from_drift(
+    mock_get_positions, mock_db
+):
+    """'Could not check' must not read as 'checked and found drift'."""
+    bot = _make_bot()
+    await run_reconciliation(bot, _make_config())
+    message = bot.send_ops_alert.call_args[0][0]
+    assert "PHANTOM" not in message and "UNTRACKED" not in message
+    assert "could not" in message.lower()
+
+
+@pytest.mark.asyncio
+@patch("main.queries.get_open_positions", return_value=[])
+@patch("main.get_positions", side_effect=RuntimeError("auth expired"))
+async def test_run_reconciliation_fetch_failure_silent_when_alerts_suppressed(
+    mock_get_positions, mock_db
+):
+    """/reconcile renders the result itself, so it must not also be alerted."""
+    bot = _make_bot()
+    await run_reconciliation(bot, _make_config(), alert_on_discrepancy=False)
     bot.send_ops_alert.assert_not_awaited()
 
 
