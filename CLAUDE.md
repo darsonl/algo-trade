@@ -173,6 +173,8 @@ MAX_POSITION_SIZE_USD=500
 - `/halt` — stop all new order submissions (durable, cross-process; allowlisted via `OPS_USER_IDS`)
 - `/resume` — re-enable submissions after a halt (same allowlist — both directions are guarded)
 
+Pre-flight helper: `.venv/Scripts/python.exe scripts/check_ops_ids.py` reports the operator allowlist and the current kill-switch state, exiting non-zero if nobody is authorized. An empty or all-malformed `OPS_USER_IDS` locks you out of `/halt` **quietly**, which is why it is worth checking before startup.
+
 ### Test Suite
 
 801 tests as of 2026-08-16. Run with `.venv/Scripts/python.exe -m pytest -q` (~19s). Key test files:
