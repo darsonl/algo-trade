@@ -66,6 +66,31 @@ def claim_recommendation(db_path: str, rec_id: int, new_status: str) -> bool:
         return cursor.rowcount == 1
 
 
+def claim_recommendation_tx(
+    conn, rec_id: int, new_status: str, instant: datetime | None = None
+) -> bool:
+    """Claim a recommendation INSIDE a caller's transaction, expiry included.
+
+    Takes a `conn` rather than a db_path for the same reason the order CRUD
+    does: the cap check, this claim, and the reservation must be one
+    transaction, and a db_path-taking function opens a second connection that
+    then blocks on the caller's own write lock.
+
+    Expiry is in the SQL predicate rather than checked beforehand, so the
+    liveness test and the claim are one atomic step — a recommendation cannot
+    expire between being examined and being taken. `expires_at > now` because
+    `now >= expires_at` is expired, matching guard 3.
+    """
+    stamp = as_utc(instant).strftime("%Y-%m-%d %H:%M:%S")
+    cursor = conn.execute(
+        """UPDATE recommendations SET status = ?
+            WHERE id = ? AND status = 'pending'
+              AND (expires_at IS NULL OR expires_at > ?)""",
+        (new_status, rec_id, stamp),
+    )
+    return cursor.rowcount == 1
+
+
 def update_recommendation_status(db_path: str, rec_id: int, status: str) -> None:
     """Set the status column of recommendation rec_id to status."""
     with get_cursor(db_path) as conn:

@@ -8,11 +8,15 @@ survival.
 """
 import os
 import tempfile
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from config import Config
+from risk import kill_switch
+from risk.preflight import BrokerSnapshot
+from schwab_client.quotes import Quote
 from database.models import initialize_db
 from database.queries import (
     create_recommendation,
@@ -38,12 +42,22 @@ def db_path():
 
 @pytest.fixture
 def config(db_path):
+    # The guard table runs in dry run too, so the switch must be seeded. The
+    # old test passed only because dry_run skipped the kill-switch check
+    # entirely; a dry run that skips the guards rehearses nothing.
+    kill_switch.init(db_path, env_default=True)
     c = Config()
     c.db_path = db_path
     c.dry_run = True
     # Pin sizing so reconstruction tests don't depend on the developer's local .env.
     c.max_position_size_usd = 500.0
     c.max_portfolio_usd = 20000.0
+    c.max_daily_notional_usd = 20000.0
+    c.allowed_discord_user_ids = "1001"
+    c.discord_guild_id = 0
+    c.discord_channel_id = 0
+    c.approval_price_tolerance_pct = 2.0
+    c.approval_slippage_buffer_pct = 0.5
     return c
 
 
@@ -113,7 +127,17 @@ async def test_reconstructed_buy_view_callback_updates_db(config, db_path):
     view = build_view_for_recommendation(rec, config)
     interaction = AsyncMock()
     interaction.response = AsyncMock()
-    await view.approve.callback.callback(view, interaction, MagicMock())
+    interaction.user.id = 1001
+    interaction.guild_id = 0
+    interaction.channel_id = 0
+
+    # The rewired buy path prices against a live quote and reads the book
+    # before it will approve anything, even in dry run.
+    quote = Quote(symbol="AAPL", bid=99.5, ask=100.0, last=100.0,
+                  quote_time=datetime.now(timezone.utc))
+    with patch("discord_bot.bot.fetch_quote", return_value=quote),          patch("discord_bot.bot.collect_broker_snapshot",
+               return_value=BrokerSnapshot([], [])):
+        await view.approve.callback.callback(view, interaction, MagicMock())
 
     assert get_recommendation(db_path, rec_id)["status"] == "approved"
     assert any(p["ticker"] == "AAPL" for p in get_open_positions(db_path))

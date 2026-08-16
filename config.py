@@ -60,7 +60,6 @@ class Config:
     schwab_account_hash: str = _env_str("SCHWAB_ACCOUNT_HASH")
     paper_trading: bool = _env_bool("PAPER_TRADING", "true")
     dry_run: bool = _env_bool("DRY_RUN", "true")
-    use_limit_buy: bool = _env_bool("USE_LIMIT_BUY", "false")
 
     discord_token: str = _env_str("DISCORD_TOKEN")
     discord_channel_id: int = _env_int("DISCORD_CHANNEL_ID", "0")

@@ -14,18 +14,23 @@ Two layers, deliberately redundant:
 """
 import asyncio
 import os
+import sqlite3
 import tempfile
 import threading
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from config import Config
 from database.models import initialize_db
+from database.queries import create_recommendation
 from discord_bot.bot import ApproveRejectView, SellApproveRejectView
 from risk import kill_switch
 from risk.kill_switch import TradingHalted
+from risk.preflight import BrokerSnapshot
 from schwab_client import orders
+from schwab_client.quotes import Quote
 
 
 @pytest.fixture
@@ -35,11 +40,16 @@ def db_path():
     return path
 
 
-def _config(db_path, dry_run=False, use_limit_buy=False):
+def _config(db_path, dry_run=False):
     c = Config()
     c.db_path = db_path
     c.dry_run = dry_run
-    c.use_limit_buy = use_limit_buy
+    c.allowed_discord_user_ids = "1001"
+    c.discord_guild_id = 0
+    c.discord_channel_id = 0
+    c.max_daily_notional_usd = 20000.0
+    c.approval_price_tolerance_pct = 2.0
+    c.approval_slippage_buffer_pct = 0.5
     c.max_position_size_usd = 500.0
     c.max_portfolio_usd = 20000.0
     c.schwab_account_hash = "hash"
@@ -107,6 +117,9 @@ def test_sink_never_reaches_the_broker_when_halted(db_path):
 
 def _interaction():
     i = MagicMock()
+    i.user.id = 1001
+    i.guild_id = 0
+    i.channel_id = 0
     i.response.send_message = AsyncMock()
     i.response.defer = AsyncMock()
     i.followup.send = AsyncMock()
@@ -117,39 +130,80 @@ async def _approve(view, interaction):
     await view.approve.callback.callback(view, interaction, MagicMock())
 
 
+_NOW = datetime(2026, 8, 17, 15, 0, tzinfo=timezone.utc)   # 11:00 ET Mon
+
+
+def _buy_env():
+    """Patches the rewired buy path needs: a quote, a readable book, a clock.
+
+    The recommendation row is created for real by each test, so the claim and
+    the reservation exercise the actual transaction rather than a mock.
+    """
+    quote = Quote(symbol="AAPL", bid=99.5, ask=100.0, last=100.0,
+                  quote_time=_NOW - timedelta(seconds=1))
+    return (
+        patch("discord_bot.bot.fetch_quote", return_value=quote),
+        patch("discord_bot.bot.collect_broker_snapshot",
+              return_value=BrokerSnapshot([], [])),
+        patch("discord_bot.bot._utcnow", return_value=_NOW),
+        patch("schwab_client.auth.get_client", return_value=MagicMock()),
+    )
+
+
+def _live_recommendation(db_path, ticker="AAPL", price=100.0) -> int:
+    rec_id = create_recommendation(db_path, ticker, "BUY", "t", price, None, None)
+    expires = (_NOW + timedelta(hours=6)).strftime("%Y-%m-%d %H:%M:%S")
+    with sqlite3.connect(db_path) as conn:
+        conn.execute("UPDATE recommendations SET expires_at = ? WHERE id = ?",
+                     (expires, rec_id))
+    return rec_id
+
+
+def _rec_status(db_path, rec_id):
+    with sqlite3.connect(db_path) as conn:
+        return conn.execute("SELECT status FROM recommendations WHERE id = ?",
+                            (rec_id,)).fetchone()[0]
+
+
 @pytest.mark.asyncio
 async def test_halted_buy_approval_does_not_place_an_order(db_path):
     kill_switch.init(db_path, env_default=True)
     kill_switch.halt(db_path, actor="operator", reason="incident")
-    view = ApproveRejectView(1, "AAPL", 100.0, _config(db_path))
-    interaction = _interaction()
+    config = _config(db_path)
+    rec_id = _live_recommendation(db_path)
+    view = ApproveRejectView(rec_id, "AAPL", 100.0, config)
 
-    with (
-        patch("discord_bot.bot.place_order") as place,
-        patch("discord_bot.bot.queries") as q,
-    ):
-        q.claim_recommendation.return_value = True
-        q.get_open_positions.return_value = []
-        await _approve(view, interaction)
-
-    place.assert_not_called()
+    patches = _buy_env() + (patch("discord_bot.bot._call_place_order"),)
+    for pp in patches:
+        pp.start()
+    try:
+        await _approve(view, _interaction())
+    finally:
+        for pp in patches:
+            pp.stop()
+    # Guard 2 refuses before the reservation, so no order row exists at all.
+    with sqlite3.connect(db_path) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0] == 0
 
 
 @pytest.mark.asyncio
 async def test_halted_buy_approval_reopens_the_recommendation(db_path):
     """Nothing was submitted, so the click must be retryable after /resume."""
     kill_switch.init(db_path, env_default=False)
-    view = ApproveRejectView(7, "AAPL", 100.0, _config(db_path))
+    config = _config(db_path)
+    rec_id = _live_recommendation(db_path)
+    view = ApproveRejectView(rec_id, "AAPL", 100.0, config)
 
-    with (
-        patch("discord_bot.bot.place_order"),
-        patch("discord_bot.bot.queries") as q,
-    ):
-        q.claim_recommendation.return_value = True
-        q.get_open_positions.return_value = []
+    patches = _buy_env()
+    for pp in patches:
+        pp.start()
+    try:
         await _approve(view, _interaction())
+    finally:
+        for pp in patches:
+            pp.stop()
 
-    q.update_recommendation_status.assert_called_with(db_path, 7, "pending")
+    assert _rec_status(db_path, rec_id) == "pending"
 
 
 @pytest.mark.asyncio
@@ -159,21 +213,24 @@ async def test_halted_buy_approval_says_halted_not_check_schwab(db_path):
     That is actively misleading here: no request was ever dispatched.
     """
     kill_switch.init(db_path, env_default=False)
-    view = ApproveRejectView(1, "AAPL", 100.0, _config(db_path))
+    config = _config(db_path)
+    rec_id = _live_recommendation(db_path)
+    view = ApproveRejectView(rec_id, "AAPL", 100.0, config)
     interaction = _interaction()
 
-    with (
-        patch("discord_bot.bot.place_order"),
-        patch("discord_bot.bot.queries") as q,
-    ):
-        q.claim_recommendation.return_value = True
-        q.get_open_positions.return_value = []
+    patches = _buy_env()
+    for pp in patches:
+        pp.start()
+    try:
         await _approve(view, interaction)
+    finally:
+        for pp in patches:
+            pp.stop()
 
     sent = " ".join(
         str(c.args[0]) for c in interaction.followup.send.call_args_list if c.args
     )
-    assert "halted" in sent.lower()
+    assert "halt" in sent.lower()
     assert "verify in schwab" not in sent.lower()
 
 
@@ -181,17 +238,29 @@ async def test_halted_buy_approval_says_halted_not_check_schwab(db_path):
 async def test_enabled_buy_approval_places_the_order(db_path):
     """The guard must not block the ordinary case."""
     kill_switch.init(db_path, env_default=True)
-    view = ApproveRejectView(1, "AAPL", 100.0, _config(db_path))
+    config = _config(db_path)
+    rec_id = _live_recommendation(db_path)
+    view = ApproveRejectView(rec_id, "AAPL", 100.0, config)
 
-    with (
-        patch("discord_bot.bot.place_order", return_value="oid-1") as place,
-        patch("discord_bot.bot.queries") as q,
-    ):
-        q.claim_recommendation.return_value = True
-        q.get_open_positions.return_value = []
+    submitted = []
+
+    def _place(client, cfg, spec):
+        submitted.append(spec)
+        return MagicMock(status_code=201,
+                         headers={"Location": "https://x/orders/oid-1"})
+
+    patches = _buy_env() + (
+        patch("discord_bot.bot._call_place_order", side_effect=_place),
+    )
+    for pp in patches:
+        pp.start()
+    try:
         await _approve(view, _interaction())
+    finally:
+        for pp in patches:
+            pp.stop()
 
-    place.assert_called_once()
+    assert len(submitted) == 1
 
 
 @pytest.mark.asyncio
@@ -224,21 +293,23 @@ async def test_the_gate_is_held_across_the_broker_call(db_path):
     await boundaries, reply "halted", and let the worker submit anyway.
     """
     kill_switch.init(db_path, env_default=True)
-    view = ApproveRejectView(1, "AAPL", 100.0, _config(db_path))
+    config = _config(db_path)
+    rec_id = _live_recommendation(db_path)
+    view = ApproveRejectView(rec_id, "AAPL", 100.0, config)
     in_broker = threading.Event()
     may_return = threading.Event()
 
     def slow_place(*_args, **_kwargs):
         in_broker.set()
         may_return.wait(5)
-        return "oid-1"
+        return MagicMock(status_code=201, headers={"Location": "https://x/orders/oid-1"})
 
-    with (
-        patch("discord_bot.bot.place_order", side_effect=slow_place),
-        patch("discord_bot.bot.queries") as q,
-    ):
-        q.claim_recommendation.return_value = True
-        q.get_open_positions.return_value = []
+    patches = _buy_env() + (
+        patch("discord_bot.bot._call_place_order", side_effect=slow_place),
+    )
+    for pp in patches:
+        pp.start()
+    try:
         task = asyncio.create_task(_approve(view, _interaction()))
 
         await asyncio.to_thread(in_broker.wait, 5)
@@ -247,6 +318,9 @@ async def test_the_gate_is_held_across_the_broker_call(db_path):
 
         may_return.set()
         await task
+    finally:
+        for pp in patches:
+            pp.stop()
 
     assert held_during_dispatch is True
     assert gate.locked() is False
