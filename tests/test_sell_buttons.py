@@ -13,6 +13,9 @@ from discord_bot.bot import SellApproveRejectView
 from risk import kill_switch
 import tempfile
 import os
+from datetime import datetime, timezone
+
+from schwab_client.quotes import Quote
 
 
 @pytest.fixture
@@ -33,13 +36,36 @@ def config(db_path):
     c = Config()
     c.db_path = db_path
     c.dry_run = True
+    # The sell path runs the guard table now, so it needs an approver allowlist
+    # and the thresholds the guards read. In dry run the book the guards see is
+    # the SIMULATED one (guard_snapshot), so these tests still size against the
+    # positions they create rather than against an empty broker account.
+    c.allowed_discord_user_ids = "1001"
+    c.discord_guild_id = 0
+    c.discord_channel_id = 0
+    c.approval_slippage_buffer_pct = 0.5
+    c.approval_price_tolerance_pct = 2.0
+    c.max_daily_notional_usd = 20000.0
     return c
+
+
+@pytest.fixture(autouse=True)
+def _usable_quote():
+    """Guard 4 needs one. Without it every sell here refuses for a reason none
+    of these tests are about."""
+    quote = Quote(symbol="AAPL", bid=170.0, ask=170.2, last=170.0,
+                  quote_time=datetime.now(timezone.utc))
+    with patch("discord_bot.bot.fetch_quote", return_value=quote):
+        yield
 
 
 @pytest.fixture
 def mock_interaction():
     interaction = AsyncMock()
     interaction.response = AsyncMock()
+    interaction.user.id = 1001
+    interaction.guild_id = 0
+    interaction.channel_id = 0
     return interaction
 
 
@@ -112,18 +138,33 @@ async def test_sell_approve_sends_confirmation_message(config, mock_interaction,
 
 
 @pytest.mark.asyncio
-@patch("discord_bot.bot.place_marketable_sell_order", return_value="ORDER123")
-async def test_sell_approve_live_calls_place_marketable_sell_order(mock_place, db_path, mock_interaction):
-    c = Config()
-    c.db_path = db_path
-    c.dry_run = False
+async def test_sell_approve_live_submits_a_marketable_limit(db_path, mock_interaction, config):
+    """Was: patched `place_marketable_sell_order` and asserted its arguments.
+
+    The path no longer calls it. It prices from the quote the GUARDS already
+    saw and submits the built spec through `_call_place_order`, so the checked
+    price and the sent price cannot diverge — which they could when the
+    submission fetched a second quote of its own.
+    """
+    config.dry_run = False
     rec_id = create_recommendation(db_path, "AAPL", "SELL", "Overbought", 170.0, None, None)
     create_position(db_path, "AAPL", 10, 150.0)
-    view = SellApproveRejectView(rec_id, "AAPL", 10.0, 170.0, c)
+    view = SellApproveRejectView(rec_id, "AAPL", 10.0, 170.0, config)
 
-    await _get_approve_callback(view)(view, mock_interaction, MagicMock())
+    submitted = []
 
-    mock_place.assert_called_once_with("AAPL", 10, c)  # marketable limit, priced through the bid
+    def _place(client, cfg, spec):
+        submitted.append(spec)
+        return MagicMock(status_code=201, headers={"Location": "https://x/orders/S1"})
+
+    with patch("discord_bot.bot.collect_broker_snapshot", return_value=_broker_holding(10)), \
+         patch("discord_bot.bot._call_place_order", side_effect=_place), \
+         patch("schwab_client.auth.get_client", return_value=MagicMock()):
+        await _get_approve_callback(view)(view, mock_interaction, MagicMock())
+
+    assert len(submitted) == 1
+    assert submitted[0]["orderType"] == "LIMIT"
+    assert submitted[0]["duration"] == "DAY"
 
 
 @pytest.mark.asyncio
@@ -168,14 +209,14 @@ async def test_sell_reject_position_stays_open(config, mock_interaction, db_path
 
 
 @pytest.mark.asyncio
-async def test_sell_approve_dry_run_does_not_call_place_marketable_sell_order(
+async def test_sell_approve_dry_run_does_not_reach_the_broker(
     config, mock_interaction, db_path
 ):
     rec_id = create_recommendation(db_path, "AAPL", "SELL", "Overbought", 170.0, None, None)
     create_position(db_path, "AAPL", 10, 150.0)
     view = SellApproveRejectView(rec_id, "AAPL", 10.0, 170.0, config)
 
-    with patch("discord_bot.bot.place_marketable_sell_order") as mock_place:
+    with patch("discord_bot.bot._call_place_order") as mock_place:
         await _get_approve_callback(view)(view, mock_interaction, MagicMock())
         mock_place.assert_not_called()
 
@@ -231,17 +272,26 @@ async def test_sell_approve_double_click_records_one_trade(config, mock_interact
 
 
 @pytest.mark.asyncio
-@patch("discord_bot.bot.place_marketable_sell_order", side_effect=RuntimeError("Schwab down"))
-async def test_sell_approve_order_failure_reopens_recommendation(mock_place, db_path, mock_interaction):
-    """Failed sell order: status back to pending, position still open, no trade recorded."""
-    c = Config()
-    c.db_path = db_path
-    c.dry_run = False
+async def test_sell_approve_definitive_refusal_reopens_recommendation(db_path, mock_interaction, config):
+    """A 400 is the broker saying no. Nothing exists, so the position stays
+    open, no trade is recorded, and a human may retry.
+
+    Note this is now specifically a DEFINITIVE refusal. A timeout no longer
+    reopens: it is `submit_unknown`, and reopening would invite a second sell
+    of a position that may already be gone.
+    """
+    config.dry_run = False
     rec_id = create_recommendation(db_path, "AAPL", "SELL", "Overbought", 170.0, None, None)
     create_position(db_path, "AAPL", 10, 150.0)
-    view = SellApproveRejectView(rec_id, "AAPL", 10.0, 170.0, c)
+    view = SellApproveRejectView(rec_id, "AAPL", 10.0, 170.0, config)
 
-    await _get_approve_callback(view)(view, mock_interaction, MagicMock())
+    refusal = RuntimeError("HTTP 400")
+    refusal.response = MagicMock(status_code=400)
+
+    with patch("discord_bot.bot.collect_broker_snapshot", return_value=_broker_holding(10)), \
+         patch("discord_bot.bot._call_place_order", side_effect=refusal), \
+         patch("schwab_client.auth.get_client", return_value=MagicMock()):
+        await _get_approve_callback(view)(view, mock_interaction, MagicMock())
 
     rec = get_recommendation(db_path, rec_id)
     assert rec["status"] == "pending"
@@ -252,5 +302,12 @@ async def test_sell_approve_order_failure_reopens_recommendation(mock_place, db_
     ).fetchone()["n"]
     conn.close()
     assert count == 0
-    msg = mock_interaction.followup.send.call_args[0][0]
-    assert "failed" in msg
+
+
+def _broker_holding(shares, symbol="AAPL"):
+    from risk.preflight import BrokerSnapshot
+    return BrokerSnapshot(
+        positions=[{"symbol": symbol, "quantity": float(shares),
+                    "market_value": shares * 170.0, "avg_price": 150.0}],
+        working_orders=[],
+    )
