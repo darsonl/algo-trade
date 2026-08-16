@@ -5,6 +5,12 @@
 #
 #   uv pip compile requirements.in --universal --python-version 3.11 -o requirements.txt
 #
+# Regenerate IN PLACE, over the existing requirements.txt. uv treats the output
+# file as preferred pins and only moves what it must; compiling to a fresh path
+# instead anchors nothing and floats every unpinned floor below to latest. That
+# is not hypothetical: doing so today drifts 26 packages and takes openai from
+# 2.41.1 to 3.1.0, a major bump that swaps its HTTP stack to httpx2.
+#
 # --universal emits environment markers so the single lock is valid across OS/arch
 # and Python 3.11+ (CI runs Linux on 3.11 and 3.12); --python-version sets the floor.
 # CI itself needs no uv — it just runs `pip install -r requirements.txt`.
@@ -19,6 +25,12 @@ openai>=2.0.0    # match CI's pre-lock 2.x resolution; uv --universal otherwise 
 discord.py==2.4.0
 yfinance==1.2.0
 pandas==2.2.3
+# NYSE trading calendar (XNYS): holidays and early closes, which decide which
+# session an after-hours order is actually queued for. market_time.py avoided a
+# calendar on purpose for session *dates*; attributing an order to a *session*
+# genuinely needs one — a weekend-only rule buckets the Thursday night before
+# Good Friday into a Friday that never trades.
+exchange-calendars>=4.5
 lxml>=5.0.0
 tenacity>=8.0.0
 APScheduler==3.10.4

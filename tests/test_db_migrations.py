@@ -170,3 +170,41 @@ def test_ops_alerts_upgrade_preserves_existing_rows():
     with closing(sqlite3.connect(DB_PATH)) as conn:
         rows = conn.execute("SELECT message, delivered_at FROM ops_alerts").fetchall()
     assert rows == [("survivor", None)]
+
+
+def _legacy_db_with_a_friday_night_order():
+    """A buy entered 20:00 ET Friday 2026-08-14 (== 2026-08-15 00:00 UTC).
+
+    Its intended session is Monday 2026-08-17, which is the whole point of the
+    column: submitted_at says Friday.
+    """
+    conn = sqlite3.connect(DB_PATH)
+    conn.executescript(_LEGACY_ORDERS)
+    conn.execute(
+        """INSERT INTO orders (ticker, side, order_type, requested_shares,
+                               reference_price, submitted_at)
+           VALUES ('AAPL', 'buy', 'limit', 5.0, 100.0, '2026-08-15 00:00:00')"""
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_intended_session_date_column_is_added_to_an_existing_orders_table():
+    _legacy_db_with_a_friday_night_order()
+    assert "intended_session_date" not in _columns("orders")
+
+    initialize_db(DB_PATH)
+
+    assert "intended_session_date" in _columns("orders")
+
+
+def test_existing_rows_are_backfilled_rather_than_left_null():
+    """A NULL here would be invisible to the session-bucketed ceiling query, so
+    a legacy commitment would stop counting against the cap — failing OPEN."""
+    _legacy_db_with_a_friday_night_order()
+
+    initialize_db(DB_PATH)
+
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        value = conn.execute("SELECT intended_session_date FROM orders").fetchone()[0]
+    assert value == "2026-08-17"
