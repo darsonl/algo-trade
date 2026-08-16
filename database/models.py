@@ -1,5 +1,41 @@
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime
+
+
+def _backfill_intended_session_dates(conn) -> int:
+    """Give every pre-existing order row an intended session. Returns rows filled.
+
+    A NULL here is not a harmless gap. The daily notional ceiling equality-matches
+    this column, so a NULL row is invisible to it and its committed capital stops
+    counting against the cap -- the failure opens the guard rather than closing it,
+    which is the exact shape that made a 401 read as "the account holds nothing".
+
+    Rows whose submitted_at cannot be parsed are left NULL deliberately: inventing
+    a session for them would be the same fabrication in the other direction. They
+    are reported by the caller instead.
+    """
+    from market_time import intended_session_date
+
+    rows = conn.execute(
+        """SELECT id, submitted_at FROM orders
+            WHERE intended_session_date IS NULL AND submitted_at IS NOT NULL"""
+    ).fetchall()
+    filled = 0
+    for row in rows:
+        order_id, submitted_at = row[0], row[1]
+        try:
+            instant = datetime.strptime(str(submitted_at), "%Y-%m-%d %H:%M:%S")
+        except (TypeError, ValueError):
+            continue
+        conn.execute(
+            "UPDATE orders SET intended_session_date = ? WHERE id = ?",
+            (intended_session_date(instant).isoformat(), order_id),
+        )
+        filled += 1
+    if filled:
+        conn.commit()
+    return filled
 
 
 def get_connection(db_path: str) -> sqlite3.Connection:
@@ -156,6 +192,13 @@ def initialize_db(db_path: str) -> None:
             -- endpoint and a later empty observation is not evidence of absence.
             reserved_notional_override REAL,
             submitted_at      TEXT NOT NULL DEFAULT (datetime('now')),
+            -- The session the broker will actually run this order in, as an ET
+            -- calendar date. NOT derivable from submitted_at by a range query:
+            -- an order entered 20:00 ET Friday is submitted Friday and executes
+            -- Monday. The daily notional ceiling buckets on THIS, so that a
+            -- Friday-night order and a Monday order cannot each claim a full
+            -- allowance and then both fill against Monday's.
+            intended_session_date TEXT,
             updated_at        TEXT NOT NULL DEFAULT (datetime('now')),
             FOREIGN KEY (recommendation_id) REFERENCES recommendations(id),
             FOREIGN KEY (predecessor_order_id) REFERENCES orders(id)
@@ -276,6 +319,22 @@ def initialize_db(db_path: str) -> None:
         conn.commit()
     except sqlite3.OperationalError:
         pass  # Column already exists
+
+    try:
+        conn.execute(
+            "ALTER TABLE orders ADD COLUMN intended_session_date TEXT"
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    _backfill_intended_session_dates(conn)
+    # After the column is guaranteed to exist -- inside the schema block above
+    # this would raise "no such column" on any pre-existing database.
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_orders_side_intended_session
+               ON orders(side, intended_session_date)"""
+    )
+    conn.commit()
 
     try:
         conn.execute(

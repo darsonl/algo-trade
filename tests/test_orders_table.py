@@ -39,7 +39,8 @@ def fresh_db():
     os.remove(DB_PATH)
 
 
-def _new_order(conn, ticker="AAPL", side="buy", shares=10.0, ref=100.0, limit=100.5):
+def _new_order(conn, ticker="AAPL", side="buy", shares=10.0, ref=100.0, limit=100.5,
+               instant=None):
     return create_order(
         conn,
         recommendation_id=None,
@@ -49,6 +50,7 @@ def _new_order(conn, ticker="AAPL", side="buy", shares=10.0, ref=100.0, limit=10
         requested_shares=shares,
         reference_price=ref,
         limit_price=limit,
+        instant=instant,
     )
 
 
@@ -171,11 +173,7 @@ def test_day_notional_buckets_both_daily_scans_into_one_session():
 
     with get_cursor(DB_PATH) as conn:
         for stamp in (evening_scan, overnight_scan):
-            oid = _new_order(conn)
-            conn.execute(
-                "UPDATE orders SET submitted_at = ? WHERE id = ?",
-                (stamp.strftime("%Y-%m-%d %H:%M:%S"), oid),
-            )
+            _new_order(conn, instant=stamp)
         total = get_day_notional(conn, instant=overnight_scan)
     assert total == pytest.approx(2010.0)
 
@@ -185,11 +183,7 @@ def test_day_notional_ignores_a_previous_session():
     last_week = datetime(2026, 8, 10, 13, 45, tzinfo=timezone.utc)
     now = datetime(2026, 8, 17, 19, 30, tzinfo=timezone.utc)
     with get_cursor(DB_PATH) as conn:
-        oid = _new_order(conn)
-        conn.execute(
-            "UPDATE orders SET submitted_at = ? WHERE id = ?",
-            (last_week.strftime("%Y-%m-%d %H:%M:%S"), oid),
-        )
+        _new_order(conn, instant=last_week)
         assert get_day_notional(conn, instant=now) == 0.0
 
 

@@ -10,7 +10,12 @@ from database.order_accounting import (
     order_commitment,
     remaining_buy_reservation,
 )
-from market_time import market_session_bounds_utc, market_session_date
+from market_time import (
+    as_utc,
+    intended_session_date,
+    market_session_bounds_utc,
+    market_session_date,
+)
 from schwab_client.order_payload import extract_fills, extract_replacement
 
 
@@ -405,19 +410,30 @@ def create_order(
     requested_shares: float,
     reference_price: float,
     limit_price: float | None = None,
+    instant: datetime | None = None,
 ) -> int:
     """Insert a 'pending_submit' order and return its id.
 
     Called BEFORE the broker request. If the process dies between this insert
     and the broker response, the row survives and the order is recoverable; the
     reverse order can leave a real position with no ledger entry at all.
+
+    Stamps intended_session_date at insert time, because it is a fact about the
+    submission instant and nothing later can recover it: once the row is written,
+    "which session was this heading for" is no longer derivable from a status.
+    submitted_at is written from the same instant rather than left to SQLite's
+    default, so the two can never describe different moments.
     """
+    stamped = as_utc(instant)
     cur = conn.execute(
         """INSERT INTO orders (recommendation_id, ticker, side, order_type,
-                               requested_shares, reference_price, limit_price)
-           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                               requested_shares, reference_price, limit_price,
+                               submitted_at, intended_session_date)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (recommendation_id, ticker, side, order_type,
-         requested_shares, reference_price, limit_price),
+         requested_shares, reference_price, limit_price,
+         stamped.strftime("%Y-%m-%d %H:%M:%S"),
+         intended_session_date(stamped).isoformat()),
     )
     return cur.lastrowid
 
@@ -486,22 +502,27 @@ def get_orders_by_status(conn, statuses: tuple[str, ...]) -> list[dict]:
 
 
 def get_day_notional(conn, instant: datetime | None = None) -> float:
-    """This SESSION's committed buy notional.
+    """The committed buy notional of the session `instant` would trade in.
 
-    "Today" is the US market session date, never the host calendar date: on a
-    UTC+8 host the 21:45 and 03:30 scans are one session but two local dates, so
-    a localtime bucket resets the ceiling mid-session.
+    "Today" is the US market session, never the host calendar date: on a UTC+8
+    host the 21:45 and 03:30 scans are one session but two local dates, so a
+    localtime bucket resets the ceiling mid-session.
+
+    Buckets on intended_session_date, NOT on a submitted_at range (round-5 #7).
+    A submitted_at range answers "entered during Friday", but an order entered
+    20:00 ET Friday executes Monday. Bucketing on entry let Friday night and
+    Monday each draw a full allowance against Monday's single real ceiling.
 
     Every buy row in the session is summed through order_commitment rather than
     filtered by status, because status alone cannot answer how much capital an
     order holds — a partially filled then cancelled order is terminal and still
     committed.
     """
-    start, end = market_session_bounds_utc(instant)
+    session = intended_session_date(instant).isoformat()
     rows = conn.execute(
         """SELECT * FROM orders
-            WHERE side = 'buy' AND submitted_at >= ? AND submitted_at < ?""",
-        (start, end),
+            WHERE side = 'buy' AND intended_session_date = ?""",
+        (session,),
     ).fetchall()
     return sum(order_commitment(dict(r)) for r in rows)
 
