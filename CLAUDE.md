@@ -135,6 +135,7 @@ python main.py
   `notional` is the **unfilled remainder** at the limit — the filled part is already in market value, and reserving it twice double-charges. An unpriceable live buy (market order, or a zero/absent limit) **raises** rather than being skipped: skipping is how a live order comes to reserve nothing. `broker_order_id` is stringified so guard 9's merge actually matches ledger rows.
 
   `collect_broker_snapshot()` composes both reads and fails **closed**: each failure becomes `None`, never `[]`, and it never raises — the guards, not an exception, must adjudicate a broker outage.
+- **Order submission is never retried; its outcome is classified**: `_dispatch` submits **exactly once** and must never carry `@_retry`. A timeout *after* Schwab accepts is an UNKNOWN outcome, not a failure, and the Schwab order API has **no idempotency key** — so a retry is a second chance to buy the same stock, and the duplicate is a real position nobody approved. `classify_submission` splits the outcomes: 2xx+`Location` → `submitted`; 2xx without one → `submit_unknown` (accepted but unidentifiable); 4xx **other than 408/429** → `submit_failed`; 408/429/5xx/timeout/anything unrecognised → `submit_unknown`. **Only `submit_failed` releases capital** (`SubmissionOutcome.reserves_capital`) — an order we cannot account for may still fill, and releasing its reservation lets the next approval spend the same dollars twice. The unrecognised-error default is `submit_unknown` on purpose.
 - **Kill switch is checked in two places on purpose**: `_call_place_order` (the sink — one choke point all three `place_*` functions pass through, so a caller that forgets the gate still fails closed) and the approval path (inside the gate, spanning the final read through dispatch). `TradingHalted` is re-raised rather than rewrapped, because a refusal is not a broker failure and "verify in Schwab" would send an operator hunting an order that was never sent.
 - **Sells are marketable limits priced through the bid; buys stay passive**: `place_marketable_sell_order` fetches a validated quote and prices `bid * (1 - APPROVAL_SLIPPAGE_BUFFER_PCT/100)`, rounded **down** to the tick (lower = more marketable for a sell), as a **DAY** order. Buys keep `quote * (1 + buffer)` **GTC**. The asymmetry is deliberate — a missed buy costs an opportunity, a missed sell holds the position through the decline the signal fired on. **This becomes wrong if the sell trigger stops being a momentum exit.**
 - **Quote parsing has no defaults, and there is no market-order fallback**: every field in `parse_quote` is mandatory and every failure raises, because `.get("bidPrice", 0)` on an error body prices a sell at give-it-away — the same shape that made `get_positions` read a 401 as "the account holds nothing". Staleness is enforced separately (`QUOTE_MAX_AGE_S`) since a stale quote looks usable; `age_seconds` clamps at zero so clock skew cannot fake freshness. No usable quote means **no sell** — the recommendation re-opens for a human.
@@ -192,11 +193,12 @@ Pre-flight helper: `.venv/Scripts/python.exe scripts/check_ops_ids.py` reports t
 
 ### Test Suite
 
-908 tests as of 2026-08-16. Run with `.venv/Scripts/python.exe -m pytest -q` (~20s). Key test files:
+931 tests as of 2026-08-16. Run with `.venv/Scripts/python.exe -m pytest -q` (~22s). Key test files:
 - `test_kill_switch.py` / `test_kill_switch_gate.py` / `test_kill_switch_wiring.py` / `test_halt_commands.py` — the kill switch (61 tests)
 - `test_quotes.py` / `test_marketable_sells.py` — validated quotes + sell pricing (46 tests)
 - `test_ops_alert_outbox.py` — durable ops-alert outbox (22 tests)
 - `test_preflight.py` — the 12-guard approval table, including the two ordering rules (46 tests, zero mocks)
+- `test_submission_outcomes.py` — submission is never retried, and its outcome is classified (23 tests)
 - `test_working_orders.py` — broker working orders: the terminal-status allowlist, unpriceable orders, and the fail-closed snapshot (42 tests)
 - `test_intended_session_attribution.py` / `test_market_time.py` — session attribution: the ceiling buckets on the session an order *executes* in, not the one it was entered in (round-5 #7)
 - `test_db_migrations.py` — schema upgrades against a PRE-EXISTING database

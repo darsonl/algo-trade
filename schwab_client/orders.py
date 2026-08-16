@@ -1,10 +1,10 @@
 from __future__ import annotations
 import logging
+from dataclasses import dataclass
 
 from schwab.client import Client as SchwabClient
 from schwab.orders.equities import equity_buy_limit, equity_buy_market, equity_sell_limit, equity_sell_market
 from schwab.orders.common import Duration
-from tenacity import retry, stop_after_attempt, wait_exponential
 
 from risk import kill_switch
 from risk.kill_switch import TradingHalted
@@ -12,13 +12,6 @@ from schwab_client.order_payload import parse_working_orders
 from schwab_client.quotes import fetch_quote, marketable_sell_limit
 
 logger = logging.getLogger(__name__)
-
-_retry = retry(
-    wait=wait_exponential(multiplier=1, min=2, max=30),
-    stop=stop_after_attempt(3),
-    reraise=True,
-)
-
 
 def _checked(resp):
     """Validate the transport before anything parses the payload.
@@ -151,16 +144,115 @@ def _call_place_order(client, config, spec) -> object:
     switch while no term for it existed in the predicate, and /halt during a
     pending approval did nothing.
 
-    The check sits OUTSIDE the retry deliberately — a halt is a decision, not a
-    transient fault, and retrying it three times would only delay the refusal.
+    There is no retry here to sit outside of any more: `_dispatch` submits
+    exactly once (§3). A halt was never a transient fault worth re-attempting,
+    and neither is a submission whose outcome we cannot see.
     """
     kill_switch.require_enabled(config)
     return _dispatch(client, config.schwab_account_hash, spec)
 
 
-@_retry
 def _dispatch(client, account_hash: str, spec) -> object:
+    """Submit once. NEVER retried, and never decorated with `@_retry`.
+
+    A timeout after Schwab accepts an order is an UNKNOWN outcome, not a
+    failure. The Schwab order API has no idempotency key, so a retry is a
+    second chance to buy the same stock — and the duplicate is a real position
+    nobody approved. Ambiguity is resolved by `classify_submission` and, when
+    it stays ambiguous, by a human through /resolve.
+
+    Reads may be retried; submission may not. That asymmetry is the whole point.
+    """
     return client.place_order(account_hash, spec)
+
+
+@dataclass(frozen=True)
+class SubmissionOutcome:
+    status: str
+    broker_order_id: str | None
+    message: str
+
+    @property
+    def reserves_capital(self) -> bool:
+        """Only a definitive refusal releases the ceiling it claimed.
+
+        An order we cannot account for may exist and may fill. Releasing its
+        capital lets the next approval spend the same dollars twice.
+        """
+        return self.status != "submit_failed"
+
+
+# 4xx statuses that say nothing about whether the order landed. 408 is a
+# timeout and 429 is a rate limit; both can arrive after Schwab has already
+# accepted the order, so neither is a definitive refusal.
+_AMBIGUOUS_4XX = frozenset({408, 429})
+
+
+def _status_code(error) -> int | None:
+    response = getattr(error, "response", None)
+    code = getattr(response, "status_code", None)
+    return code if isinstance(code, int) else None
+
+
+def classify_submission(response=None, error=None) -> SubmissionOutcome:
+    """Decide what a submission attempt actually did (spec v4 §3).
+
+    v2 mapped every submission exception to `submit_unknown`. That is
+    over-broad: a definitive HTTP rejection is not ambiguous, and treating it
+    as unknown reserves capital that was never committed. The split is:
+
+      2xx + Location      accepted and identifiable   -> submitted
+      2xx, no Location    accepted, unidentifiable    -> submit_unknown
+      4xx not 408/429     definitively refused        -> submit_failed
+      408, 429, any 5xx   may or may not have landed  -> submit_unknown
+      timeout / transport may or may not have landed  -> submit_unknown
+      anything unrecognised                           -> submit_unknown
+
+    The default is `submit_unknown` on purpose. An outcome this function cannot
+    classify might still have placed an order.
+    """
+    if response is None and error is None:
+        raise ValueError("classify_submission needs either a response or an error")
+
+    if response is not None:
+        location = (getattr(response, "headers", {}) or {}).get("Location", "")
+        broker_order_id = location.rstrip("/").split("/")[-1] if location else ""
+        if broker_order_id:
+            return SubmissionOutcome(
+                status="submitted",
+                broker_order_id=broker_order_id,
+                message=f"Order {broker_order_id} accepted.",
+            )
+        return SubmissionOutcome(
+            status="submit_unknown",
+            broker_order_id=None,
+            message=_UNKNOWN_MESSAGE.format(
+                detail="the broker accepted the order but did not return an id"
+            ),
+        )
+
+    code = _status_code(error)
+    if code is not None and 400 <= code < 500 and code not in _AMBIGUOUS_4XX:
+        return SubmissionOutcome(
+            status="submit_failed",
+            broker_order_id=None,
+            message=f"The broker refused the order (HTTP {code}). Nothing was placed.",
+        )
+
+    detail = f"HTTP {code}" if code is not None else f"{type(error).__name__}: {error}"
+    return SubmissionOutcome(
+        status="submit_unknown",
+        broker_order_id=None,
+        message=_UNKNOWN_MESSAGE.format(detail=detail),
+    )
+
+
+_UNKNOWN_MESSAGE = (
+    "The broker call failed after submission ({detail}). The order may or may "
+    "not exist at Schwab. Its capital stays reserved against your ceilings and "
+    "the symbol is blocked for new buys until this is settled — run /resolve, "
+    "or check Schwab directly."
+)
 
 
 def place_order(ticker: str, shares: int, config, client=None) -> str:
