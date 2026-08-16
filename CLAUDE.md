@@ -101,6 +101,7 @@ python main.py
 | `risk/kill_switch.py` | Durable, cross-process trading halt: persisted state, fail-closed reads, `submission_gate()`, audited transitions |
 | `risk/preflight.py` | The 12-guard approval table (`evaluate_trade`, `check_authorization`) + the `Quote`/`TradeRequest`/`Decision`/`BrokerSnapshot` types. Pure: no network, no DB, no clock, no mocks needed |
 | `schwab_client/quotes.py` | Validated bid/ask (`parse_quote`, `fetch_quote`) + `marketable_sell_limit` pricing |
+| `schwab_client/order_payload.py` | Pure Schwab-payload parsing: fills, replacements, `parse_working_orders` + `TERMINAL_BROKER_STATUSES` |
 
 ### Key Design Decisions
 
@@ -129,6 +130,11 @@ python main.py
 - **The preflight guard table is ordered, and the order is load-bearing**: `risk/preflight.py` runs 12 guards and returns the first rejection. **Guard 1 (`unauthorized`) is first** so a rejection message cannot be used as a side channel into the book — an unauthorized clicker must not be able to distinguish a halted bot from a blown ceiling. **Guard 5 (`broker_unavailable`) precedes every guard that consumes broker data**; if it ran after guard 9, exposure would already have been evaluated against an empty list and a broker outage would *open* the ceiling. `None` and `[]` are different inputs throughout (`BrokerSnapshot.readable`): None means the read failed, `[]` means it succeeded and there is nothing. Removing guard 5 was verified to leave no clean refusal at all, only a `TypeError`.
 
   The module is **pure** — no network, DB, clock, or Discord — so all 46 tests run with zero mocks. Two deliberate departures from spec §8 keep it that way: `trading_enabled` is passed in rather than read via `kill_switch.is_enabled()` (the *authoritative* read stays inside `submission_gate()`, where it must be; guard 2 is only the early friendly rejection), and broker reads arrive as one `BrokerSnapshot` so "the read failed" has exactly one representation. Guards 7–9 price at the **limit**, never the scan price or the raw quote, so each ceiling is checked against the most the order can cost. Guard 4 is session-aware: staleness is enforced during regular hours only, because a 30-second rule would reject every pre-open approval, which is when this system is designed to be used.
+- **Broker working orders are fetched, and terminal status is an allowlist**: our ledger is not the whole truth — a buy placed by hand in the Schwab app is *working and unfilled*, so it is in no position and in no local row, and guards 9/10 would both pass while a live order for that symbol exists (round-4 finding 9). `parse_working_orders` returns `{broker_order_id, symbol, side, notional}` for everything **not** in `TERMINAL_BROKER_STATUSES` (`FILLED`/`CANCELED`/`EXPIRED`/`REJECTED`/`REPLACED`). That set is an **allowlist and must stay one** — Schwab's enum contains a literal `UNKNOWN` and can gain members without asking us, so an unrecognised status counts as *live*. Over-counting exposure rejects a legitimate trade (recoverable); under-counting opens the ceiling (not). `FILLED` is terminal because those shares are already position market value; `REPLACED` because its successor is reported separately.
+
+  `notional` is the **unfilled remainder** at the limit — the filled part is already in market value, and reserving it twice double-charges. An unpriceable live buy (market order, or a zero/absent limit) **raises** rather than being skipped: skipping is how a live order comes to reserve nothing. `broker_order_id` is stringified so guard 9's merge actually matches ledger rows.
+
+  `collect_broker_snapshot()` composes both reads and fails **closed**: each failure becomes `None`, never `[]`, and it never raises — the guards, not an exception, must adjudicate a broker outage.
 - **Kill switch is checked in two places on purpose**: `_call_place_order` (the sink — one choke point all three `place_*` functions pass through, so a caller that forgets the gate still fails closed) and the approval path (inside the gate, spanning the final read through dispatch). `TradingHalted` is re-raised rather than rewrapped, because a refusal is not a broker failure and "verify in Schwab" would send an operator hunting an order that was never sent.
 - **Sells are marketable limits priced through the bid; buys stay passive**: `place_marketable_sell_order` fetches a validated quote and prices `bid * (1 - APPROVAL_SLIPPAGE_BUFFER_PCT/100)`, rounded **down** to the tick (lower = more marketable for a sell), as a **DAY** order. Buys keep `quote * (1 + buffer)` **GTC**. The asymmetry is deliberate — a missed buy costs an opportunity, a missed sell holds the position through the decline the signal fired on. **This becomes wrong if the sell trigger stops being a momentum exit.**
 - **Quote parsing has no defaults, and there is no market-order fallback**: every field in `parse_quote` is mandatory and every failure raises, because `.get("bidPrice", 0)` on an error body prices a sell at give-it-away — the same shape that made `get_positions` read a 401 as "the account holds nothing". Staleness is enforced separately (`QUOTE_MAX_AGE_S`) since a stale quote looks usable; `age_seconds` clamps at zero so clock skew cannot fake freshness. No usable quote means **no sell** — the recommendation re-opens for a human.
@@ -186,11 +192,12 @@ Pre-flight helper: `.venv/Scripts/python.exe scripts/check_ops_ids.py` reports t
 
 ### Test Suite
 
-866 tests as of 2026-08-16. Run with `.venv/Scripts/python.exe -m pytest -q` (~21s). Key test files:
+908 tests as of 2026-08-16. Run with `.venv/Scripts/python.exe -m pytest -q` (~20s). Key test files:
 - `test_kill_switch.py` / `test_kill_switch_gate.py` / `test_kill_switch_wiring.py` / `test_halt_commands.py` — the kill switch (61 tests)
 - `test_quotes.py` / `test_marketable_sells.py` — validated quotes + sell pricing (46 tests)
 - `test_ops_alert_outbox.py` — durable ops-alert outbox (22 tests)
 - `test_preflight.py` — the 12-guard approval table, including the two ordering rules (46 tests, zero mocks)
+- `test_working_orders.py` — broker working orders: the terminal-status allowlist, unpriceable orders, and the fail-closed snapshot (42 tests)
 - `test_intended_session_attribution.py` / `test_market_time.py` — session attribution: the ceiling buckets on the session an order *executes* in, not the one it was entered in (round-5 #7)
 - `test_db_migrations.py` — schema upgrades against a PRE-EXISTING database
 - `test_screener_technicals.py` — RSI math with synthetic price series
