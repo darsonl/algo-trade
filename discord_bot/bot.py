@@ -17,17 +17,23 @@ from database.models import get_cursor, immediate_transaction
 from database.order_accounting import BLOCKING_ORDER_STATUSES
 from risk import kill_switch
 from risk.kill_switch import TradingHalted
-from risk.preflight import Decision, TradeRequest, check_authorization, evaluate_trade
+from risk.preflight import (
+    BrokerSnapshot,
+    Decision,
+    TradeRequest,
+    check_authorization,
+    evaluate_trade,
+)
 from discord_bot.embeds import build_recommendation_embed, build_positions_embed, build_sell_embed, build_etf_recommendation_embed, build_stats_embed, build_history_embed
 from schwab_client.orders import (
     build_limit_buy,
+    build_marketable_sell,
     _call_place_order,
     SubmissionOutcome,
     classify_submission,
     collect_broker_snapshot,
-    place_marketable_sell_order,
 )
-from schwab_client.quotes import QuoteUnavailable, fetch_quote
+from schwab_client.quotes import QuoteUnavailable, fetch_quote, marketable_sell_limit
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +71,41 @@ def _parse_stamp(value) -> datetime | None:
 # pre-reservation view of the book.
 _approval_gates: "weakref.WeakKeyDictionary[object, asyncio.Lock]" = weakref.WeakKeyDictionary()
 _approval_gates_lock = threading.Lock()
+
+
+def guard_snapshot(config) -> BrokerSnapshot:
+    """The book the guards evaluate against.
+
+    Live: the broker, failing closed (`None`, never `[]`).
+
+    Dry run: the SIMULATED book, built from the positions table. The broker
+    holds nothing in a dry run, so a broker-sourced guard 12 would refuse every
+    simulated sell and guard 10 would never see a simulated holding — the guards
+    would be running against a book that has nothing to do with the one the
+    simulation is keeping. A dry run that guards against the wrong book
+    rehearses nothing, and it also spares a disarmed bot a live API call.
+
+    `working_orders` is empty in dry run because a simulated order is never
+    submitted, so nothing is ever working.
+    """
+    if not getattr(config, "dry_run", False):
+        return collect_broker_snapshot(config)
+
+    positions = queries.get_open_positions(config.db_path)
+    return BrokerSnapshot(
+        positions=[
+            {
+                "symbol": p["ticker"],
+                "quantity": p["shares"],
+                "market_value": p["shares"] * (
+                    p["last_price"] if p["last_price"] is not None else p["avg_cost_usd"]
+                ),
+                "avg_price": p["avg_cost_usd"],
+            }
+            for p in positions
+        ],
+        working_orders=[],
+    )
 
 
 def approval_gate() -> asyncio.Lock:
@@ -411,110 +452,199 @@ class SellApproveRejectView(discord.ui.View):
         self.approve.custom_id = f"sell_approve:{rec_id}"
         self.reject.custom_id = f"sell_reject:{rec_id}"
 
+    def _trade_request(self, interaction, expires_at=None) -> TradeRequest:
+        return TradeRequest(
+            side="sell", ticker=self.ticker, scan_price=self.current_price,
+            rec_id=self.rec_id, shares=float(self.shares), expires_at=expires_at,
+            user_id=getattr(interaction.user, "id", None),
+            guild_id=getattr(interaction, "guild_id", None),
+            channel_id=getattr(interaction, "channel_id", None),
+        )
+
+    def _reserve(self, request, quote, broker, trading_enabled, now):
+        """Evaluate, claim, and record the sell as one transaction.
+
+        A sell row reserves no buy capital — `remaining_buy_reservation`
+        returns 0 for sells, because selling reduces exposure rather than
+        consuming the ceiling. The row exists for the audit trail, and so that
+        guard 11 can see an unresolved sell and refuse to compound it.
+        """
+        with immediate_transaction(self.config.db_path) as conn:
+            row = conn.execute(
+                "SELECT expires_at FROM recommendations WHERE id = ?", (self.rec_id,)
+            ).fetchone()
+            request = replace(
+                request, expires_at=_parse_stamp(row["expires_at"]) if row else None
+            )
+
+            local_orders = queries.get_orders_by_status(conn, BLOCKING_ORDER_STATUSES)
+            decision = evaluate_trade(
+                request, quote=quote, broker=broker, local_orders=local_orders,
+                day_notional=queries.get_day_notional(conn, instant=now),
+                trading_enabled=trading_enabled, config=self.config, now=now,
+            )
+            if not decision.allowed:
+                return decision, None
+
+            if not queries.claim_recommendation_tx(conn, self.rec_id, "approved", instant=now):
+                return Decision(
+                    allowed=False, reason_code="already_handled",
+                    message=f"This sell recommendation for {self.ticker} was already handled.",
+                ), None
+
+            if self.config.dry_run:
+                return decision, None
+
+            order_id = queries.create_order(
+                conn, recommendation_id=self.rec_id, ticker=self.ticker, side="sell",
+                order_type="limit", requested_shares=decision.shares,
+                reference_price=self.current_price,
+                limit_price=marketable_sell_limit(
+                    quote.bid, getattr(self.config, "approval_slippage_buffer_pct", 0.5)
+                ),
+                instant=now,
+            )
+            return decision, order_id
+
     @discord.ui.button(label="Approve Sell", style=discord.ButtonStyle.danger, emoji="✅")
     async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # Idempotency guard: reject duplicate/concurrent presses if position already closed (WR-01)
-        has_position = await asyncio.to_thread(
-            queries.has_open_position, self.config.db_path, self.ticker
-        )
-        if not has_position:
-            await interaction.response.send_message(
-                f"Position for {self.ticker} is already closed.", ephemeral=True
-            )
+        denial = check_authorization(self._trade_request(interaction), self.config)
+        if denial is not None:
+            await interaction.response.send_message(denial.message, ephemeral=True)
             return
 
-        # Idempotency gate: exactly one click wins the pending -> approved transition.
-        claimed = await asyncio.to_thread(
-            queries.claim_recommendation, self.config.db_path, self.rec_id, "approved"
-        )
-        if not claimed:
-            await interaction.response.send_message(
-                f"This sell recommendation for {self.ticker} was already handled.",
-                ephemeral=True,
-            )
-            return
-
-        # Acknowledge within Discord's 3s interaction window before the Schwab call,
-        # which is synchronous HTTP with retries and must run off the event loop.
         await interaction.response.defer()
 
-        order_id = None
-        try:
-            if not self.config.dry_run:
-                # Same gate as the buy path — one switch halts both directions.
-                async with kill_switch.submission_gate():
-                    kill_switch.require_enabled(self.config)
-                    # Marketable LIMIT, priced through the bid (spec §6): the
-                    # RSI+MACD trigger is a momentum exit, so a resting order
-                    # that misses is the worst outcome — but the fill price
-                    # still needs a validated bound.
-                    order_id = await asyncio.to_thread(
-                        place_marketable_sell_order, self.ticker, self.shares, self.config
-                    )
-        except QuoteUnavailable as exc:
-            # No usable bid means no validated worst case, and there is no
-            # market-order fallback on purpose. Re-open so a human can decide.
-            await asyncio.to_thread(
-                queries.update_recommendation_status, self.config.db_path, self.rec_id, "pending"
-            )
-            logger.warning("Sell blocked for %s: no usable quote (%s)", self.ticker, exc)
-            await interaction.followup.send(
-                f"Sell for {self.ticker} blocked: no usable quote ({exc}). No order "
-                "was sent — the recommendation stays open. Sell manually in Schwab "
-                "if this is urgent."
-            )
-            return
-        except TradingHalted as exc:
-            await asyncio.to_thread(
-                queries.update_recommendation_status, self.config.db_path, self.rec_id, "pending"
-            )
-            logger.warning("Sell blocked for %s: %s", self.ticker, exc)
-            await interaction.followup.send(
-                f"Sell for {self.ticker} blocked: trading is halted. No order was "
-                f"sent. ({exc}) The recommendation stays open — approve again "
-                "after /resume."
-            )
-            return
-        except Exception as exc:
-            # Release the claim so the button can be retried after the failure.
-            await asyncio.to_thread(
-                queries.update_recommendation_status, self.config.db_path, self.rec_id, "pending"
-            )
-            logger.error("Sell order failed for %s: %s", self.ticker, exc)
-            await interaction.followup.send(
-                f"Sell order placement failed for {self.ticker}: {exc} — recommendation "
-                "re-opened. Verify in Schwab before retrying."
-            )
-            return
+        async with approval_gate():
+            now = _utcnow()
 
-        # Fetch cost_basis from open position before recording trade (PORT-02 / T-13-02)
-        cost_basis = None
-        open_positions = await asyncio.to_thread(
-            queries.get_open_positions, self.config.db_path
+            try:
+                quote = await asyncio.to_thread(fetch_quote, self.ticker, self.config)
+            except QuoteUnavailable as exc:
+                # No usable bid means no validated worst case. There is no
+                # market-order fallback on purpose: an unbounded market sell on
+                # a stock already flagged as falling is the fill this instrument
+                # exists to bound. Guard 4 turns this into a refusal.
+                logger.warning("No usable quote for %s: %s", self.ticker, exc)
+                quote = None
+
+            broker = await asyncio.to_thread(guard_snapshot, self.config)
+            trading_enabled = await asyncio.to_thread(
+                kill_switch.is_enabled, self.config.db_path
+            )
+
+            decision, order_id = await asyncio.to_thread(
+                self._reserve, self._trade_request(interaction), quote, broker,
+                trading_enabled, now,
+            )
+
+            if not decision.allowed:
+                logger.info(
+                    "Sell refused for %s: %s — %s",
+                    self.ticker, decision.reason_code, decision.message,
+                )
+                await interaction.followup.send(
+                    f"**{self.ticker} not sold** ({decision.reason_code}): {decision.message}"
+                )
+                return
+
+            if self.config.dry_run:
+                await asyncio.to_thread(self._settle_position, None)
+                await interaction.followup.send(
+                    f"[DRY RUN] Approved: selling {self.shares} share(s) of "
+                    f"{self.ticker} at ${self.current_price:.2f} — all guards passed, "
+                    "no order sent."
+                )
+                self.stop()
+                return
+
+            outcome = await self._submit(decision, order_id, quote)
+            if outcome.status == "submitted":
+                await asyncio.to_thread(self._settle_position, outcome.broker_order_id)
+
+        await self._report(interaction, outcome)
+        self.stop()
+
+    async def _submit(self, decision, order_id, quote):
+        """Price from the quote the GUARDS saw, submit once, classify.
+
+        The old path let `place_marketable_sell_order` fetch its own quote, so
+        the price that was checked and the price that was sent could differ.
+        One quote for both closes that gap.
+        """
+        limit_price = marketable_sell_limit(
+            quote.bid, getattr(self.config, "approval_slippage_buffer_pct", 0.5)
         )
-        for pos in open_positions:
+        spec = build_marketable_sell(self.ticker, int(decision.shares), f"{limit_price:.2f}")
+        try:
+            async with kill_switch.submission_gate():
+                response = await asyncio.to_thread(
+                    _call_place_order, None, self.config, spec
+                )
+            outcome = classify_submission(response=response)
+        except TradingHalted as exc:
+            logger.warning("Sell blocked for %s: %s", self.ticker, exc)
+            outcome = SubmissionOutcome(
+                status="submit_failed", broker_order_id=None,
+                message=("Trading is halted, so no order was sent. The "
+                         "recommendation stays open — approve again after /resume."),
+            )
+        except Exception as exc:
+            outcome = classify_submission(error=exc)
+            logger.error(
+                "Sell submission for %s resolved as %s: %s",
+                self.ticker, outcome.status, exc,
+            )
+
+        await asyncio.to_thread(self._settle, order_id, outcome)
+        return outcome
+
+    def _settle(self, order_id, outcome) -> None:
+        if order_id is not None:
+            with get_cursor(self.config.db_path) as conn:
+                if outcome.status == "submitted":
+                    queries.attach_broker_order_id(conn, order_id, outcome.broker_order_id)
+                elif outcome.status == "submit_failed":
+                    queries.mark_order_submit_failed(conn, order_id, outcome.message)
+                else:
+                    queries.mark_order_submit_unknown(conn, order_id, outcome.message)
+
+        if outcome.status == "submit_failed":
+            queries.update_recommendation_status(self.config.db_path, self.rec_id, "pending")
+
+    def _settle_position(self, order_id: str | None) -> None:
+        """Record the closing trade and close the position.
+
+        Only ever called for a SUBMITTED (or dry-run) sell. An ambiguous
+        outcome must leave the position open: we do not know that it sold, and
+        closing it would hide a holding the account may still have.
+        """
+        cost_basis = None
+        for pos in queries.get_open_positions(self.config.db_path):
             if pos["ticker"] == self.ticker:
                 cost_basis = pos["avg_cost_usd"]
                 break
 
-        await asyncio.to_thread(
-            queries.create_trade,
-            db_path=self.config.db_path,
-            recommendation_id=self.rec_id,
-            ticker=self.ticker,
-            shares=self.shares,
-            price=self.current_price,
-            order_id=order_id,
-            side="sell",
-            cost_basis=cost_basis,
+        queries.create_trade(
+            db_path=self.config.db_path, recommendation_id=self.rec_id,
+            ticker=self.ticker, shares=self.shares, price=self.current_price,
+            order_id=order_id, side="sell", cost_basis=cost_basis,
         )
-        await asyncio.to_thread(queries.close_position, self.config.db_path, self.ticker)
+        queries.close_position(self.config.db_path, self.ticker)
 
-        label = "[DRY RUN] " if self.config.dry_run else ""
-        await interaction.followup.send(
-            f"{label}Approved: selling {self.shares} share(s) of {self.ticker} at ${self.current_price:.2f}.",
-        )
-        self.stop()
+    async def _report(self, interaction, outcome) -> None:
+        if outcome.status == "submitted":
+            await interaction.followup.send(
+                f"Approved: selling {self.shares} share(s) of {self.ticker} at "
+                f"${self.current_price:.2f}. Order {outcome.broker_order_id}."
+            )
+        elif outcome.status == "submit_failed":
+            await interaction.followup.send(f"**{self.ticker} not sold.** {outcome.message}")
+        else:
+            await interaction.followup.send(
+                f"⚠️ **{self.ticker} sell outcome UNKNOWN.** {outcome.message} "
+                "The position stays open until this is settled."
+            )
 
     @discord.ui.button(label="Reject", style=discord.ButtonStyle.secondary, emoji="❌")
     async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):

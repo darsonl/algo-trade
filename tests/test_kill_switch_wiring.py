@@ -24,7 +24,7 @@ import pytest
 
 from config import Config
 from database.models import initialize_db
-from database.queries import create_recommendation
+from database.queries import create_position, create_recommendation
 from discord_bot.bot import ApproveRejectView, SellApproveRejectView
 from risk import kill_switch
 from risk.kill_switch import TradingHalted
@@ -266,19 +266,20 @@ async def test_enabled_buy_approval_places_the_order(db_path):
 @pytest.mark.asyncio
 async def test_halted_sell_approval_does_not_place_an_order(db_path):
     kill_switch.init(db_path, env_default=False)
-    view = SellApproveRejectView(1, "AAPL", 3, 100.0, _config(db_path))
-    interaction = _interaction()
+    config = _config(db_path)
+    rec_id = _live_recommendation(db_path)
+    create_position(db_path, "AAPL", 3, 90.0)
+    view = SellApproveRejectView(rec_id, "AAPL", 3, 100.0, config)
 
-    with (
-        patch("discord_bot.bot.place_marketable_sell_order") as place,
-        patch("discord_bot.bot.queries") as q,
-    ):
-        q.claim_recommendation.return_value = True
-        q.has_open_position.return_value = True
-        q.get_open_positions.return_value = []
-        await view.approve.callback.callback(view, interaction, MagicMock())
+    patches = _buy_env() + (patch("discord_bot.bot._call_place_order"),)
+    started = [pp.start() for pp in patches]
+    try:
+        await view.approve.callback.callback(view, _interaction(), MagicMock())
+    finally:
+        for pp in patches:
+            pp.stop()
 
-    place.assert_not_called()
+    started[-1].assert_not_called()
 
 
 # ─── The gate actually spans the dispatch ────────────────────────────────────

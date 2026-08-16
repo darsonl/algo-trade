@@ -154,7 +154,14 @@ async def test_reconstructed_sell_view_callback_updates_db(config, db_path):
     view = build_view_for_recommendation(rec, config)
     interaction = AsyncMock()
     interaction.response = AsyncMock()
-    await view.approve.callback.callback(view, interaction, MagicMock())
+    interaction.user.id = 1001
+    interaction.guild_id = 0
+    interaction.channel_id = 0
+
+    quote = Quote(symbol="AAPL", bid=170.0, ask=170.2, last=170.0,
+                  quote_time=datetime.now(timezone.utc))
+    with patch("discord_bot.bot.fetch_quote", return_value=quote):
+        await view.approve.callback.callback(view, interaction, MagicMock())
 
     assert get_recommendation(db_path, rec_id)["status"] == "approved"
     assert len(get_open_positions(db_path)) == 0

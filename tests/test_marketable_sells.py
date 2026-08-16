@@ -193,42 +193,16 @@ def _interaction():
     return i
 
 
-@pytest.mark.asyncio
-async def test_sell_approval_places_a_marketable_limit(db_path):
-    from discord_bot.bot import SellApproveRejectView
-
-    view = SellApproveRejectView(1, "AAPL", 10, 100.0, _config(db_path))
-
-    with (
-        patch("discord_bot.bot.place_marketable_sell_order", return_value="oid") as place,
-        patch("discord_bot.bot.queries") as q,
-    ):
-        q.claim_recommendation.return_value = True
-        q.has_open_position.return_value = True
-        q.get_open_positions.return_value = []
-        await view.approve.callback.callback(view, _interaction(), MagicMock())
-
-    place.assert_called_once()
-
-
-@pytest.mark.asyncio
-async def test_sell_approval_reopens_when_no_quote_is_available(db_path):
-    """An unsellable-right-now recommendation must stay actionable."""
-    from discord_bot.bot import SellApproveRejectView
-
-    view = SellApproveRejectView(4, "AAPL", 10, 100.0, _config(db_path))
-
-    with (
-        patch("discord_bot.bot.place_marketable_sell_order",
-              side_effect=QuoteUnavailable("no bid")),
-        patch("discord_bot.bot.queries") as q,
-    ):
-        q.claim_recommendation.return_value = True
-        q.has_open_position.return_value = True
-        q.get_open_positions.return_value = []
-        interaction = _interaction()
-        await view.approve.callback.callback(view, interaction, MagicMock())
-
-    q.update_recommendation_status.assert_called_with(db_path, 4, "pending")
-    said = " ".join(str(c.args[0]) for c in interaction.followup.send.call_args_list if c.args)
-    assert "quote" in said.lower()
+# The two approval-path tests that lived here moved to
+# tests/test_sell_approval_ledger.py when the sell path was rewired onto the
+# guard table. They patched `place_marketable_sell_order` and mocked `queries`
+# wholesale; the path no longer calls that function, and the behaviours they
+# described are now checked against a real database:
+#
+#   places a marketable limit  -> test_the_order_is_priced_from_the_quote_the_guards_saw
+#                                 (which also pins DAY duration and the exact
+#                                  through-the-bid price, neither of which the
+#                                  old assert_called_once could see)
+#   reopens with no quote      -> test_no_usable_quote_refuses_the_sell
+#
+# What stays here is the pure pricing maths, which is what this file is for.
