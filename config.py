@@ -78,7 +78,24 @@ class Config:
     approval_slippage_buffer_pct: float = _env_float("APPROVAL_SLIPPAGE_BUFFER_PCT", "0.5")
     # A quote older than this is refused rather than priced against. A stale
     # quote is more dangerous than a missing one because it looks usable.
+    # Applies during regular hours only — after hours the last close is the only
+    # quote there is, and the limit price becomes the binding control.
     quote_max_age_s: int = _env_int("QUOTE_MAX_AGE_S", "30")
+
+    # --- approval preflight guard table (risk/preflight.py) ---
+    # Who may approve a trade. Separate from ops_user_ids: halting is a safety
+    # action anyone trusted should be able to take, spending money is not.
+    # Empty means nobody, never everybody.
+    allowed_discord_user_ids: str = _env_str("ALLOWED_DISCORD_USER_IDS", "")
+    # 0 disables the guild check, for a bot that lives in exactly one server.
+    discord_guild_id: int = _env_int("DISCORD_GUILD_ID", "0")
+    # How far the market may have moved since the scan before approval is
+    # refused. The analyst reasoned about the scan price; past this the
+    # recommendation is about a different security than the one being bought.
+    approval_price_tolerance_pct: float = _env_float("APPROVAL_PRICE_TOLERANCE_PCT", "2.0")
+    # Ceiling on committed buy notional per TRADING SESSION — bucketed by
+    # orders.intended_session_date, not by submission time. See market_time.
+    max_daily_notional_usd: float = _env_float("MAX_DAILY_NOTIONAL_USD", "2000.0")
 
     anthropic_api_key: str = _env_str("ANTHROPIC_API_KEY")
 

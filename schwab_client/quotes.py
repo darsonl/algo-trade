@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import logging
 import math
-from dataclasses import dataclass
 from datetime import datetime, timezone
+
+from risk.preflight import Quote
 
 logger = logging.getLogger(__name__)
 
@@ -33,23 +34,15 @@ class StaleQuote(QuoteUnavailable):
     """
 
 
-@dataclass(frozen=True)
-class Quote:
-    symbol: str
-    bid: float
-    ask: float
-    last: float | None
-    quote_time: datetime
-
-    def age_seconds(self, now: datetime | None = None) -> float:
-        """Seconds since the quote was stamped, never negative.
-
-        A broker clock running ahead of ours would otherwise produce a negative
-        age, and any `age < max_age` check would pass forever — clock skew must
-        not be able to make a stale quote look fresh.
-        """
-        now = now or datetime.now(timezone.utc)
-        return max(0.0, (now - self.quote_time).total_seconds())
+# Quote is DEFINED in risk.preflight and re-exported here. The guard table is
+# the thing that must not depend on a broker client, so the type it evaluates
+# lives with it and the direction is one-way: quotes -> preflight, never back.
+# Re-exported rather than moved outright so `from schwab_client.quotes import
+# Quote` keeps working for every existing caller.
+__all__ = [
+    "Quote", "QuoteUnavailable", "StaleQuote", "TICK",
+    "parse_quote", "marketable_sell_limit", "fetch_quote",
+]
 
 
 def _require_positive_number(value, field: str, symbol: str) -> float:
