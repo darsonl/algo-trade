@@ -13,6 +13,29 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
+# Statuses that mean an order is DONE and no longer holds capital. This is an
+# ALLOWLIST and must stay one. Schwab's enum contains a literal `UNKNOWN`, and
+# the API can gain members without asking us: anything not named here counts as
+# still live. Over-counting exposure rejects a legitimate trade, which is
+# recoverable; under-counting opens the ceiling, which is not.
+#
+# FILLED is terminal here because those shares are now reported as position
+# market value -- counting them again would double-charge. REPLACED is terminal
+# because its successor is reported separately, under a new id.
+TERMINAL_BROKER_STATUSES = frozenset({
+    "FILLED", "CANCELED", "EXPIRED", "REJECTED", "REPLACED",
+})
+
+
+class UnpriceableOrder(ValueError):
+    """A live broker order whose exposure cannot be determined.
+
+    Raised rather than skipped. A working order we cannot price is exactly the
+    case where guessing zero is worst: it is live, it will cost money, and
+    omitting it tells the guards the ceiling is emptier than it is.
+    """
+
+
 @dataclass(frozen=True)
 class Replacement:
     """The order Schwab created to take a replaced order's place."""
@@ -125,3 +148,71 @@ def extract_replacement(payload: dict) -> tuple[Replacement | None, str | None]:
         ),
         None,
     )
+
+
+def parse_working_orders(payload) -> list[dict]:
+    """Extract live broker orders in the shape `risk.preflight` consumes.
+
+    Returns dicts of {broker_order_id, symbol, side, notional}. `notional` is
+    the UNFILLED remainder priced at the order's limit: the filled part is
+    already reported as position market value, and reserving it twice would
+    double-charge the portfolio ceiling.
+
+    `broker_order_id` is stringified because guard 9 de-duplicates local rows
+    against this list by that id. An int here against a str in the ledger would
+    never match, and the same order would be counted twice.
+
+    Sells reserve nothing -- they do not add buy exposure -- but are still
+    returned, because guard 10 must see that a live order exists for the symbol.
+    """
+    if not isinstance(payload, list):
+        # An HTTP error body is a valid dict, and letting it fall through a
+        # .get() chain is how "the account holds nothing" gets invented.
+        raise ValueError(
+            f"Schwab orders response is {type(payload).__name__}, not a list"
+        )
+
+    working = []
+    for entry in payload:
+        if not isinstance(entry, dict):
+            raise ValueError(f"orders response contains a {type(entry).__name__}, not an order")
+
+        status = str(entry.get("status", "")).upper()
+        if status in TERMINAL_BROKER_STATUSES:
+            continue
+
+        order_id = entry.get("orderId")
+        if order_id in (None, ""):
+            raise UnpriceableOrder(
+                f"a live order ({status or 'no status'}) has no orderId; "
+                "cannot tell it apart from our own"
+            )
+        order_id = str(order_id)
+
+        symbol = _symbol(entry)
+        if not symbol:
+            raise UnpriceableOrder(f"live order {order_id} does not name a symbol")
+
+        side = _side(entry)
+        remaining = float(entry.get("quantity") or 0.0) - float(entry.get("filledQuantity") or 0.0)
+        remaining = max(0.0, remaining)
+
+        if side == "buy" and remaining > 0:
+            price = entry.get("price")
+            if price in (None, "") or float(price) <= 0:
+                raise UnpriceableOrder(
+                    f"live buy {order_id} ({symbol}) has no usable limit price "
+                    f"({price!r}); refusing to reserve zero for an order that will cost money"
+                )
+            notional = remaining * float(price)
+        else:
+            notional = 0.0
+
+        working.append({
+            "broker_order_id": order_id,
+            "symbol": symbol,
+            "side": side,
+            "notional": notional,
+        })
+
+    return working

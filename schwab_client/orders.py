@@ -8,6 +8,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from risk import kill_switch
 from risk.kill_switch import TradingHalted
+from schwab_client.order_payload import parse_working_orders
 from schwab_client.quotes import fetch_quote, marketable_sell_limit
 
 logger = logging.getLogger(__name__)
@@ -242,3 +243,67 @@ def get_positions(config, client=None) -> list[dict]:
         fields=[SchwabClient.Account.Fields.POSITIONS],
     )
     return parse_positions(_checked(resp))
+
+
+def get_working_orders(config, client=None) -> list[dict]:
+    """Return the broker's LIVE orders, in the shape `risk.preflight` consumes.
+
+    Preflight needs this because our own ledger is not the whole truth: a buy
+    placed by hand in the Schwab app is working and unfilled, so it appears in
+    no position and in no local row. Guards 9 and 10 would both pass and the bot
+    would add a second order for a symbol that already has one live
+    (round-4 finding 9).
+
+    Raises rather than returning a partial list. Every failure here -- transport,
+    shape, or an order that cannot be priced -- must reach the caller so it can
+    pass `working_orders=None` and let guard 5 refuse. Returning `[]` on failure
+    would tell the guards the book is empty, which is the one answer that opens
+    every ceiling at once.
+    """
+    if client is None:
+        from schwab_client.auth import get_client
+        client = get_client(config)
+
+    resp = client.get_orders_for_account(config.schwab_account_hash)
+    return parse_working_orders(_checked(resp))
+
+
+def collect_broker_snapshot(config, client=None):
+    """Gather everything the guard table needs from the broker, failing CLOSED.
+
+    Each read is captured independently and a failure becomes `None`, never
+    `[]`. That distinction is the whole point: `[]` tells guard 9 the account is
+    empty and every ceiling is wide open, while `None` tells guard 5 the read
+    failed and the approval is refused. A 401 parsed as "the account holds
+    nothing" is the defect this shape exists to prevent.
+
+    Never raises. It runs on the approval path, where the guards decide what
+    happens next -- an exception here would bypass the very table that is
+    supposed to adjudicate a broker outage.
+    """
+    from risk.preflight import BrokerSnapshot
+
+    if client is None:
+        from schwab_client.auth import get_client
+        try:
+            client = get_client(config)
+        except Exception:
+            logger.exception("broker snapshot: could not build a Schwab client")
+            return BrokerSnapshot(positions=None, working_orders=None)
+
+    try:
+        positions = get_positions(config, client=client)
+    except Exception as exc:
+        logger.warning("broker snapshot: position read failed (%s)", exc)
+        positions = None
+
+    try:
+        working_orders = get_working_orders(config, client=client)
+    except Exception as exc:
+        # Includes UnpriceableOrder: one order we cannot price means we cannot
+        # state exposure at all, so the whole read is unusable rather than
+        # partially trusted.
+        logger.warning("broker snapshot: working-order read failed (%s)", exc)
+        working_orders = None
+
+    return BrokerSnapshot(positions=positions, working_orders=working_orders)
