@@ -8,7 +8,11 @@ from schwab.orders.common import Duration
 
 from risk import kill_switch
 from risk.kill_switch import TradingHalted
-from schwab_client.order_payload import parse_working_orders
+from schwab_client.order_payload import (
+    _as_datetime,
+    parse_candidate_orders,
+    parse_working_orders,
+)
 from schwab_client.quotes import fetch_quote, marketable_sell_limit
 
 logger = logging.getLogger(__name__)
@@ -358,6 +362,38 @@ def get_working_orders(config, client=None) -> list[dict]:
 
     resp = client.get_orders_for_account(config.schwab_account_hash)
     return parse_working_orders(_checked(resp))
+
+
+def find_recent_orders(config, *, symbol: str, side: str, since, until,
+                       client=None) -> list[dict]:
+    """Broker orders that might be an ambiguous submission of ours.
+
+    Feeds `/resolve`'s report. Unlike `get_working_orders` this deliberately
+    includes TERMINAL orders: a candidate that already FILLED is the most
+    important one to show, because it means a real position exists that our
+    ledger never recorded.
+
+    Raises rather than returning a partial or empty list. `[]` from a failed
+    read would tell an operator that no candidate exists -- the one answer that
+    makes a `confirmed_absent` resolution look justified when it is not, and
+    that resolution releases capital.
+
+    Not retried and not wrapped: this is a READ, so the no-retry rule that
+    governs submission does not apply, but it matches `get_working_orders` in
+    letting every failure reach the caller.
+    """
+    if client is None:
+        from schwab_client.auth import get_client
+        client = get_client(config)
+
+    resp = client.get_orders_for_account(
+        config.schwab_account_hash,
+        from_entered_datetime=_as_datetime(since),
+        to_entered_datetime=_as_datetime(until),
+    )
+    return parse_candidate_orders(
+        _checked(resp), symbol=symbol, side=side, since=since, until=until
+    )
 
 
 def collect_broker_snapshot(config, client=None):

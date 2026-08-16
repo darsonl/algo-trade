@@ -96,6 +96,17 @@ class Config:
     # orders.intended_session_date, not by submission time. See market_time.
     max_daily_notional_usd: float = _env_float("MAX_DAILY_NOTIONAL_USD", "2000.0")
 
+    # --- ambiguous submissions (/resolve, spec v4 step 12 / §11) ---
+    # How long an unresolved order may sit before every scan starts nagging.
+    # Guard 11 blocks new orders for its ticker the whole time, so the alert is
+    # the only thing standing between an ambiguous submission and a symbol that
+    # is blocked silently and indefinitely.
+    stuck_approval_alert_h: int = _env_int("STUCK_APPROVAL_ALERT_H", "24")
+    # How far back before our submission to search for candidate broker orders.
+    # Erring wide is the safe direction: an extra candidate over-reserves, which
+    # rejects a legitimate trade; a missed one under-reserves, which does not.
+    resolve_lookback_min: int = _env_int("RESOLVE_LOOKBACK_MIN", "30")
+
     anthropic_api_key: str = _env_str("ANTHROPIC_API_KEY")
 
     analyst_provider: str = _env_str("ANALYST_PROVIDER", "claude")
