@@ -116,6 +116,11 @@ python main.py
   **Both earlier conventions were wrong and must not be reintroduced.** Bare `date('now')` compares UTC days, which roll over mid-afternoon US time. `date(..., 'localtime')` compares the *host's* days — and this host is Asia/Taipei (UTC+8), where a US session (09:30–16:00 ET) runs 21:30–04:00 local and crosses local midnight. With `SCAN_TIMES=21:45,03:30` both scheduled scans are 09:45 ET and 15:30 ET of the **same** session but land on different local dates, so the dupe guard never matched between them and `ANALYST_DAILY_LIMIT` reset mid-session. Prefer the range predicate `created_at >= ? AND created_at < ?` over wrapping the column in `date()` — it stays index-usable.
 
   The scheduler itself still runs machine-local unless `SCAN_TIMEZONE` (IANA name, e.g. `America/New_York`) is set. Setting it is recommended: it would make the scan times read as market times directly.
+- **Session *date* and intended *session* are two different questions** (round-5 #7). `market_session_date()` answers "which ET calendar day is this instant in" and is right for the dupe guard and the analyst quota. It is **wrong for the order ceiling**: an order entered 20:00 ET Friday has a Friday session date but Schwab queues it for **Monday's** regular session, so bucketing on it let Friday night and Monday each draw a full allowance against Monday's single real ceiling — a fail-*open* doubling caused by nothing but the clock. `intended_session_date()` answers the second question — *the first session whose close is strictly after the instant* — and `orders.intended_session_date` stores it at insert, because nothing later can recover it. `get_day_notional` equality-matches that column; do not "restore" the `submitted_at` range predicate.
+
+  This is the one place the project takes a real exchange calendar (`exchange-calendars`, XNYS), which `market_time.py` otherwise avoids on purpose. It is load-bearing, not convenience: **Good Friday** is a market holiday but not a federal one, so a weekday rule buckets the Thursday night before it into a Friday that never trades; and the **half-day after Thanksgiving closes 13:00 ET**, so a hardcoded 16:00 calls 14:00 "still open" and files it into a session that already ended. `tests/test_market_time.py` pins both, and both were verified to kill a naive implementation before being trusted.
+
+  The calendar is memoised but rebuilds when an instant passes its end (it only spans ~1 year ahead), because a process alive longer would otherwise raise `MinuteOutOfBounds` from inside the order path. Only the *upper* bound rebuilds — an instant before the calendar starts is bad data in a ledger created this month, and should raise.
 - **ETF bypass**: ETFs are partitioned out of the stock scan by `partition_watchlist()` using `yfinance quoteType`. They run through `run_scan_etf()` which skips `passes_fundamental_filter` entirely and uses `build_etf_prompt` (no earnings/P/E context).
 - **sell_blocked flag**: After a rejected sell, `sell_blocked=True` prevents re-triggering the sell signal for the same position on the same day. Auto-resets when RSI drops back below threshold.
 - **Kill switch is durable, cross-process, and fails closed**: state lives in the `kill_switch` table, not a module variable, because a `/halt` typed into the Discord process must stop a scan running in another one and must survive a restart. `is_enabled()` re-reads the DB on every call for that reason. Everything unknown — no row, no table, unreadable DB, unrecognised value — returns False. `TRADING_ENABLED` seeds only a database that has never been written, so a restart can never undo an operator's halt.
@@ -152,7 +157,7 @@ MAX_POSITION_SIZE_USD=500
 
 **`analyst_calls`**: PRIMARY KEY (date, provider), call_count — daily quota tracking per provider
 
-**`orders`**: the durable order ledger — status, broker_order_id, filled_shares/notional, `fills_observed`, `predecessor_order_id`, `reserved_notional_override`
+**`orders`**: the durable order ledger — status, broker_order_id, filled_shares/notional, `fills_observed`, `predecessor_order_id`, `reserved_notional_override`, `intended_session_date` (the session the broker will actually run it in — what the daily ceiling buckets on; backfilled for pre-existing rows, since a NULL would be invisible to the ceiling and fail open)
 
 **`ops_alerts`**: durable outbox — message, delivered_at (NULL = pending), attempts, last_error
 
@@ -177,10 +182,11 @@ Pre-flight helper: `.venv/Scripts/python.exe scripts/check_ops_ids.py` reports t
 
 ### Test Suite
 
-801 tests as of 2026-08-16. Run with `.venv/Scripts/python.exe -m pytest -q` (~19s). Key test files:
+820 tests as of 2026-08-16. Run with `.venv/Scripts/python.exe -m pytest -q` (~20s). Key test files:
 - `test_kill_switch.py` / `test_kill_switch_gate.py` / `test_kill_switch_wiring.py` / `test_halt_commands.py` — the kill switch (61 tests)
 - `test_quotes.py` / `test_marketable_sells.py` — validated quotes + sell pricing (46 tests)
 - `test_ops_alert_outbox.py` — durable ops-alert outbox (22 tests)
+- `test_intended_session_attribution.py` / `test_market_time.py` — session attribution: the ceiling buckets on the session an order *executes* in, not the one it was entered in (round-5 #7)
 - `test_db_migrations.py` — schema upgrades against a PRE-EXISTING database
 - `test_screener_technicals.py` — RSI math with synthetic price series
 - `test_exit_signals.py` — RSI + MACD gate (16 tests, 2×2 matrix)
