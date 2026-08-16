@@ -2,6 +2,10 @@ from __future__ import annotations
 import asyncio
 import math
 import logging
+import threading
+import weakref
+from dataclasses import replace
+from datetime import datetime, timezone
 
 import discord
 from discord import app_commands
@@ -9,14 +13,77 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 
 from config import Config
 from database import queries
-from database.models import get_cursor
+from database.models import get_cursor, immediate_transaction
+from database.order_accounting import BLOCKING_ORDER_STATUSES
 from risk import kill_switch
 from risk.kill_switch import TradingHalted
+from risk.preflight import Decision, TradeRequest, check_authorization, evaluate_trade
 from discord_bot.embeds import build_recommendation_embed, build_positions_embed, build_sell_embed, build_etf_recommendation_embed, build_stats_embed, build_history_embed
-from schwab_client.orders import place_limit_order, place_marketable_sell_order, place_order
-from schwab_client.quotes import QuoteUnavailable
+from schwab_client.orders import (
+    build_limit_buy,
+    _call_place_order,
+    SubmissionOutcome,
+    classify_submission,
+    collect_broker_snapshot,
+    place_marketable_sell_order,
+)
+from schwab_client.quotes import QuoteUnavailable, fetch_quote
 
 logger = logging.getLogger(__name__)
+
+
+def _utcnow() -> datetime:
+    """One seam for the clock, so tests can pin time without freezegun."""
+    return datetime.now(timezone.utc)
+
+
+def _parse_stamp(value) -> datetime | None:
+    """Read a SQLite UTC timestamp, or None if it is absent or unreadable.
+
+    None means "no expiry recorded", which guard 3 treats as not-expired. That
+    is the right reading here and only here: an absent expires_at is a schema
+    fact about old rows, not a failed read of a live one.
+    """
+    if not value:
+        return None
+    try:
+        return datetime.strptime(str(value), "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+# One approval lock PER RUNNING LOOP, for exactly the reason the submission
+# gate is: a module-level asyncio.Lock binds to the first loop that *contends*
+# on it and raises for every loop after, and acquire()'s uncontended fast path
+# hides that from any test which never actually blocks. See
+# risk/kill_switch.py::submission_gate and tests/test_kill_switch_gate.py.
+#
+# This is a WIDER lock than the submission gate. The gate spans the final
+# kill-switch read through dispatch; this one spans the whole
+# read -> evaluate -> claim -> submit sequence, so two approvals cannot
+# interleave their broker reads and each evaluate against the other's
+# pre-reservation view of the book.
+_approval_gates: "weakref.WeakKeyDictionary[object, asyncio.Lock]" = weakref.WeakKeyDictionary()
+_approval_gates_lock = threading.Lock()
+
+
+def approval_gate() -> asyncio.Lock:
+    """The lock serialising a whole approval, from first read to dispatch.
+
+    Process-local by nature. It is NOT what makes the ceiling global — that is
+    the `BEGIN IMMEDIATE` transaction, which serialises across processes too
+    (round-4 finding 8: this lock alone cannot stop a cross-ticker cap breach
+    between two processes during an overlapping restart). This one only closes
+    the interleaving window between coroutines on one loop, and keeps the
+    broker reads from crossing.
+    """
+    loop = asyncio.get_running_loop()
+    with _approval_gates_lock:
+        gate = _approval_gates.get(loop)
+        if gate is None:
+            gate = asyncio.Lock()
+            _approval_gates[loop] = gate
+        return gate
 
 _retry = retry(
     wait=wait_exponential(multiplier=1, min=2, max=30),
@@ -102,127 +169,217 @@ class ApproveRejectView(discord.ui.View):
         self.approve.custom_id = f"approve:{rec_id}"
         self.reject.custom_id = f"reject:{rec_id}"
 
+    def _trade_request(self, interaction, expires_at=None) -> TradeRequest:
+        return TradeRequest(
+            side="buy", ticker=self.ticker, scan_price=self.price, rec_id=self.rec_id,
+            expires_at=expires_at,
+            user_id=getattr(interaction.user, "id", None),
+            guild_id=getattr(interaction, "guild_id", None),
+            channel_id=getattr(interaction, "channel_id", None),
+        )
+
+    def _reserve(self, request, quote, broker, trading_enabled, now):
+        """Cap check, claim, and reservation as ONE `BEGIN IMMEDIATE` transaction.
+
+        The write lock is taken before the reads, so two processes serialise
+        rather than both reading the same daily total and each reserving
+        against it (round-4 finding 8 — the in-process lock cannot stop that).
+
+        The reservation IS the order row; there is no separate reservation
+        table to keep consistent. Any rejection returns before the INSERT and
+        the transaction rolls back, so a refusal leaves nothing behind.
+        """
+        with immediate_transaction(self.config.db_path) as conn:
+            row = conn.execute(
+                "SELECT expires_at FROM recommendations WHERE id = ?", (self.rec_id,)
+            ).fetchone()
+            expires_at = _parse_stamp(row["expires_at"]) if row else None
+            request = replace(request, expires_at=expires_at)
+
+            local_orders = queries.get_orders_by_status(conn, BLOCKING_ORDER_STATUSES)
+            day_notional = queries.get_day_notional(conn, instant=now)
+
+            decision = evaluate_trade(
+                request, quote=quote, broker=broker, local_orders=local_orders,
+                day_notional=day_notional, trading_enabled=trading_enabled,
+                config=self.config, now=now,
+            )
+            if not decision.allowed:
+                return decision, None
+
+            if not queries.claim_recommendation_tx(conn, self.rec_id, "approved", instant=now):
+                return Decision(
+                    allowed=False, reason_code="already_handled",
+                    message=f"This recommendation for {self.ticker} was already handled.",
+                ), None
+
+            if self.config.dry_run:
+                # A simulated order must not reserve real capital: the row would
+                # hold the ceiling against buys that never happened, and nothing
+                # would ever resolve it.
+                return decision, None
+
+            order_id = queries.create_order(
+                conn, recommendation_id=self.rec_id, ticker=self.ticker, side="buy",
+                order_type="limit", requested_shares=decision.shares,
+                reference_price=self.price, limit_price=decision.limit_price,
+                instant=now,
+            )
+            return decision, order_id
+
     @discord.ui.button(label="Approve", style=discord.ButtonStyle.success, emoji="✅")
     async def approve(self, interaction: discord.Interaction, button: discord.ui.Button):
-        shares = compute_share_quantity(self.price, self.config.max_position_size_usd)
-        if shares == 0:
-            await interaction.response.send_message(
-                f"Cannot buy {self.ticker}: price ${self.price:.2f} exceeds max position size.",
-                ephemeral=True,
-            )
+        # Guard 1 runs BEFORE defer: it is pure and instant, so an unauthorized
+        # click gets a private reply rather than a public one, and costs no
+        # broker calls. evaluate_trade re-checks it as guard 1 regardless.
+        denial = check_authorization(self._trade_request(interaction), self.config)
+        if denial is not None:
+            await interaction.response.send_message(denial.message, ephemeral=True)
             return
 
-        # POS-05: exposure guard — block if total portfolio exposure would exceed limit
-        new_exposure = shares * self.price
-        existing_positions = await asyncio.to_thread(
-            queries.get_open_positions, self.config.db_path
-        )
-        existing_total = sum(
-            p["shares"] * (p["last_price"] if p["last_price"] is not None else p["avg_cost_usd"])
-            for p in existing_positions
-        )
-        if existing_total + new_exposure > self.config.max_portfolio_usd:
-            await interaction.response.send_message(
-                f"Blocked: buying {shares} share(s) of {self.ticker} at ${self.price:.2f} "
-                f"(${new_exposure:.0f}) would exceed MAX_PORTFOLIO_USD "
-                f"(${self.config.max_portfolio_usd:.0f}, current exposure: ${existing_total:.0f}).",
-                ephemeral=True,
-            )
-            return
-
-        # Idempotency gate: exactly one click wins the pending -> approved transition.
-        claimed = await asyncio.to_thread(
-            queries.claim_recommendation, self.config.db_path, self.rec_id, "approved"
-        )
-        if not claimed:
-            await interaction.response.send_message(
-                f"This recommendation for {self.ticker} was already handled.",
-                ephemeral=True,
-            )
-            return
-
-        # Acknowledge within Discord's 3s interaction window before the Schwab call,
-        # which is synchronous HTTP with retries and must run off the event loop.
+        # Acknowledge inside Discord's 3s window; everything below is network.
         await interaction.response.defer()
 
-        order_id = None
-        limit_price_val = None      # D-06: dry-run records market defaults regardless of use_limit_buy
-        order_type_val = "market"   # D-06: see above
-        try:
-            if not self.config.dry_run:
-                # The gate spans the final kill-switch read through the broker
-                # dispatch. Without it /halt could land in one of the await
-                # boundaries below: the worker reads ENABLED, /halt persists
-                # HALTED and replies "halted", and the worker submits anyway.
-                # /halt acquires the same gate, so it returns only once nothing
-                # is in flight.
-                async with kill_switch.submission_gate():
-                    kill_switch.require_enabled(self.config)
-                    if self.config.use_limit_buy:
-                        order_id = await asyncio.to_thread(
-                            place_limit_order, self.ticker, shares, self.price, self.config
-                        )
-                        limit_price_val = self.price
-                        order_type_val = "limit"
-                    else:
-                        order_id = await asyncio.to_thread(
-                            place_order, self.ticker, shares, self.config
-                        )
-        except TradingHalted as exc:
-            # Nothing was dispatched, so re-open the recommendation and say so
-            # plainly. The generic handler's "verify in Schwab" would send the
-            # operator looking for an order that was never sent.
-            await asyncio.to_thread(
-                queries.update_recommendation_status, self.config.db_path, self.rec_id, "pending"
-            )
-            logger.warning("Buy blocked for %s: %s", self.ticker, exc)
-            await interaction.followup.send(
-                f"Buy for {self.ticker} blocked: trading is halted. No order was "
-                f"sent. ({exc}) The recommendation stays open — approve again "
-                "after /resume."
-            )
-            return
-        except Exception as exc:
-            # Release the claim so the button can be retried after the failure.
-            await asyncio.to_thread(
-                queries.update_recommendation_status, self.config.db_path, self.rec_id, "pending"
-            )
-            logger.error("Buy order failed for %s: %s", self.ticker, exc)
-            await interaction.followup.send(
-                f"Order placement failed for {self.ticker}: {exc} — recommendation "
-                "re-opened. Verify in Schwab before retrying."
-            )
-            return
+        async with approval_gate():
+            now = _utcnow()
 
-        # WARNING (RISK-05 / Phase 17): GTC limit orders are recorded as positions immediately
-        # on broker acknowledgement, not on fill. If the limit does not fill, has_open_position()
-        # will block re-buys and the sell pass may attempt to sell non-existent shares.
-        # Fill reconciliation is deferred to a future phase.
-        await asyncio.to_thread(
-            queries.create_trade,
-            db_path=self.config.db_path,
-            recommendation_id=self.rec_id,
-            ticker=self.ticker,
-            shares=shares,
-            price=self.price,
-            order_id=order_id,
-            limit_price=limit_price_val,
-            order_type=order_type_val,
-        )
-        # POS-02: track position
-        await asyncio.to_thread(
-            queries.upsert_position, self.config.db_path, self.ticker, shares, self.price
-        )
+            try:
+                quote = await asyncio.to_thread(fetch_quote, self.ticker, self.config)
+            except QuoteUnavailable as exc:
+                # Guard 4 turns this into an operator-readable refusal. Raising
+                # here instead would skip the table that exists to adjudicate it.
+                logger.warning("No usable quote for %s: %s", self.ticker, exc)
+                quote = None
 
-        elapsed = f" (scan at {self.scan_time})" if self.scan_time else ""
-        if self.config.dry_run:
-            msg = f"[DRY RUN] Approved: buying {shares} share(s) of {self.ticker} at ${self.price:.2f}{elapsed}."
-        elif self.config.use_limit_buy:
-            msg = f"Approved: buying {shares} share(s) of {self.ticker} at ${self.price:.2f} (limit, GTC{elapsed})."
-        else:
-            msg = f"Approved: buying {shares} share(s) of {self.ticker} at ${self.price:.2f}{elapsed}."
-        await interaction.followup.send(msg)
+            broker = await asyncio.to_thread(collect_broker_snapshot, self.config)
+            trading_enabled = await asyncio.to_thread(
+                kill_switch.is_enabled, self.config.db_path
+            )
+
+            decision, order_id = await asyncio.to_thread(
+                self._reserve, self._trade_request(interaction), quote, broker,
+                trading_enabled, now,
+            )
+
+            if not decision.allowed:
+                logger.info(
+                    "Buy refused for %s: %s — %s",
+                    self.ticker, decision.reason_code, decision.message,
+                )
+                await interaction.followup.send(
+                    f"**{self.ticker} not bought** ({decision.reason_code}): {decision.message}"
+                )
+                return
+
+            if self.config.dry_run:
+                await asyncio.to_thread(self._record_position, decision, None)
+                await interaction.followup.send(
+                    f"[DRY RUN] Approved: {decision.shares:g} share(s) of {self.ticker} "
+                    f"at a ${decision.limit_price:.2f} limit — all guards passed, "
+                    "no order sent and nothing reserved."
+                )
+                self.stop()
+                return
+
+            outcome = await self._submit(decision, order_id)
+            if outcome.status == "submitted":
+                await asyncio.to_thread(
+                    self._record_position, decision, outcome.broker_order_id
+                )
+
+        await self._report(interaction, decision, outcome)
         self.stop()
+
+    async def _submit(self, decision, order_id):
+        """Submit once and classify the result. Never raises.
+
+        The submission gate spans the final kill-switch read through dispatch:
+        without it /halt could land on an await boundary here, read ENABLED,
+        and let this submit anyway after /halt had already replied "halted".
+        """
+        spec = build_limit_buy(
+            self.ticker, int(decision.shares), f"{decision.limit_price:.2f}"
+        )
+        try:
+            async with kill_switch.submission_gate():
+                response = await asyncio.to_thread(
+                    _call_place_order, None, self.config, spec
+                )
+            outcome = classify_submission(response=response)
+        except TradingHalted as exc:
+            # Nothing was dispatched, so this is a definitive non-submission.
+            # Releasing the reservation is correct precisely because we KNOW
+            # nothing exists — unlike every other failure below.
+            logger.warning("Buy blocked for %s: %s", self.ticker, exc)
+            outcome = SubmissionOutcome(
+                status="submit_failed", broker_order_id=None,
+                message=("Trading is halted, so no order was sent. The "
+                         "recommendation stays open — approve again after /resume."),
+            )
+        except Exception as exc:
+            outcome = classify_submission(error=exc)
+            logger.error(
+                "Buy submission for %s resolved as %s: %s",
+                self.ticker, outcome.status, exc,
+            )
+
+        await asyncio.to_thread(self._settle, order_id, outcome)
+        return outcome
+
+    def _settle(self, order_id: int, outcome) -> None:
+        """Record what the submission turned out to be.
+
+        Only `submit_failed` reopens the recommendation. An ambiguous outcome
+        leaves it `approved` on purpose: reopening invites a second human
+        approval and a second real order for something that may already exist
+        (spec §3). Guard 11 blocks new buys of the ticker meanwhile.
+        """
+        with get_cursor(self.config.db_path) as conn:
+            if outcome.status == "submitted":
+                queries.attach_broker_order_id(conn, order_id, outcome.broker_order_id)
+            elif outcome.status == "submit_failed":
+                queries.mark_order_submit_failed(conn, order_id, outcome.message)
+            else:
+                queries.mark_order_submit_unknown(conn, order_id, outcome.message)
+
+        if outcome.status == "submit_failed":
+            queries.update_recommendation_status(self.config.db_path, self.rec_id, "pending")
+
+    def _record_position(self, decision, order_id: str | None) -> None:
+        """Record the trade and position, as before this change.
+
+        The ledger owns the CEILINGS; it does not yet own positions. The sell
+        pass, /positions, /stats and the duplicate-recommendation check all
+        still read the positions table, so removing this would silently strand
+        every one of them. RISK-05 still applies — a GTC limit is recorded here
+        on acknowledgement, not on fill, and `run_reconciliation` reports the
+        drift rather than papering over it.
+        """
+        queries.create_trade(
+            db_path=self.config.db_path, recommendation_id=self.rec_id,
+            ticker=self.ticker, shares=decision.shares, price=self.price,
+            order_id=order_id, limit_price=decision.limit_price, order_type="limit",
+        )
+        queries.upsert_position(
+            self.config.db_path, self.ticker, decision.shares, self.price
+        )
+
+    async def _report(self, interaction, decision, outcome) -> None:
+        elapsed = f" (scan at {self.scan_time})" if self.scan_time else ""
+        if outcome.status == "submitted":
+            await interaction.followup.send(
+                f"Approved: buying {decision.shares:g} share(s) of {self.ticker} at a "
+                f"${decision.limit_price:.2f} limit, GTC{elapsed}. "
+                f"Order {outcome.broker_order_id}."
+            )
+        elif outcome.status == "submit_failed":
+            await interaction.followup.send(
+                f"**{self.ticker} not bought.** {outcome.message}"
+            )
+        else:
+            await interaction.followup.send(
+                f"⚠️ **{self.ticker} order outcome UNKNOWN.** {outcome.message}"
+            )
 
     @discord.ui.button(label="Reject", style=discord.ButtonStyle.danger, emoji="❌")
     async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):

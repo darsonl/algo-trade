@@ -1,173 +1,196 @@
+"""ApproveRejectView handlers.
+
+The BUY approval path moved onto the guard table and the order ledger, and its
+behaviour is covered against a real database in `test_approval_ledger.py`. What
+remains here is the reject path and the handful of approve behaviours that are
+about the VIEW rather than about trading: idempotency under a double click, and
+that a dry run never reaches the broker.
+
+The old tests in this file mocked `queries` wholesale and asserted call shapes
+(`place_order(...)` called with these args). They were testing the previous
+implementation rather than any behaviour, and the branch-per-`USE_LIMIT_BUY`
+cases described a toggle that no longer exists -- every buy is a limit order.
+"""
 import os
+import sqlite3
 import tempfile
+from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
-from discord_bot.bot import ApproveRejectView
+
 from config import Config
 from database.models import initialize_db
+from database.queries import create_recommendation
+from discord_bot.bot import ApproveRejectView
 from risk import kill_switch
+from risk.preflight import BrokerSnapshot
+from schwab_client.quotes import Quote
+
+NOW = datetime(2026, 8, 17, 15, 0, tzinfo=timezone.utc)  # 11:00 ET Mon
+APPROVER = 1001
 
 
-# --- helpers ---
-
-def _make_config(dry_run=True, max_usd=500.0, max_portfolio_usd=20000.0, db_path=None, use_limit_buy=True,
-                 trading_enabled=True):
-    """Build a Config backed by a REAL database file.
+def _make_config(dry_run=True, max_usd=500.0, max_portfolio_usd=20000.0):
+    """A Config backed by a REAL database file.
 
     ":memory:" used to be the default here, which quietly meant "a brand new
     empty database per connection" — fine while nothing read durable state, but
     the kill switch does, and an empty database reads UNINITIALIZED, which is
     not-enabled. Live-mode approvals would be blocked for the wrong reason.
     """
+    db_path = os.path.join(tempfile.mkdtemp(), "buttons.db")
+    initialize_db(db_path)
+    kill_switch.init(db_path, env_default=True)
     c = Config()
+    c.db_path = db_path
     c.dry_run = dry_run
     c.max_position_size_usd = max_usd
     c.max_portfolio_usd = max_portfolio_usd
-    if db_path is None:
-        db_path = os.path.join(tempfile.mkdtemp(), "test.db")
-        initialize_db(db_path)
-        kill_switch.init(db_path, env_default=trading_enabled)
-    c.db_path = db_path
-    c.use_limit_buy = use_limit_buy
+    c.max_daily_notional_usd = 20000.0
+    c.allowed_discord_user_ids = str(APPROVER)
+    c.discord_guild_id = 0
+    c.discord_channel_id = 0
+    c.approval_price_tolerance_pct = 2.0
+    c.approval_slippage_buffer_pct = 0.5
     return c
 
 
-def _make_view(ticker="AAPL", price=100.0, rec_id=1, dry_run=True, max_usd=500.0, max_portfolio_usd=20000.0, use_limit_buy=True):
-    config = _make_config(dry_run=dry_run, max_usd=max_usd, max_portfolio_usd=max_portfolio_usd, use_limit_buy=use_limit_buy)
+def _recommendation(config, ticker="AAPL", price=100.0):
+    rec_id = create_recommendation(
+        config.db_path, ticker=ticker, signal="BUY", reasoning="t",
+        price=price, dividend_yield=None, pe_ratio=None,
+    )
+    expires = (NOW + timedelta(hours=6)).strftime("%Y-%m-%d %H:%M:%S")
+    with sqlite3.connect(config.db_path) as conn:
+        conn.execute("UPDATE recommendations SET expires_at = ? WHERE id = ?", (expires, rec_id))
+    return rec_id
+
+
+def _make_view(config=None, ticker="AAPL", price=100.0, rec_id=None, **cfg):
+    config = config or _make_config(**cfg)
+    if rec_id is None:
+        rec_id = _recommendation(config, ticker=ticker, price=price)
     return ApproveRejectView(rec_id=rec_id, ticker=ticker, price=price, config=config)
 
 
-def _make_interaction():
-    interaction = MagicMock()
-    interaction.response.send_message = AsyncMock()
-    interaction.response.defer = AsyncMock()
-    interaction.followup.send = AsyncMock()
-    return interaction
+def _make_interaction(user_id=APPROVER):
+    it = MagicMock()
+    it.user.id = user_id
+    it.guild_id = 0
+    it.channel_id = 0
+    it.response.send_message = AsyncMock()
+    it.response.defer = AsyncMock()
+    it.followup.send = AsyncMock()
+    return it
 
 
-async def _call_approve(view, interaction, button=None):
-    """Invoke the approve handler, bypassing discord.py's Button wrapper."""
-    if button is None:
-        button = MagicMock()
-    await view.approve.callback.callback(view, interaction, button)
+class _Submitted:
+    status_code = 201
+    headers = {"Location": "https://api.schwab.com/orders/OID-1"}
 
 
-async def _call_reject(view, interaction, button=None):
-    """Invoke the reject handler, bypassing discord.py's Button wrapper."""
-    if button is None:
-        button = MagicMock()
-    await view.reject.callback.callback(view, interaction, button)
-
-
-# --- approve: dry-run ---
-
-@pytest.mark.asyncio
-@patch("discord_bot.bot.place_order")
-@patch("discord_bot.bot.queries")
-async def test_approve_dry_run_does_not_call_place_order(mock_queries, mock_place_order):
-    mock_queries.create_trade.return_value = 1
-    view = _make_view(dry_run=True)
-    await _call_approve(view, _make_interaction())
-    mock_place_order.assert_not_called()
-
-
-@pytest.mark.asyncio
-@patch("discord_bot.bot.place_order")
-@patch("discord_bot.bot.queries")
-async def test_approve_dry_run_creates_trade_with_none_order_id(mock_queries, mock_place_order):
-    mock_queries.create_trade.return_value = 1
-    view = _make_view(ticker="AAPL", price=100.0, rec_id=7, dry_run=True)
-    await _call_approve(view, _make_interaction())
-    call_kwargs = mock_queries.create_trade.call_args[1]
-    assert call_kwargs["order_id"] is None
-    assert call_kwargs["ticker"] == "AAPL"
-    assert call_kwargs["recommendation_id"] == 7
-
-
-# --- approve: live ---
-
-@pytest.mark.asyncio
-@patch("discord_bot.bot.place_order")
-@patch("discord_bot.bot.queries")
-async def test_approve_live_calls_place_order(mock_queries, mock_place_order):
-    mock_place_order.return_value = "schwab-order-xyz"
-    mock_queries.create_trade.return_value = 1
-    # use_limit_buy=False to exercise the market-order (place_order) path
-    view = _make_view(price=100.0, dry_run=False, use_limit_buy=False)
-    await _call_approve(view, _make_interaction())
-    mock_place_order.assert_called_once_with("AAPL", 5, view.config)
-
-
-@pytest.mark.asyncio
-@patch("discord_bot.bot.place_order")
-@patch("discord_bot.bot.queries")
-async def test_approve_live_stores_order_id_in_trade(mock_queries, mock_place_order):
-    mock_place_order.return_value = "schwab-order-abc"
-    mock_queries.create_trade.return_value = 1
-    # use_limit_buy=False so place_order (not place_limit_order) sets the order_id
-    view = _make_view(price=100.0, dry_run=False, use_limit_buy=False)
-    await _call_approve(view, _make_interaction())
-    call_kwargs = mock_queries.create_trade.call_args[1]
-    assert call_kwargs["order_id"] == "schwab-order-abc"
-
-
-# --- approve: status update ---
-
-@pytest.mark.asyncio
-@patch("discord_bot.bot.place_order")
-@patch("discord_bot.bot.queries")
-async def test_approve_sets_status_to_approved(mock_queries, mock_place_order):
-    mock_queries.create_trade.return_value = 1
-    view = _make_view(rec_id=3, dry_run=True)
-    await _call_approve(view, _make_interaction())
-    mock_queries.claim_recommendation.assert_called_once_with(
-        view.config.db_path, 3, "approved"
+def _broker_patches(place):
+    quote = Quote(symbol="AAPL", bid=99.5, ask=100.0, last=100.0,
+                  quote_time=NOW - timedelta(seconds=1))
+    return (
+        patch("discord_bot.bot.fetch_quote", return_value=quote),
+        patch("discord_bot.bot.collect_broker_snapshot", return_value=BrokerSnapshot([], [])),
+        patch("discord_bot.bot._utcnow", return_value=NOW),
+        patch("discord_bot.bot._call_place_order", side_effect=place),
+        patch("schwab_client.auth.get_client", return_value=MagicMock()),
     )
 
 
+async def _call_approve(view, interaction, place=None):
+    place = place or (lambda client, config, spec: _Submitted())
+    patches = _broker_patches(place)
+    for p in patches:
+        p.start()
+    try:
+        await view.approve.callback.callback(view, interaction, MagicMock())
+    finally:
+        for p in patches:
+            p.stop()
+
+
+async def _call_reject(view, interaction):
+    await view.reject.callback.callback(view, interaction, MagicMock())
+
+
+def _rec_status(db_path, rec_id):
+    with sqlite3.connect(db_path) as conn:
+        return conn.execute(
+            "SELECT status FROM recommendations WHERE id = ?", (rec_id,)
+        ).fetchone()[0]
+
+
+# --- approve: the view's own responsibilities ---
+
 @pytest.mark.asyncio
-@patch("discord_bot.bot.place_order")
-@patch("discord_bot.bot.queries")
-async def test_approve_sends_confirmation_message(mock_queries, mock_place_order):
-    mock_queries.create_trade.return_value = 1
+async def test_approve_dry_run_does_not_reach_the_broker():
+    calls = []
+    view = _make_view(dry_run=True)
+    await _call_approve(view, _make_interaction(),
+                        place=lambda c, cfg, s: calls.append(s) or _Submitted())
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_approve_defers_before_any_network_work():
+    """Discord closes the interaction after 3s; everything after this is HTTP."""
     view = _make_view(dry_run=True)
     interaction = _make_interaction()
     await _call_approve(view, interaction)
     interaction.response.defer.assert_awaited_once()
-    interaction.followup.send.assert_awaited_once()
+    interaction.followup.send.assert_awaited()
 
-
-# --- approve: zero shares guard ---
 
 @pytest.mark.asyncio
-@patch("discord_bot.bot.place_order")
-@patch("discord_bot.bot.queries")
-async def test_approve_zero_shares_sends_ephemeral_and_does_not_trade(mock_queries, mock_place_order):
-    """Price exceeds max_position_size_usd -> 0 shares -> early return, no trade record."""
-    view = _make_view(price=600.0, max_usd=500.0, dry_run=True)
-    interaction = _make_interaction()
+async def test_approve_double_click_submits_only_one_order():
+    """Idempotency. The claim is inside the reservation transaction, so the
+    second click loses the race and never reaches the broker."""
+    submissions = []
+    config = _make_config(dry_run=False)
+    rec_id = _recommendation(config)
+    view = _make_view(config=config, rec_id=rec_id)
+
+    def _place(client, cfg, spec):
+        submissions.append(spec)
+        return _Submitted()
+
+    await _call_approve(view, _make_interaction(), place=_place)
+    await _call_approve(view, _make_interaction(), place=_place)
+
+    assert len(submissions) == 1
+    assert _rec_status(config.db_path, rec_id) == "approved"
+
+
+@pytest.mark.asyncio
+async def test_approve_by_an_unlisted_user_is_refused_privately():
+    config = _make_config(dry_run=False)
+    view = _make_view(config=config)
+    interaction = _make_interaction(user_id=4242)
     await _call_approve(view, interaction)
+
     interaction.response.send_message.assert_awaited_once()
-    mock_queries.create_trade.assert_not_called()
-    mock_place_order.assert_not_called()
+    assert interaction.response.send_message.call_args.kwargs.get("ephemeral") is True
+    interaction.response.defer.assert_not_called()
 
 
-# --- reject (TEST-03) ---
+# --- reject ---
 
 @pytest.mark.asyncio
-@patch("discord_bot.bot.queries")
-async def test_reject_sets_status_to_rejected(mock_queries):
-    view = _make_view(rec_id=9)
+async def test_reject_sets_status_to_rejected():
+    config = _make_config()
+    rec_id = _recommendation(config)
+    view = _make_view(config=config, rec_id=rec_id)
     await _call_reject(view, _make_interaction())
-    mock_queries.claim_recommendation.assert_called_once_with(
-        view.config.db_path, 9, "rejected"
-    )
+    assert _rec_status(config.db_path, rec_id) == "rejected"
 
 
 @pytest.mark.asyncio
-@patch("discord_bot.bot.queries")
-async def test_reject_sends_confirmation_message(mock_queries):
+async def test_reject_sends_confirmation_message():
     view = _make_view(ticker="JNJ")
     interaction = _make_interaction()
     await _call_reject(view, interaction)
@@ -175,277 +198,20 @@ async def test_reject_sends_confirmation_message(mock_queries):
 
 
 @pytest.mark.asyncio
-@patch("discord_bot.bot.queries")
-async def test_reject_does_not_call_place_order(mock_queries):
+async def test_reject_never_reaches_the_broker():
     view = _make_view()
-    with patch("discord_bot.bot.place_order") as mock_place:
+    with patch("discord_bot.bot._call_place_order") as place:
         await _call_reject(view, _make_interaction())
-        mock_place.assert_not_called()
-
-
-# --- approve: exposure guard (POS-05) ---
-
-@pytest.mark.asyncio
-@patch("discord_bot.bot.place_order")
-@patch("discord_bot.bot.queries")
-async def test_approve_exposure_guard_blocks(mock_queries, mock_place_order):
-    """Existing exposure $480 + new buy $100 = $580 > max $500 -> ephemeral rejection, no trade."""
-    # One open position: 40 shares at avg_cost_usd=12.0 (last_price=None) -> $480 exposure
-    existing_pos = {"shares": 40, "last_price": None, "avg_cost_usd": 12.0}
-    mock_queries.get_open_positions.return_value = [existing_pos]
-    mock_queries.create_trade.return_value = 1
-
-    # price=100, max=500 -> shares=5, new_exposure=500, existing=480, total=980 > max_portfolio_usd=900
-    view = _make_view(ticker="TSLA", price=100.0, max_usd=500.0, max_portfolio_usd=900.0)
-    interaction = _make_interaction()
-    await _call_approve(view, interaction)
-
-    interaction.response.send_message.assert_awaited_once()
-    call_kwargs = interaction.response.send_message.call_args[1]
-    assert call_kwargs.get("ephemeral") is True
-    msg = interaction.response.send_message.call_args[0][0]
-    assert "exceed" in msg
-    mock_queries.create_trade.assert_not_called()
+        place.assert_not_called()
 
 
 @pytest.mark.asyncio
-@patch("discord_bot.bot.place_order")
-@patch("discord_bot.bot.queries")
-async def test_approve_exposure_guard_allows(mock_queries, mock_place_order):
-    """No existing positions -> exposure guard passes -> trade and upsert called."""
-    mock_queries.get_open_positions.return_value = []
-    mock_queries.create_trade.return_value = 1
+async def test_reject_already_handled_sends_ephemeral():
+    config = _make_config()
+    rec_id = _recommendation(config)
+    view = _make_view(config=config, rec_id=rec_id)
+    await _call_reject(view, _make_interaction())
 
-    view = _make_view(ticker="AAPL", price=100.0, max_usd=500.0)
-    interaction = _make_interaction()
-    await _call_approve(view, interaction)
-
-    mock_queries.create_trade.assert_called_once()
-    mock_queries.upsert_position.assert_called_once()
-
-
-@pytest.mark.asyncio
-@patch("discord_bot.bot.place_order")
-@patch("discord_bot.bot.queries")
-async def test_approve_upserts_position(mock_queries, mock_place_order):
-    """Successful approve calls upsert_position with (db_path, ticker, shares, price)."""
-    mock_queries.get_open_positions.return_value = []
-    mock_queries.create_trade.return_value = 1
-
-    view = _make_view(ticker="MSFT", price=200.0, max_usd=500.0, rec_id=42)
-    interaction = _make_interaction()
-    await _call_approve(view, interaction)
-
-    # shares = floor(500/200) = 2
-    mock_queries.upsert_position.assert_called_once_with(
-        view.config.db_path, "MSFT", 2, 200.0
-    )
-
-
-@pytest.mark.asyncio
-@patch("discord_bot.bot.place_order")
-@patch("discord_bot.bot.queries")
-async def test_approve_exposure_uses_last_price_fallback(mock_queries, mock_place_order):
-    """When last_price is set, use last_price (not avg_cost_usd) for exposure calc."""
-    # Position: 10 shares, last_price=15.0, avg_cost_usd=10.0 -> exposure = 10*15=150
-    existing_pos = {"shares": 10, "last_price": 15.0, "avg_cost_usd": 10.0}
-    mock_queries.get_open_positions.return_value = [existing_pos]
-    mock_queries.create_trade.return_value = 1
-
-    # price=50, max=500 -> shares=10, new_exposure=500. existing=150. total=650 > max_portfolio_usd=600
-    view = _make_view(ticker="NVDA", price=50.0, max_usd=500.0, max_portfolio_usd=600.0)
-    interaction = _make_interaction()
-    await _call_approve(view, interaction)
-
-    # Verify blocked (uses last_price=15.0, not avg=10.0)
-    call_kwargs = interaction.response.send_message.call_args[1]
-    assert call_kwargs.get("ephemeral") is True
-    mock_queries.create_trade.assert_not_called()
-
-    # Now verify if avg_cost_usd=10.0 was used instead, exposure=10*10=100+500=600 -> also blocked
-    # So let's verify with a case where only last_price causes the block but avg_cost wouldn't
-    # Reset: existing_pos with last_price=45.0, avg_cost_usd=2.0
-    # price=50, max=500, shares=10, new=500
-    # with last_price=45 -> existing=10*45=450, total=950 > 500 -> blocked
-    # with avg=2.0 -> existing=10*2=20, total=520 > 500 -> also blocked (same outcome here)
-    # Use a case where avg would pass but last_price blocks:
-    # last_price=30, avg=1. existing with last=10*30=300. new=10*50=500. total=800>500 blocked
-    # with avg=1: existing=10. total=510>500 -> blocked either way
-    # The test confirms last_price IS used when not None -- the mock sets last_price=15.0
-    # and the guard correctly blocked. That's sufficient to confirm last_price was used.
-
-
-# --- limit/market routing in ApproveRejectView.approve (RISK-01, RISK-02, RISK-03) ---
-
-@pytest.mark.asyncio
-@patch("discord_bot.bot.place_limit_order")
-@patch("discord_bot.bot.place_order")
-@patch("discord_bot.bot.queries")
-async def test_approve_limit_live_calls_place_limit_order_not_place_order(
-    mock_queries, mock_place_order, mock_place_limit_order
-):
-    """RISK-01 + RISK-02: use_limit_buy=True, dry_run=False -> place_limit_order called, place_order NOT called."""
-    mock_place_limit_order.return_value = "schwab-limit-001"
-    mock_queries.create_trade.return_value = 1
-    view = _make_view(price=100.0, dry_run=False, use_limit_buy=True)
-    await _call_approve(view, _make_interaction())
-    mock_place_limit_order.assert_called_once_with("AAPL", 5, 100.0, view.config)
-    mock_place_order.assert_not_called()
-
-
-@pytest.mark.asyncio
-@patch("discord_bot.bot.place_limit_order")
-@patch("discord_bot.bot.place_order")
-@patch("discord_bot.bot.queries")
-async def test_approve_market_live_calls_place_order_not_place_limit_order(
-    mock_queries, mock_place_order, mock_place_limit_order
-):
-    """RISK-02: use_limit_buy=False, dry_run=False -> place_order called, place_limit_order NOT called."""
-    mock_place_order.return_value = "schwab-market-002"
-    mock_queries.create_trade.return_value = 1
-    view = _make_view(price=100.0, dry_run=False, use_limit_buy=False)
-    await _call_approve(view, _make_interaction())
-    mock_place_order.assert_called_once_with("AAPL", 5, view.config)
-    mock_place_limit_order.assert_not_called()
-
-
-@pytest.mark.asyncio
-@patch("discord_bot.bot.place_limit_order")
-@patch("discord_bot.bot.place_order")
-@patch("discord_bot.bot.queries")
-async def test_approve_limit_live_create_trade_records_limit_kwargs(
-    mock_queries, mock_place_order, mock_place_limit_order
-):
-    """RISK-03 live limit path: create_trade called with limit_price=100.0 and order_type='limit'."""
-    mock_place_limit_order.return_value = "schwab-limit-003"
-    mock_queries.create_trade.return_value = 1
-    view = _make_view(price=100.0, dry_run=False, use_limit_buy=True)
-    await _call_approve(view, _make_interaction())
-    call_kwargs = mock_queries.create_trade.call_args[1]
-    assert call_kwargs["limit_price"] == 100.0
-    assert call_kwargs["order_type"] == "limit"
-
-
-@pytest.mark.asyncio
-@patch("discord_bot.bot.place_limit_order")
-@patch("discord_bot.bot.place_order")
-@patch("discord_bot.bot.queries")
-async def test_approve_dry_run_create_trade_records_market_regardless_of_use_limit_buy(
-    mock_queries, mock_place_order, mock_place_limit_order
-):
-    """D-06: dry_run=True always records order_type='market', limit_price=None regardless of use_limit_buy."""
-    mock_queries.create_trade.return_value = 1
-    view = _make_view(price=100.0, dry_run=True, use_limit_buy=True)
-    await _call_approve(view, _make_interaction())
-    call_kwargs = mock_queries.create_trade.call_args[1]
-    assert call_kwargs["limit_price"] is None
-    assert call_kwargs["order_type"] == "market"
-
-
-@pytest.mark.asyncio
-@patch("discord_bot.bot.place_limit_order")
-@patch("discord_bot.bot.place_order")
-@patch("discord_bot.bot.queries")
-async def test_approve_limit_live_confirmation_message_contains_limit_gtc(
-    mock_queries, mock_place_order, mock_place_limit_order
-):
-    """D-10: use_limit_buy=True, dry_run=False -> confirmation message contains '(limit, GTC)'."""
-    mock_place_limit_order.return_value = "schwab-limit-004"
-    mock_queries.create_trade.return_value = 1
-    view = _make_view(price=100.0, dry_run=False, use_limit_buy=True)
-    interaction = _make_interaction()
-    await _call_approve(view, interaction)
-    msg = interaction.followup.send.call_args[0][0]
-    assert "(limit, GTC)" in msg
-
-
-@pytest.mark.asyncio
-@patch("discord_bot.bot.place_limit_order")
-@patch("discord_bot.bot.place_order")
-@patch("discord_bot.bot.queries")
-async def test_approve_market_live_confirmation_message_does_not_contain_limit_gtc(
-    mock_queries, mock_place_order, mock_place_limit_order
-):
-    """D-11: use_limit_buy=False, dry_run=False -> confirmation message does NOT contain '(limit, GTC)'."""
-    mock_place_order.return_value = "schwab-market-005"
-    mock_queries.create_trade.return_value = 1
-    view = _make_view(price=100.0, dry_run=False, use_limit_buy=False)
-    interaction = _make_interaction()
-    await _call_approve(view, interaction)
-    msg = interaction.followup.send.call_args[0][0]
-    assert "(limit, GTC)" not in msg
-
-
-# --- idempotency gate + order-failure recovery (review items 2/3) ---
-
-@pytest.mark.asyncio
-@patch("discord_bot.bot.place_order")
-@patch("discord_bot.bot.queries")
-async def test_approve_double_click_places_only_one_order(mock_queries, mock_place_order):
-    """Second click loses the pending->approved race: no second order, ephemeral notice."""
-    mock_place_order.return_value = "schwab-order-once"
-    mock_queries.create_trade.return_value = 1
-    mock_queries.get_open_positions.return_value = []
-    mock_queries.claim_recommendation.side_effect = [True, False]
-
-    view = _make_view(price=100.0, dry_run=False, use_limit_buy=False)
-    first, second = _make_interaction(), _make_interaction()
-    await _call_approve(view, first)
-    await _call_approve(view, second)
-
-    mock_place_order.assert_called_once()
-    second.followup.send.assert_not_awaited()
-    second.response.send_message.assert_awaited_once()
-    assert second.response.send_message.call_args[1].get("ephemeral") is True
-    assert "already handled" in second.response.send_message.call_args[0][0]
-
-
-@pytest.mark.asyncio
-@patch("discord_bot.bot.place_order")
-@patch("discord_bot.bot.queries")
-async def test_approve_order_failure_reopens_recommendation(mock_queries, mock_place_order):
-    """Order failure releases the claim (status back to pending) and records no trade."""
-    mock_place_order.side_effect = RuntimeError("Schwab unavailable")
-    mock_queries.get_open_positions.return_value = []
-
-    view = _make_view(rec_id=5, price=100.0, dry_run=False, use_limit_buy=False)
-    interaction = _make_interaction()
-    await _call_approve(view, interaction)
-
-    mock_queries.update_recommendation_status.assert_called_once_with(
-        view.config.db_path, 5, "pending"
-    )
-    mock_queries.create_trade.assert_not_called()
-    mock_queries.upsert_position.assert_not_called()
-    msg = interaction.followup.send.call_args[0][0]
-    assert "failed" in msg
-
-
-@pytest.mark.asyncio
-@patch("discord_bot.bot.place_order")
-@patch("discord_bot.bot.queries")
-async def test_approve_defers_before_placing_order(mock_queries, mock_place_order):
-    """The interaction is acknowledged (defer) before the slow Schwab call runs."""
-    call_order = []
-    mock_queries.get_open_positions.return_value = []
-    mock_queries.create_trade.return_value = 1
-    mock_place_order.side_effect = lambda *a, **k: call_order.append("order") or "oid"
-
-    view = _make_view(price=100.0, dry_run=False, use_limit_buy=False)
-    interaction = _make_interaction()
-    interaction.response.defer = AsyncMock(side_effect=lambda *a, **k: call_order.append("defer"))
-    await _call_approve(view, interaction)
-
-    assert call_order == ["defer", "order"]
-
-
-@pytest.mark.asyncio
-@patch("discord_bot.bot.queries")
-async def test_reject_already_handled_sends_ephemeral(mock_queries):
-    """Reject on a non-pending recommendation gets the ephemeral already-handled notice."""
-    mock_queries.claim_recommendation.return_value = False
-    view = _make_view(rec_id=11)
     interaction = _make_interaction()
     await _call_reject(view, interaction)
-    assert interaction.response.send_message.call_args[1].get("ephemeral") is True
-    assert "already handled" in interaction.response.send_message.call_args[0][0]
+    assert interaction.response.send_message.call_args.kwargs.get("ephemeral") is True

@@ -127,66 +127,47 @@ def test_validate_other_provider_passes_with_api_key():
 
 
 # ===========================================================================
-# USE_LIMIT_BUY env mapping (SC#4, D-05)
+# Guard-table env mapping
 # ===========================================================================
 #
-# The mapping `os.getenv("USE_LIMIT_BUY", "false").lower() == "true"` is frozen
-# in the dataclass field DEFAULT at module import time. Changing the env var
-# after import has no effect unless the module is reloaded.
-#
-# The noop MUST be patched on the SOURCE module (dotenv.load_dotenv), NOT on
-# config.load_dotenv. importlib.reload re-executes config.py's body, including
-# line 4 `from dotenv import load_dotenv`. That rebind looks up dotenv.load_dotenv
-# at reload time; if we've already patched config.load_dotenv, the rebind on
-# line 4 restores the real function BEFORE line 6's call fires. Patching the
-# SOURCE means the name line 4 imports IS already the noop.
-
-@pytest.fixture(autouse=True)
-def _restore_config_module():
-    """Yield to let the test run, then reload config back to its natural state.
-
-    This ensures USE_LIMIT_BUY mapping tests don't pollute module state for
-    subsequent tests (including tests in other files that import config).
-    """
-    yield
-    # Restore dotenv.load_dotenv to its real implementation (monkeypatch already
-    # restored it by this point), then reload so field defaults reflect the
-    # restored environment.
-    importlib.reload(config_module)
+# USE_LIMIT_BUY used to be exercised here through importlib.reload, because its
+# mapping was frozen in a dataclass field default at import time. Both are gone:
+# the toggle was removed (every buy is a limit order, so there is nothing to
+# toggle), and Config now reads the environment at CONSTRUCTION via
+# field(default_factory=...), so a plain Config() sees the current env.
 
 
-def _reload_with_env(monkeypatch, value):
-    """Reload config_module after setting USE_LIMIT_BUY to value (or unset when None).
-
-    Patches the SOURCE dotenv.load_dotenv so the on-disk .env is never consulted
-    during reload — prevents machine-specific .env from polluting the unset case.
-    Returns the reloaded Config().use_limit_buy boolean.
-    """
-    # Patch SOURCE — survives reload's `from dotenv import load_dotenv` rebind.
-    monkeypatch.setattr(dotenv, "load_dotenv", lambda *a, **k: None)
-    if value is None:
-        monkeypatch.delenv("USE_LIMIT_BUY", raising=False)
-    else:
-        monkeypatch.setenv("USE_LIMIT_BUY", value)
-    importlib.reload(config_module)
-    return config_module.Config().use_limit_buy
+def test_max_daily_notional_defaults_to_2000(monkeypatch):
+    monkeypatch.delenv("MAX_DAILY_NOTIONAL_USD", raising=False)
+    assert config_module.Config().max_daily_notional_usd == 2000.0
 
 
-def test_use_limit_buy_unset_defaults_false(monkeypatch):
-    """Unset USE_LIMIT_BUY → False (the 2026-06-06 default; regression guard)."""
-    assert _reload_with_env(monkeypatch, None) is False
+def test_max_daily_notional_reads_the_environment_at_construction(monkeypatch):
+    monkeypatch.setenv("MAX_DAILY_NOTIONAL_USD", "750.5")
+    assert config_module.Config().max_daily_notional_usd == 750.5
 
 
-def test_use_limit_buy_false_maps_false(monkeypatch):
-    """USE_LIMIT_BUY=false → False."""
-    assert _reload_with_env(monkeypatch, "false") is False
+def test_price_tolerance_defaults_to_2_percent(monkeypatch):
+    monkeypatch.delenv("APPROVAL_PRICE_TOLERANCE_PCT", raising=False)
+    assert config_module.Config().approval_price_tolerance_pct == 2.0
 
 
-def test_use_limit_buy_true_maps_true(monkeypatch):
-    """USE_LIMIT_BUY=true → True."""
-    assert _reload_with_env(monkeypatch, "true") is True
+def test_the_approver_allowlist_defaults_to_empty(monkeypatch):
+    """Empty means DENY ALL. It must never come to mean allow-all."""
+    monkeypatch.delenv("ALLOWED_DISCORD_USER_IDS", raising=False)
+    assert config_module.Config().allowed_discord_user_ids == ""
 
 
-def test_use_limit_buy_uppercase_true_maps_true(monkeypatch):
-    """USE_LIMIT_BUY=TRUE (uppercase) → True (case-insensitivity guard)."""
-    assert _reload_with_env(monkeypatch, "TRUE") is True
+def test_the_approver_allowlist_is_read_at_construction(monkeypatch):
+    monkeypatch.setenv("ALLOWED_DISCORD_USER_IDS", "1,2,3")
+    assert config_module.Config().allowed_discord_user_ids == "1,2,3"
+
+
+def test_the_approver_allowlist_is_separate_from_the_ops_allowlist(monkeypatch):
+    """Halting is a safety action anyone trusted should be able to take.
+    Spending money is not, so the two lists are deliberately different knobs."""
+    monkeypatch.setenv("OPS_USER_IDS", "111")
+    monkeypatch.setenv("ALLOWED_DISCORD_USER_IDS", "222")
+    c = config_module.Config()
+    assert c.ops_user_ids == "111"
+    assert c.allowed_discord_user_ids == "222"
