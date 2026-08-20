@@ -24,6 +24,7 @@ import pytest
 
 from config import Config
 from database.models import initialize_db
+from database import queries
 from database.queries import create_position, create_recommendation
 from discord_bot.bot import SellApproveRejectView
 from risk import kill_switch
@@ -255,12 +256,18 @@ async def test_no_usable_quote_refuses_the_sell():
 
 @pytest.mark.asyncio
 async def test_an_unresolved_order_blocks_a_sell():
-    """Guard 11. Selling into an unknown order state can oversell."""
+    """Guard 11. Selling into an unknown order state can oversell.
+
+    The first recommendation is retired first so that the block demonstrated
+    here comes from the unresolved ORDER, not from the active-recommendation
+    unique index.
+    """
     config = _config()
     first = _sell_recommendation(config)
     await _approve(_view(config, first), _interaction(),
                    submit_error=TimeoutError("boom"))
 
+    queries.update_recommendation_status(config.db_path, first, "completed")
     second = _sell_recommendation(config)
     view = SellApproveRejectView(second, "AAPL", 10, 170.0, config)
     await _approve(view, _interaction())

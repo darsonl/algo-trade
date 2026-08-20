@@ -34,6 +34,7 @@ import pytest
 
 from config import Config
 from database.models import initialize_db
+from database import queries
 from database.queries import create_recommendation
 from discord_bot.bot import ApproveRejectView, approval_gate
 from risk import kill_switch
@@ -229,12 +230,21 @@ async def test_a_definitive_refusal_marks_the_row_failed_and_reopens():
 
 @pytest.mark.asyncio
 async def test_an_unknown_order_blocks_the_next_buy_of_that_ticker():
-    """Guard 11, end to end: the reservation and the block both survive."""
+    """Guard 11, end to end: the reservation and the block both survive.
+
+    The first recommendation is retired before the second is written, so the
+    `idx_active_rec_per_ticker` partial unique index is NOT what does the
+    blocking here. Guard 11 must refuse on the strength of the unresolved ORDER
+    alone -- which is the case that matters, because an order can outlive its
+    recommendation (an operator retires one, or the order was never tied to a
+    recommendation at all).
+    """
     config = _config()
     first = _recommendation(config)
     await _approve(_view(config, first), _interaction(),
                    submit_error=TimeoutError("boom"))
 
+    queries.update_recommendation_status(config.db_path, first, "completed")
     second = _recommendation(config)
     await _approve(_view(config, second), _interaction())
 

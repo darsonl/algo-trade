@@ -28,6 +28,47 @@ TERMINAL_BROKER_STATUSES = frozenset({
 })
 
 
+# The sweep's terminal set, which is NOT `TERMINAL_BROKER_STATUSES` above.
+#
+# The two answer different questions and REPLACED separates them. The working-
+# order parser asks "is this order still consuming exposure?" -- a REPLACED order
+# is not, because the successor Schwab created is reported separately under its
+# own id, so counting both would double-charge the ceiling. The sweep asks "may
+# I free the recommendation?" -- and there REPLACED is the opposite of terminal:
+# the order is alive under an id we do not hold, and freeing the ticker would
+# let a second buy stack on top of a live one.
+#
+# Also an ALLOWLIST, for the same reason: `UNKNOWN` is a real member of Schwab's
+# enum, and anything unrecognised must read as still open.
+SWEEP_TERMINAL_BROKER_STATUSES = frozenset({
+    "FILLED", "CANCELED", "EXPIRED", "REJECTED",
+})
+
+# Broker vocabulary -> ours. EXPIRED collapses onto 'cancelled' because for
+# accounting they are identical (unfilled remainder released, any fill kept),
+# and one canonical name means the status contract cannot disagree with itself.
+_BROKER_STATUS_TO_ORDER_STATUS = {
+    "FILLED": "filled",
+    "CANCELED": "cancelled",
+    "EXPIRED": "cancelled",
+    "REJECTED": "rejected",
+}
+
+# Statuses where the order we asked about is gone and a DIFFERENT order carries
+# on in its place. Neither is terminal; both mean "look somewhere else".
+_REPLACEMENT_STATUSES = frozenset({"REPLACED", "PENDING_REPLACE"})
+
+
+@dataclass(frozen=True)
+class OrderStatusUpdate:
+    """What a broker payload says one of our orders became."""
+
+    status: str | None
+    terminal: bool
+    successor_id: str | None = None
+    reason: str | None = None
+
+
 class UnpriceableOrder(ValueError):
     """A live broker order whose exposure cannot be determined.
 
@@ -149,6 +190,44 @@ def extract_replacement(payload: dict) -> tuple[Replacement | None, str | None]:
         ),
         None,
     )
+
+
+def map_broker_status(payload: dict) -> OrderStatusUpdate:
+    """Map a broker order payload onto our canonical order status.
+
+    Terminal only for the four statuses in `SWEEP_TERMINAL_BROKER_STATUSES`.
+    Everything else -- WORKING, QUEUED, a literal `UNKNOWN`, and any member
+    Schwab adds after this was written -- reads as still open, because the
+    allowlist defaults the unrecognised case to the direction that keeps
+    reserving capital.
+
+    REPLACED is handled by following the pointer the broker gave us. Searching
+    for the successor cannot work: it carries a different price and falls
+    outside any window anchored on the original submission, so a matcher finds
+    nothing, and "nothing found" would read as "the order failed" while the
+    replacement is live. When the payload names no successor the order becomes
+    `submit_unknown` for a human -- never terminal.
+    """
+    broker_status = payload.get("status")
+
+    if broker_status in SWEEP_TERMINAL_BROKER_STATUSES:
+        return OrderStatusUpdate(
+            status=_BROKER_STATUS_TO_ORDER_STATUS[broker_status], terminal=True
+        )
+
+    if broker_status in _REPLACEMENT_STATUSES:
+        replacement, reason = extract_replacement(payload)
+        if replacement is not None:
+            return OrderStatusUpdate(
+                status=None, terminal=False, successor_id=replacement.successor_id
+            )
+        return OrderStatusUpdate(
+            status="submit_unknown",
+            terminal=False,
+            reason=reason or f"{broker_status} with no successor order to follow",
+        )
+
+    return OrderStatusUpdate(status=None, terminal=False)
 
 
 def parse_working_orders(payload) -> list[dict]:

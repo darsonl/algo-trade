@@ -65,6 +65,9 @@ def _full_patch(
         # .info and bypass the patched fetch_fundamental_info). Appended last to keep the
         # positional mock indices below stable.
         patch("main.partition_watchlist", return_value=(list(universe), [])),
+        # The active-recommendation guard in front of idx_active_rec_per_ticker.
+        # Also appended last, for the same index-stability reason.
+        patch("main.queries.has_active_recommendation", return_value=False),
     ]
 
     with ExitStack() as stack:
@@ -239,6 +242,8 @@ async def test_run_scan_excludes_etfs_from_stock_universe():
         patch("main.passes_technical_filter", return_value=True),
         patch("main.queries.create_recommendation", return_value=1),
         patch("main.queries.set_discord_message_id"),
+        # Appended last: this list is consumed by positional index too.
+        patch("main.queries.has_active_recommendation", return_value=False),
     ]
 
     with ExitStack() as stack:

@@ -1,6 +1,54 @@
+import logging
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
+
+
+def _create_active_recommendation_index(conn) -> None:
+    """One live recommendation per ticker, covering `approved` as well as `pending`.
+
+    v1 covered `'pending'` only, so protection lapsed the instant the claim
+    flipped a row to `approved` -- precisely the window between the claim and
+    the order submission, which is when a duplicate becomes a second real order.
+
+    Covering `approved` is only safe because the release valve now exists:
+    `complete_recommendation`, driven by `sweep_terminal_recommendations`. Ship
+    the index without it and the first buy of any ticker blocks that ticker
+    forever. Never reorder those two.
+
+    Creating a UNIQUE index RAISES if the table already violates it, and a
+    database written before this index existed may hold two pending rows for one
+    ticker. We log and continue rather than refusing to start: the guards, the
+    ledger and the kill switch all work without this index, while an operator
+    who cannot start the bot cannot `/halt` it either. Once the duplicates are
+    cleared the index appears on the next start, with no code change.
+    """
+    try:
+        conn.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS idx_active_rec_per_ticker
+                   ON recommendations(ticker)
+                   WHERE status IN ('pending', 'approved')"""
+        )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        conn.rollback()
+        duplicates = [
+            f"{row[0]} x{row[1]}"
+            for row in conn.execute(
+                """SELECT ticker, COUNT(*) FROM recommendations
+                    WHERE status IN ('pending', 'approved')
+                    GROUP BY ticker HAVING COUNT(*) > 1"""
+            )
+        ]
+        logger.error(
+            "idx_active_rec_per_ticker NOT created: this database already has "
+            "more than one active recommendation for %s. Duplicate-order "
+            "protection is running on the guards alone until these rows are "
+            "expired or completed.",
+            ", ".join(duplicates) or "some ticker",
+        )
 
 
 def _backfill_intended_session_dates(conn) -> int:
@@ -327,6 +375,7 @@ def initialize_db(db_path: str) -> None:
         conn.commit()
     except sqlite3.OperationalError:
         pass  # Column already exists
+    _create_active_recommendation_index(conn)
     _backfill_intended_session_dates(conn)
     # After the column is guaranteed to exist -- inside the schema block above
     # this would raise "no such column" on any pre-existing database.
