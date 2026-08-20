@@ -89,7 +89,16 @@ def main() -> int:
     else:
         print("  Trading is ARMED at the kill switch.")
         if cfg.dry_run:
-            print("  DRY_RUN=true still blocks every order (separate control).")
+            print(f"  EXECUTION_MODE={cfg.execution_mode} still blocks every order "
+                  "at the sink (separate control).")
+
+    # The approver allowlist is a FOURTH, independent lock, and the one most
+    # likely to surprise: it is checked before defer() and applies even in a dry
+    # run, so with it unset every Approve click is refused.
+    if not (cfg.allowed_discord_user_ids or "").strip():
+        print()
+        print("  ALLOWED_DISCORD_USER_IDS is empty: nobody can approve a trade,")
+        print("  even in a dry run. It is checked before defer().")
     return 0
 
 

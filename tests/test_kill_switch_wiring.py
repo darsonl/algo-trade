@@ -45,6 +45,11 @@ def _config(db_path, dry_run=False):
     c = Config()
     c.db_path = db_path
     c.dry_run = dry_run
+    # The sink requires BOTH mode signals to agree, so they are derived
+    # together here. These tests are about the kill switch, which the mode
+    # check sits in front of -- a dry-run config would be refused before the
+    # switch was ever read, and the switch would go untested.
+    c.execution_mode = "dry_run" if dry_run else "live"
     c.allowed_discord_user_ids = "1001"
     c.discord_guild_id = 0
     c.discord_channel_id = 0
