@@ -13,6 +13,7 @@ Two layers, deliberately redundant:
   broker call, so /halt cannot land in an await boundary between them.
 """
 import asyncio
+import pathlib
 import os
 import sqlite3
 import tempfile
@@ -59,24 +60,21 @@ def _config(db_path, dry_run=False):
 # ─── The sink ────────────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize("place", ["place_order", "place_limit_order", "place_sell_order"])
-def test_sink_refuses_every_order_type_when_halted(db_path, place):
+SPEC = {"orderType": "LIMIT", "price": "100.00"}
+
+
+def test_sink_refuses_when_halted(db_path):
     kill_switch.init(db_path, env_default=True)
     kill_switch.halt(db_path, actor="operator", reason="incident")
-    cfg = _config(db_path)
-    args = (("AAPL", 1, 100.0, cfg) if place == "place_limit_order"
-            else ("AAPL", 1, cfg))
 
     with pytest.raises(TradingHalted):
-        getattr(orders, place)(*args, client=MagicMock())
+        orders._call_place_order(MagicMock(), _config(db_path), SPEC)
 
 
 def test_sink_refuses_when_the_switch_was_never_initialised(db_path):
     """Fail closed: a forgotten init() must not read as permission to trade."""
-    cfg = _config(db_path)
-
     with pytest.raises(TradingHalted):
-        orders.place_order("AAPL", 1, cfg, client=MagicMock())
+        orders._call_place_order(MagicMock(), _config(db_path), SPEC)
 
 
 def test_sink_refuses_when_config_carries_no_db_path(db_path):
@@ -85,20 +83,16 @@ def test_sink_refuses_when_config_carries_no_db_path(db_path):
     cfg.db_path = None
 
     with pytest.raises(TradingHalted):
-        orders.place_order("AAPL", 1, cfg, client=MagicMock())
+        orders._call_place_order(MagicMock(), cfg, SPEC)
 
 
 def test_sink_dispatches_when_enabled(db_path):
     kill_switch.init(db_path, env_default=True)
     client = MagicMock()
-    client.place_order.return_value = MagicMock(
-        headers={"Location": "https://api/orders/12345"}
-    )
 
-    order_id = orders.place_order("AAPL", 1, _config(db_path), client=client)
+    orders._call_place_order(client, _config(db_path), SPEC)
 
-    assert order_id == "12345"
-    client.place_order.assert_called_once()
+    client.place_order.assert_called_once_with("hash", SPEC)
 
 
 def test_sink_never_reaches_the_broker_when_halted(db_path):
@@ -107,9 +101,43 @@ def test_sink_never_reaches_the_broker_when_halted(db_path):
     client = MagicMock()
 
     with pytest.raises(TradingHalted):
-        orders.place_order("AAPL", 1, _config(db_path), client=client)
+        orders._call_place_order(client, _config(db_path), SPEC)
 
     client.place_order.assert_not_called()
+
+
+def test_the_sink_is_the_only_way_into_the_broker(db_path):
+    """What the old `place_order`/`place_limit_order`/`place_sell_order`
+    parametrisation was really asserting.
+
+    Those three wrappers were deleted as orphans, and with them went the only
+    test that said "every dispatch goes through the gated choke point". The
+    claim outlives the wrappers: the sink exists so that a call site which
+    forgets the gate still fails closed, which is only true while no other call
+    site reaches the broker directly. Pin it structurally rather than by
+    enumerating callers, so a NEW ungated dispatch fails this test too.
+    """
+    root = pathlib.Path(__file__).resolve().parent.parent
+    offenders = []
+    for path in root.rglob("*.py"):
+        parts = path.parts
+        if ".venv" in parts or "tests" in parts or path.name.startswith("."):
+            continue
+        source = path.read_text(encoding="utf-8")
+        for lineno, line in enumerate(source.splitlines(), 1):
+            if ".place_order(" not in line:
+                continue
+            # The sink itself, and the one function it delegates to, are the
+            # intended exceptions.
+            if path.name == "orders.py" and path.parent.name == "schwab_client":
+                continue
+            offenders.append(f"{path.relative_to(root)}:{lineno}: {line.strip()}")
+
+    assert offenders == [], (
+        "These reach client.place_order without passing through "
+        "schwab_client.orders._call_place_order, so the kill switch does not "
+        "gate them:\n" + "\n".join(offenders)
+    )
 
 
 # ─── The approval path ───────────────────────────────────────────────────────

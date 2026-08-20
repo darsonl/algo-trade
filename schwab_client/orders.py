@@ -3,17 +3,15 @@ import logging
 from dataclasses import dataclass
 
 from schwab.client import Client as SchwabClient
-from schwab.orders.equities import equity_buy_limit, equity_buy_market, equity_sell_limit, equity_sell_market
+from schwab.orders.equities import equity_buy_limit, equity_sell_limit
 from schwab.orders.common import Duration
 
 from risk import kill_switch
-from risk.kill_switch import TradingHalted
 from schwab_client.order_payload import (
     _as_datetime,
     parse_candidate_orders,
     parse_working_orders,
 )
-from schwab_client.quotes import fetch_quote, marketable_sell_limit
 
 logger = logging.getLogger(__name__)
 
@@ -28,11 +26,6 @@ def _checked(resp):
     return resp.json()
 
 
-def build_market_buy(ticker: str, shares: int) -> dict:
-    """Return the JSON spec for a market buy order (no network call)."""
-    return equity_buy_market(ticker, shares).build()
-
-
 def build_limit_buy(ticker: str, shares: int, limit_price_str: str) -> dict:
     """Return the JSON spec for a GTC limit buy order (no network call).
 
@@ -42,11 +35,6 @@ def build_limit_buy(ticker: str, shares: int, limit_price_str: str) -> dict:
     spec = equity_buy_limit(ticker, shares, limit_price_str)
     spec.set_duration(Duration.GOOD_TILL_CANCEL)
     return spec.build()
-
-
-def build_market_sell(ticker: str, shares: int) -> dict:
-    """Return the JSON spec for a market sell order (no network call)."""
-    return equity_sell_market(ticker, shares).build()
 
 
 def build_marketable_sell(ticker: str, shares: int, limit_price_str: str) -> dict:
@@ -60,47 +48,6 @@ def build_marketable_sell(ticker: str, shares: int, limit_price_str: str) -> dic
     spec = equity_sell_limit(ticker, shares, limit_price_str)
     spec.set_duration(Duration.DAY)
     return spec.build()
-
-
-def place_marketable_sell_order(ticker: str, shares: int, config, client=None,
-                                now=None) -> str:
-    """Sell via a limit priced THROUGH the bid, or refuse.
-
-    Order of operations is chosen so the cheapest refusal happens first: the
-    kill switch is checked before the quote round-trip, because a halted system
-    should not be spending broker calls.
-
-    There is no market-order fallback. Without a usable quote there is no
-    validated worst case, and an unbounded market sell on a stock already
-    flagged as falling is precisely the fill this instrument exists to bound.
-    The caller re-opens the recommendation so a human can act.
-    """
-    kill_switch.require_enabled(config)
-
-    if client is None:
-        from schwab_client.auth import get_client
-        client = get_client(config)
-
-    quote = fetch_quote(ticker, config, client=client, now=now)
-    limit_price = marketable_sell_limit(
-        quote.bid, getattr(config, "approval_slippage_buffer_pct", 0.5)
-    )
-    limit_price_str = f"{limit_price:.2f}"
-    spec = build_marketable_sell(ticker, shares, limit_price_str)
-
-    try:
-        resp = _call_place_order(client, config, spec)
-        order_id = resp.headers.get("Location", "").split("/")[-1]
-        logger.info(
-            "Placed marketable sell %s: %s x%d @ %s (bid %.2f)",
-            order_id, ticker, shares, limit_price_str, quote.bid,
-        )
-        return order_id or None
-    except TradingHalted:
-        raise
-    except Exception as exc:
-        logger.error("Marketable sell failed for %s: %s", ticker, exc)
-        raise RuntimeError(f"Marketable sell failed for {ticker}: {exc}") from exc
 
 
 def parse_positions(account_response: dict) -> list[dict]:
@@ -257,75 +204,6 @@ _UNKNOWN_MESSAGE = (
     "the symbol is blocked for new buys until this is settled — run /resolve, "
     "or check Schwab directly."
 )
-
-
-def place_order(ticker: str, shares: int, config, client=None) -> str:
-    """
-    Place a market buy order via the Schwab API.
-    Returns the order ID string on success, or raises RuntimeError on failure.
-    """
-    if client is None:
-        from schwab_client.auth import get_client
-        client = get_client(config)
-
-    spec = build_market_buy(ticker, shares)
-    try:
-        resp = _call_place_order(client, config, spec)
-        order_id = resp.headers.get("Location", "").split("/")[-1]
-        logger.info("Placed order %s: %s x%d", order_id, ticker, shares)
-        return order_id or None
-    except TradingHalted:
-        raise  # a refusal is not a broker failure; do not rewrap it
-    except Exception as exc:
-        logger.error("Order placement failed for %s: %s", ticker, exc)
-        raise RuntimeError(f"Order placement failed for {ticker}: {exc}") from exc
-
-
-def place_limit_order(ticker: str, shares: int, limit_price: float, config, client=None) -> str:
-    """Place a GTC limit buy order via the Schwab API.
-
-    Takes limit_price as float and formats internally to f"{limit_price:.2f}" (D-03).
-    Returns the order ID string on success, or raises RuntimeError on failure.
-    Mirrors place_order structure exactly.
-    """
-    if client is None:
-        from schwab_client.auth import get_client
-        client = get_client(config)
-    limit_price_str = f"{limit_price:.2f}"
-    spec = build_limit_buy(ticker, shares, limit_price_str)
-    try:
-        resp = _call_place_order(client, config, spec)
-        order_id = resp.headers.get("Location", "").split("/")[-1]
-        logger.info("Placed limit order %s: %s x%d @ %s", order_id, ticker, shares, limit_price_str)
-        return order_id or None
-    except TradingHalted:
-        raise
-    except Exception as exc:
-        logger.error("Limit order placement failed for %s: %s", ticker, exc)
-        raise RuntimeError(f"Limit order placement failed for {ticker}: {exc}") from exc
-
-
-def place_sell_order(ticker: str, shares: int, config, client=None) -> str:
-    """Place a market sell order via the Schwab API.
-
-    Returns the order ID string on success, or raises RuntimeError on failure.
-    Mirrors place_order but uses build_market_sell instead of build_market_buy.
-    """
-    if client is None:
-        from schwab_client.auth import get_client
-        client = get_client(config)
-
-    spec = build_market_sell(ticker, shares)
-    try:
-        resp = _call_place_order(client, config, spec)
-        order_id = resp.headers.get("Location", "").split("/")[-1]
-        logger.info("Placed sell order %s: %s x%d", order_id, ticker, shares)
-        return order_id or None
-    except TradingHalted:
-        raise
-    except Exception as exc:
-        logger.error("Sell order placement failed for %s: %s", ticker, exc)
-        raise RuntimeError(f"Sell order placement failed for {ticker}: {exc}") from exc
 
 
 def get_positions(config, client=None) -> list[dict]:
