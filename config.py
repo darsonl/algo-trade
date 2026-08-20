@@ -52,14 +52,27 @@ def _env_bool(name: str, default: str):
 _DEFAULT_DB_PATH = str(Path(__file__).parent / "algo_trade.db")
 
 
+NEWLINE = chr(10)  # keeps literal escapes out of the message below
+_EXECUTION_MODES = frozenset({"dry_run", "live", "simulated"})
+
+
 @dataclass
 class Config:
     schwab_app_key: str = _env_str("SCHWAB_APP_KEY")
     schwab_app_secret: str = _env_str("SCHWAB_APP_SECRET")
     schwab_callback_url: str = _env_str("SCHWAB_CALLBACK_URL", "https://127.0.0.1")
     schwab_account_hash: str = _env_str("SCHWAB_ACCOUNT_HASH")
-    paper_trading: bool = _env_bool("PAPER_TRADING", "true")
-    dry_run: bool = _env_bool("DRY_RUN", "true")
+    # The single env surface that decides what happens to an order.
+    #   dry_run    buttons log; nothing is sent            (default)
+    #   live       real orders against the real account    (opt-in)
+    #   simulated  reserved for the broker adapter         (fails startup)
+    execution_mode: str = _env_str("EXECUTION_MODE", "dry_run")
+    # DERIVED from execution_mode in __post_init__, and deliberately left a
+    # normal assignable field rather than a read-only property: 55 test sites
+    # set it to True specifically to stay off live Schwab, and CLAUDE.md
+    # documents that as the required convention. A property would silently
+    # strip that protection from any site that was missed.
+    dry_run: bool = True
 
     discord_token: str = _env_str("DISCORD_TOKEN")
     discord_channel_id: int = _env_int("DISCORD_CHANNEL_ID", "0")
@@ -148,8 +161,51 @@ class Config:
     db_path: str = _env_str("DB_PATH", _DEFAULT_DB_PATH)
     log_level: str = _env_str("LOG_LEVEL", "INFO")
 
+    def _validate_execution_mode(self):
+        """Refuse to start on a legacy or unrecognised execution mode.
+
+        The migration is LOUD on purpose. Silently deriving execution_mode from
+        a leftover DRY_RUN would reintroduce exactly the unopted-into safety
+        this replaces -- an operator who set PAPER_TRADING=true and believed
+        themselves protected by a flag that gated nothing.
+        """
+        legacy = [name for name in ("DRY_RUN", "PAPER_TRADING") if name in os.environ]
+        if legacy:
+            maps_to = "dry_run" if os.getenv("DRY_RUN", "true").strip().lower() in (
+                "true", "1", "yes", "on", ""
+            ) else "live"
+            raise ValueError(
+                NEWLINE.join([
+                    f"{' and '.join(legacy)} "
+                    f"{'have' if len(legacy) > 1 else 'has'} been replaced by EXECUTION_MODE.",
+                    f"Your current settings map to: EXECUTION_MODE={maps_to}",
+                    f"Remove {'both' if len(legacy) > 1 else 'it'} from .env.",
+                ])
+            )
+
+        if self.execution_mode == "simulated":
+            raise NotImplementedError(
+                "EXECUTION_MODE=simulated is reserved for the Workstream A broker "
+                "adapter, which does not exist yet. Use dry_run or live."
+            )
+
+        if self.execution_mode not in _EXECUTION_MODES:
+            raise ValueError(
+                f"EXECUTION_MODE={self.execution_mode!r} is not recognised; "
+                f"expected one of {', '.join(sorted(_EXECUTION_MODES))}. "
+                "Refusing to guess at the one variable that decides whether "
+                "real money moves."
+            )
+
+    def __post_init__(self):
+        # Anything that is not exactly "live" is a dry run, so a typo fails
+        # closed rather than being read as permission to trade. validate()
+        # then refuses to start on that typo rather than running silently.
+        self.dry_run = self.execution_mode != "live"
+
     def validate(self):
         """Call this at startup (in main.py) to fail fast if credentials are missing."""
+        self._validate_execution_mode()
         if not self.schwab_app_key:
             raise ValueError("SCHWAB_APP_KEY is required in .env")
         if not self.schwab_app_secret:

@@ -86,6 +86,30 @@ def parse_positions(account_response: dict) -> list[dict]:
     return result
 
 
+def _assert_live_execution(config) -> None:
+    """Refuse to submit unless BOTH mode signals say live.
+
+    Two signals exist for compatibility: `execution_mode` is the env surface,
+    and `dry_run` is the derived field that 55 test sites set to stay off live
+    Schwab. Requiring them to AGREE means a disagreement fails closed in both
+    directions -- the illegal `execution_mode='dry_run'` with `dry_run=False`
+    is caught by the first clause, and a test that sets only `dry_run=True` on
+    an otherwise live config is caught by the second.
+
+    Checking here rather than trusting every caller is what makes "structurally
+    incapable of ordering outside live mode" true rather than aspirational. It
+    is the same argument as the kill switch living at this sink: a call site
+    that forgets to branch on the mode still fails closed.
+    """
+    mode = getattr(config, "execution_mode", "dry_run")
+    if mode != "live" or getattr(config, "dry_run", True):
+        raise RuntimeError(
+            f"order submission blocked: execution_mode={mode!r}, "
+            f"dry_run={getattr(config, 'dry_run', True)!r} — "
+            "both must indicate live trading"
+        )
+
+
 def _call_place_order(client, config, spec) -> object:
     """The single choke point every order dispatch passes through.
 
@@ -98,7 +122,12 @@ def _call_place_order(client, config, spec) -> object:
     There is no retry here to sit outside of any more: `_dispatch` submits
     exactly once (§3). A halt was never a transient fault worth re-attempting,
     and neither is a submission whose outcome we cannot see.
+
+    The mode check runs BEFORE the kill-switch read because it is the cheaper
+    and more fundamental refusal, and because a dry-run config is not required
+    to point at a database that has a kill switch in it at all.
     """
+    _assert_live_execution(config)
     kill_switch.require_enabled(config)
     return _dispatch(client, config.schwab_account_hash, spec)
 

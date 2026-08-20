@@ -75,7 +75,7 @@ python main.py
               → check_exit_signals (RSI > threshold AND MACD bearish)
               → analyze_sell_ticker → SELL/HOLD signal
               → Post red Discord embed with SellApproveRejectView
-      → User clicks Approve → place Schwab market order (skipped if DRY_RUN=true)
+      → User clicks Approve → place Schwab limit order (skipped unless EXECUTION_MODE=live)
       → /scan_etf command → run_scan_etf(): ETF-only path, skips fundamental filter,
                             uses build_etf_prompt, posts ETF recommendations
 ```
@@ -111,7 +111,11 @@ python main.py
 ### Key Design Decisions
 
 - **Two-stage filtering**: Fundamental filter runs before calling Claude (cheap check first), technical filter runs after Claude approves (avoids technical fetch on skipped tickers).
-- **Dry-run by default**: `DRY_RUN=true` and `PAPER_TRADING=true` are the defaults; no orders are placed unless explicitly disabled.
+- **Dry-run by default, through ONE variable**: `EXECUTION_MODE` (`dry_run` | `live` | `simulated`) replaced `DRY_RUN` + `PAPER_TRADING`. `paper_trading` was read in exactly one place — a startup warning — and gated **nothing**, while *reading* like a safety layer; Schwab's Trader API has no paper endpoint at all. `dry_run` survives as a **derived, assignable** field (`__post_init__` sets it to `execution_mode != "live"`) rather than a read-only property, because 55 test sites set it to stay off live Schwab and a property would silently strip that protection from any site that was missed.
+
+  **The migration is loud**: `validate()` raises if `DRY_RUN` or `PAPER_TRADING` appear in `os.environ` at all, naming the mode the old settings map to. Silently deriving the new value would reintroduce exactly the unopted-into safety this removes. An unrecognised mode fails startup rather than being guessed at, and anything that is not exactly `live` derives `dry_run=True`, so a typo fails closed twice over.
+
+  **The sink requires BOTH signals to agree** (`_assert_live_execution` in `_call_place_order`, ahead of the kill-switch read). A disagreement fails closed in both directions: `execution_mode='dry_run'` with `dry_run=False` is caught by the first clause, and a test that sets only `dry_run=True` on a live config by the second. This is what makes "structurally incapable of ordering outside live mode" true rather than aspirational — same argument as the kill switch living at the same sink.
 - **24-hour recommendation expiry**: Stale records are expired at the start of each scan. The `should_recommend()` function in `main.py` is the single source of truth for dupe prevention.
 - **Pure functions for testability**: `should_recommend()`, `configure_scheduler()`, prompt builders, and filter functions are all pure/stateless to enable unit testing without mocking the Discord client or Schwab API.
 - **Analyst fallback provider**: When the primary analyst call fails, `analyze_ticker()` (and `analyze_etf_ticker`/`analyze_sell_ticker`) falls through the chain `primary → fallback → fallback2`. Configured via `ANALYST_FALLBACK_PROVIDER`/`_API_KEY`/`_MODEL` and `ANALYST_FALLBACK2_*` in `.env`. Both API-level failures (quota exhausted, rate limit, network) **and** parse errors (`ValueError` from `parse_claude_response`, e.g. a template-echo response) trigger the fallback; the failure only propagates once no further fallback client is configured.
@@ -177,7 +181,7 @@ python main.py
 
 - **A terminal status is not permission to book a zero fill.** `fills_observed` gates the release of capital, so the sweep flips it only for fills it can trust: a payload with no `filledQuantity` at all, or a quantity with no execution prices to value it at, is written through `mark_order_terminal_unobserved` and keeps its **full** commitment at the limit. `extract_fills` reports `(n, 0.0)` for the unpriceable case deliberately and leaves the decision to the caller; booking that $0 releases the whole reservation for an order that actually filled — round-4 finding 6, in a new place. The one trustworthy zero is a definitively refused order.
 
-- **Position reconciliation (report-only)**: `run_reconciliation()` in `main.py` compares DB open positions against the Schwab account (RISK-05: positions are recorded on order acknowledgement, not fill). Runs before each scan's sell pass and via `/reconcile`. It NEVER mutates positions — discrepancies (phantom / untracked / mismatched) are posted as ops alerts for human correction. Skipped entirely when `DRY_RUN=true` (simulated positions have no broker counterpart). Tests that call `run_scan` must set `config.dry_run = True` (or patch `main.get_positions`) so the suite never touches the live Schwab API.
+- **Position reconciliation (report-only)**: `run_reconciliation()` in `main.py` compares DB open positions against the Schwab account (RISK-05: positions are recorded on order acknowledgement, not fill). Runs before each scan's sell pass and via `/reconcile`. It NEVER mutates positions — discrepancies (phantom / untracked / mismatched) are posted as ops alerts for human correction. Skipped entirely in dry run (simulated positions have no broker counterpart). Tests that call `run_scan` must set `config.dry_run = True` (or patch `main.get_positions`) so the suite never touches the live Schwab API.
 - **Config reads env at construction, not import**: `Config` fields use `field(default_factory=lambda: os.getenv(...))` (via the `_env_str/_int/_float/_bool` helpers), so `Config()` reflects the environment at call time. The old `= os.getenv(...)` defaults froze at import, forcing `importlib.reload(config)` in env-dependent tests — don't reintroduce that pattern. `test_config.py`'s reload-based USE_LIMIT_BUY tests still pass (now via construction-time reads).
 - **Analyst enrichment built only on cache miss**: in `run_scan`, the `fundamental_trend` block (`fetch_eps_data` → `quarterly_income_stmt`, a slow network call) is computed inside the cache-miss branch, after `get_cached_analysis`. A cache hit skips it. The earnings block stays *before* the cache check because `earnings_date_embed` is shown on the recommendation embed even on a hit.
 - **S&P 500 ranking — two-tier 24h cache**: `get_top_sp500_by_fundamentals` (~500 yfinance `.info` calls, 10-20 min) caches in-memory, then on disk at `sp500_top_cache.json` (gitignored) so a restart doesn't repay the cost. Both tiers store the **full** ranking and slice per `top_sp500_count` on read, so changing that count never invalidates the cache.
@@ -188,8 +192,8 @@ python main.py
 All thresholds and credentials are set via `.env` (see `.env.example`). The `Config` dataclass in `config.py` maps every variable with typed defaults. Safety-critical flags:
 
 ```
-DRY_RUN=true          # When true, Discord buttons log instead of placing orders
-PAPER_TRADING=true    # When true, Schwab paper trading endpoint is used
+EXECUTION_MODE=dry_run   # dry_run | live | simulated. Anything but `live` sends nothing.
+                         # Replaces DRY_RUN + PAPER_TRADING; leaving either in .env fails startup.
 MAX_POSITION_SIZE_USD=500
 ```
 
@@ -222,7 +226,7 @@ MAX_POSITION_SIZE_USD=500
 - `/positions` — display open positions with live P&L embed
 - `/stats` — win rate and P&L stats for closed trades
 - `/history` — last 20 closed trades
-- `/reconcile` — compare DB open positions against the Schwab account (report-only; skipped in DRY_RUN)
+- `/reconcile` — compare DB open positions against the Schwab account (report-only; skipped unless `EXECUTION_MODE=live`)
 - `/halt` — stop all new order submissions (durable, cross-process; allowlisted via `OPS_USER_IDS`)
 - `/resume` — re-enable submissions after a halt (same allowlist — both directions are guarded)
 - `/resolve` — the only operator exit from an ambiguous submission (`OPS_USER_IDS`). With no arguments it **reports**: searches the broker for orders that might be ours and shows how each differs from what we submitted. With `order_id` + `resolution` (`adopt`/`confirmed_absent`/`keep_blocked`) + `evidence` it **writes**, through the audited `resolve_order_manually`. An `order_id` without a resolution reports rather than defaulting — half a write is not a write.
@@ -231,8 +235,9 @@ Pre-flight helper: `.venv/Scripts/python.exe scripts/check_ops_ids.py` reports t
 
 ### Test Suite
 
-1039 tests as of 2026-08-20. Run with `.venv/Scripts/python.exe -m pytest -q` (~25s). Key test files:
+1060 tests as of 2026-08-20. Run with `.venv/Scripts/python.exe -m pytest -q` (~25s). Key test files:
 - `test_order_status_sweep.py` / `test_order_status_mapping.py` / `test_active_rec_index.py` — step 11: chain-following, the sweep, the trustworthy-fill rule, and the index that cannot ship before its release valve (48 tests)
+- `test_execution_mode.py` — `EXECUTION_MODE`: the derived `dry_run`, the loud migration, and the sink's both-signals-must-agree guard (21 tests)
 - `test_resolve_reporting.py` / `test_resolve_command.py` — `/resolve`: the candidate search never mutates order status, terminal candidates are *included* (the inverse of `parse_working_orders`), worst-case reservation, the ops allowlist, and the repeating stuck-order alert (59 tests)
 - `test_kill_switch.py` / `test_kill_switch_gate.py` / `test_kill_switch_wiring.py` / `test_halt_commands.py` — the kill switch (61 tests)
 - `test_quotes.py` / `test_marketable_sells.py` — validated quotes + sell pricing (36 tests). `test_marketable_sells.py` is now spec construction only; a comment block at its foot names where each retired `place_marketable_sell_order` assertion moved to

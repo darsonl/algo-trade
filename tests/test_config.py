@@ -4,11 +4,25 @@ tests/test_config.py — Config.validate() suite + USE_LIMIT_BUY env mapping sui
 Two distinct test styles — do not conflate them:
   - validate() tests use EXPLICIT-KWARG Config objects (no module reload). A fully-valid
     Config is constructed via a helper and exactly one field is blanked per missing-field test.
-    This is hermetic: does not depend on the machine's .env.
+    This is hermetic: does not depend on the machine's .env — but validate() now also
+    refuses the LEGACY DRY_RUN / PAPER_TRADING variables, which it reads straight from
+    os.environ, so the autouse fixture below clears them. Without it these tests would
+    pass or fail depending on what happens to be in the developer's .env, which is
+    exactly the dependency this docstring claims they do not have. The legacy-variable
+    behaviour itself is covered in tests/test_execution_mode.py.
   - USE_LIMIT_BUY mapping tests use monkeypatch.setenv + importlib.reload(config), because
     the mapping `os.getenv("USE_LIMIT_BUY","false").lower()=="true"` is frozen in the
     dataclass field DEFAULT at import time.
 """
+
+import pytest as _pytest
+
+
+@_pytest.fixture(autouse=True)
+def _no_legacy_execution_vars(monkeypatch):
+    for name in ("DRY_RUN", "PAPER_TRADING"):
+        monkeypatch.delenv(name, raising=False)
+
 
 import pytest
 import importlib

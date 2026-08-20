@@ -36,6 +36,28 @@ logger = logging.getLogger(__name__)
 # Pure orchestration helpers (tested in test_main.py)
 # ---------------------------------------------------------------------------
 
+def live_execution_banner(config: Config) -> str | None:
+    """The message to log and post when the bot starts able to place real orders.
+
+    Returns None when it cannot, so a dry run stays quiet.
+
+    Both signals must say live, matching the sink's own predicate. A config with
+    `execution_mode='live'` but `dry_run=True` cannot submit -- the sink refuses
+    it -- so announcing "LIVE TRADING ACTIVE" for that state would be a false
+    alarm, and a banner that cries wolf is a banner nobody reads.
+
+    The old version required `DRY_RUN=false and PAPER_TRADING=false`: two
+    variables, one of which gated nothing at all.
+    """
+    if config.execution_mode != "live" or config.dry_run:
+        return None
+    return (
+        "LIVE TRADING ACTIVE: EXECUTION_MODE=live. Real orders will be placed "
+        "on Schwab. The kill switch (/halt), OPS_USER_IDS and "
+        "ALLOWED_DISCORD_USER_IDS are the remaining locks."
+    )
+
+
 def should_recommend(signal: str, tech_data: dict, config: Config) -> bool:
     """Return True only if signal is BUY and all technical filters pass."""
     if signal != "BUY":
@@ -892,15 +914,10 @@ def main() -> None:
                 f"Discord channel {config.discord_channel_id} not accessible: {exc}"
             ) from exc
 
-        if not config.dry_run and not config.paper_trading:
-            logger.warning(
-                "LIVE TRADING ACTIVE: DRY_RUN=false and PAPER_TRADING=false. "
-                "Real orders will be placed on Schwab."
-            )
-            await bot.send_ops_alert(
-                "WARNING: Bot started in LIVE TRADING mode. "
-                "DRY_RUN=false AND PAPER_TRADING=false — real orders will be placed."
-            )
+        banner = live_execution_banner(config)
+        if banner:
+            logger.warning("%s", banner)
+            await bot.send_ops_alert(banner)
 
         configure_scheduler(
             scheduler,
