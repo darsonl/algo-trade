@@ -291,13 +291,29 @@ def ticker_recommended_today(
     return row is not None
 
 
-def expire_stale_recommendations(db_path: str) -> None:
-    """Set status='expired' on all pending recommendations whose expires_at is in the past."""
+def expire_stale_recommendations(db_path: str, instant: datetime | None = None) -> None:
+    """Expire every pending recommendation whose expires_at has arrived.
+
+    `<=`, not `<`, and that single character is the point. `claim_recommendation_tx`
+    treats a row as live only while `expires_at > now`, so `now == expires_at` is
+    already too late to approve. With `<` here, that same instant was also too
+    early to expire -- for exactly one second the row was neither claimable nor
+    expirable: a button that refuses, on a recommendation that still reads
+    `pending`, with nothing in the log to say why. The two predicates are
+    complements and must stay so.
+
+    Takes an optional `instant` like every other time-dependent query here, so
+    tests can pin the boundary without freezegun. Pinning matters more than
+    usual for this one: let the clock move and the second ticks over, `<`
+    becomes true on its own, and the test passes while proving nothing.
+    """
+    stamp = as_utc(instant).strftime("%Y-%m-%d %H:%M:%S")
     with get_cursor(db_path) as conn:
         conn.execute(
             """UPDATE recommendations
                SET status = 'expired'
-               WHERE status = 'pending' AND expires_at < datetime('now')"""
+               WHERE status = 'pending' AND expires_at <= ?""",
+            (stamp,),
         )
 
 
