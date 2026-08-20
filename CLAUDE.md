@@ -59,6 +59,10 @@ python main.py
   → Discord bot + APScheduler start
   → Daily cron at SCAN_HOUR:SCAN_MINUTE (default 9:00 AM)
       → run_scan():
+          → drain the ops-alert outbox, re-alert on stuck approvals
+          → sweep_terminal_recommendations(): ask the broker what each open
+            order became; retire the recommendation when it is terminal, follow
+            the chain when it was REPLACED. Runs BEFORE the universe is built.
           → expire stale recommendations (>24h)
           → build universe: partition_watchlist() splits watchlist.txt into (stocks, etfs)
                             + S&P 500 from Wikipedia (top 10 by EPS+ROE, 24h cached)
@@ -81,7 +85,7 @@ python main.py
 | Module | Responsibility |
 |---|---|
 | `config.py` | Dataclass config loaded from `.env`; `validate()` called at startup |
-| `main.py` | Orchestration, scheduler setup, `should_recommend()`, `run_scan()` |
+| `main.py` | Orchestration, scheduler setup, `should_recommend()`, `run_scan()`, `run_reconciliation()`, `sweep_terminal_recommendations()` |
 | `screener/universe.py` | Watchlist loading, S&P 500 fetch, deduplication |
 | `screener/fundamentals.py` | yfinance fundamental fetch + threshold filter |
 | `screener/technicals.py` | RSI (Wilder's, 14-period), MA50, volume filter |
@@ -101,7 +105,7 @@ python main.py
 | `risk/kill_switch.py` | Durable, cross-process trading halt: persisted state, fail-closed reads, `submission_gate()`, audited transitions |
 | `risk/preflight.py` | The 12-guard approval table (`evaluate_trade`, `check_authorization`) + the `Quote`/`TradeRequest`/`Decision`/`BrokerSnapshot` types. Pure: no network, no DB, no clock, no mocks needed |
 | `schwab_client/quotes.py` | Validated bid/ask (`parse_quote`, `fetch_quote`) + `marketable_sell_limit` pricing |
-| `schwab_client/order_payload.py` | Pure Schwab-payload parsing: fills, replacements, `parse_working_orders` + `TERMINAL_BROKER_STATUSES`, `parse_candidate_orders` |
+| `schwab_client/order_payload.py` | Pure Schwab-payload parsing: fills, replacements, `parse_working_orders` + `TERMINAL_BROKER_STATUSES`, `parse_candidate_orders`, `map_broker_status` + `SWEEP_TERMINAL_BROKER_STATUSES` |
 | `risk/resolution.py` | Ambiguous submissions: `report_unknown_submissions` (candidate search, report-only) + `alert_stuck_orders`. Lives outside `main.py` because `discord_bot.bot` needs the report and `main` already imports `TradingBot` |
 
 ### Key Design Decisions
@@ -161,6 +165,18 @@ python main.py
 
   A failed broker read is **reported, never fatal, and never resolves anything**: `[]` from an outage would look like "no candidate exists", which is exactly what makes `confirmed_absent` — the resolution that *releases capital* — look justified. `alert_stuck_orders` re-alerts on **every** scan past `STUCK_APPROVAL_ALERT_H`, because an alert nobody repeats is a block nobody sees. Gated on `OPS_USER_IDS`, like `/halt`.
 - **Ops alerts are a durable outbox**: `send_ops_alert` persists before delivering, so a Discord outage leaves a retryable row rather than a log line; `drain_ops_alerts` retries oldest-first at each scan start and stops at the first still-failing alert (an outage is not a per-alert condition). Neither send nor drain raises — both run inside scans that must not be aborted by their own reporting.
+- **The broker's verdict retires a recommendation, and the index cannot ship before it does**: `sweep_terminal_recommendations()` runs at the **start of every scan** (before the universe is built, so a freed ticker is eligible in *that* scan). For each order in `OPEN_ORDER_STATUSES` with a broker id it calls `fetch_order` — the **full payload**, never a status string, because a string cannot carry `replacingOrderCollection` or `filledQuantity` — maps it through `map_broker_status`, and calls `complete_recommendation` when the verdict is terminal. Every failure is **per order and non-fatal**: a sweep that aborts on the first outage leaves every later ticker blocked for reasons unrelated to those tickers, and an outage must never read as "the order is gone".
+
+  **`idx_active_rec_per_ticker` covers `approved`, not just `pending`.** v1 covered `pending` only, so protection lapsed the instant the claim flipped the row — exactly the window between claim and submission. Covering `approved` requires the release valve above; **v2 shipped the index while naming a `completed` transition owned by a poller that was never built**, under which the first buy of any ticker would block that ticker forever. Build the valve first. Never the reverse.
+
+  The migration **logs and continues** if the database already violates the index, rather than refusing to start: the guards, the ledger and the kill switch all work without it, while an operator who cannot start the bot cannot `/halt` it either. `has_active_recommendation()` is the polite check in front of it, called by both scan loops — `ticker_recommended_today` does **not** answer this question, being session-scoped, so an `approved` row left by an ambiguous submission days ago is invisible to it.
+
+- **There are TWO broker terminal-status sets, and REPLACED separates them.** `TERMINAL_BROKER_STATUSES` (working-order parser) asks *"is this still consuming exposure?"* — `REPLACED` is **in** it, because the successor is reported separately and counting both double-charges. `SWEEP_TERMINAL_BROKER_STATUSES` asks *"may I free the recommendation?"* — `REPLACED` is **out**, because the order is alive under an id we do not hold. Both are allowlists. Do not merge them.
+
+  `REPLACED` is resolved by **following the pointer**, never by searching: the successor carries a different price and falls outside any window anchored on the original submission, so a matcher finds nothing and "nothing found" would mark the submission failed while the replacement is live. No successor in the payload ⇒ `submit_unknown` for a human, never terminal.
+
+- **A terminal status is not permission to book a zero fill.** `fills_observed` gates the release of capital, so the sweep flips it only for fills it can trust: a payload with no `filledQuantity` at all, or a quantity with no execution prices to value it at, is written through `mark_order_terminal_unobserved` and keeps its **full** commitment at the limit. `extract_fills` reports `(n, 0.0)` for the unpriceable case deliberately and leaves the decision to the caller; booking that $0 releases the whole reservation for an order that actually filled — round-4 finding 6, in a new place. The one trustworthy zero is a definitively refused order.
+
 - **Position reconciliation (report-only)**: `run_reconciliation()` in `main.py` compares DB open positions against the Schwab account (RISK-05: positions are recorded on order acknowledgement, not fill). Runs before each scan's sell pass and via `/reconcile`. It NEVER mutates positions — discrepancies (phantom / untracked / mismatched) are posted as ops alerts for human correction. Skipped entirely when `DRY_RUN=true` (simulated positions have no broker counterpart). Tests that call `run_scan` must set `config.dry_run = True` (or patch `main.get_positions`) so the suite never touches the live Schwab API.
 - **Config reads env at construction, not import**: `Config` fields use `field(default_factory=lambda: os.getenv(...))` (via the `_env_str/_int/_float/_bool` helpers), so `Config()` reflects the environment at call time. The old `= os.getenv(...)` defaults froze at import, forcing `importlib.reload(config)` in env-dependent tests — don't reintroduce that pattern. `test_config.py`'s reload-based USE_LIMIT_BUY tests still pass (now via construction-time reads).
 - **Analyst enrichment built only on cache miss**: in `run_scan`, the `fundamental_trend` block (`fetch_eps_data` → `quarterly_income_stmt`, a slow network call) is computed inside the cache-miss branch, after `get_cached_analysis`. A cache hit skips it. The earnings block stays *before* the cache check because `earnings_date_embed` is shown on the recommendation embed even on a hit.
@@ -179,7 +195,7 @@ MAX_POSITION_SIZE_USD=500
 
 ### Database Schema
 
-**`recommendations`**: ticker, signal, reasoning, price, dividend_yield, pe_ratio, earnings_growth, status (`pending`/`approved`/`rejected`/`expired`), discord_message_id, created_at, expires_at
+**`recommendations`**: ticker, signal, reasoning, price, dividend_yield, pe_ratio, earnings_growth, status (`pending`/`approved`/`rejected`/`expired`/`completed`), discord_message_id, created_at, expires_at. `idx_active_rec_per_ticker` is a **partial unique index** over `ticker WHERE status IN ('pending','approved')` — at most one live recommendation per symbol
 
 **`trades`**: recommendation_id (FK), ticker, shares, price, order_id, executed_at, side (`buy`/`sell`)
 
@@ -215,7 +231,8 @@ Pre-flight helper: `.venv/Scripts/python.exe scripts/check_ops_ids.py` reports t
 
 ### Test Suite
 
-991 tests as of 2026-08-20. Run with `.venv/Scripts/python.exe -m pytest -q` (~25s). Key test files:
+1039 tests as of 2026-08-20. Run with `.venv/Scripts/python.exe -m pytest -q` (~25s). Key test files:
+- `test_order_status_sweep.py` / `test_order_status_mapping.py` / `test_active_rec_index.py` — step 11: chain-following, the sweep, the trustworthy-fill rule, and the index that cannot ship before its release valve (48 tests)
 - `test_resolve_reporting.py` / `test_resolve_command.py` — `/resolve`: the candidate search never mutates order status, terminal candidates are *included* (the inverse of `parse_working_orders`), worst-case reservation, the ops allowlist, and the repeating stuck-order alert (59 tests)
 - `test_kill_switch.py` / `test_kill_switch_gate.py` / `test_kill_switch_wiring.py` / `test_halt_commands.py` — the kill switch (61 tests)
 - `test_quotes.py` / `test_marketable_sells.py` — validated quotes + sell pricing (36 tests). `test_marketable_sells.py` is now spec construction only; a comment block at its foot names where each retired `place_marketable_sell_order` assertion moved to

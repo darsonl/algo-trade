@@ -16,7 +16,11 @@ from market_time import (
     market_session_bounds_utc,
     market_session_date,
 )
-from schwab_client.order_payload import extract_fills, extract_replacement
+from schwab_client.order_payload import (
+    SWEEP_TERMINAL_BROKER_STATUSES,
+    extract_fills,
+    extract_replacement,
+)
 
 
 def create_recommendation(
@@ -97,6 +101,62 @@ def update_recommendation_status(db_path: str, rec_id: int, status: str) -> None
         conn.execute(
             "UPDATE recommendations SET status = ? WHERE id = ?", (status, rec_id)
         )
+
+
+def has_active_recommendation(db_path: str, ticker: str) -> bool:
+    """Is there already a live (pending or approved) recommendation for ticker?
+
+    The same predicate as `idx_active_rec_per_ticker`, so the scan can SKIP
+    rather than walk into an IntegrityError.
+
+    `ticker_recommended_today` does not answer this. It is SESSION-scoped, so an
+    `approved` row left behind by an ambiguous submission on an earlier day is
+    invisible to it -- and that is exactly the row the index refuses to sit
+    beside. The index is the backstop; this is the polite check in front of it.
+    """
+    with get_cursor(db_path) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM recommendations "
+            "WHERE ticker = ? AND status IN ('pending', 'approved') LIMIT 1",
+            (ticker,),
+        ).fetchone()
+    return row is not None
+
+
+def complete_recommendation(db_path: str, rec_id: int, broker_status: str) -> bool:
+    """Retire an APPROVED recommendation whose order reached a terminal state.
+
+    This is the release valve the `approved`-covering partial unique index
+    cannot ship without. v2 named a `completed` transition owned by a poller
+    that was never built, so under that index the first buy of any ticker would
+    have blocked that ticker forever.
+
+    Returns True iff this call performed the transition, so a sweep that runs on
+    every scan is idempotent and does not re-report what it already retired.
+
+    Only `approved` rows move. A `pending` row belongs to the Discord buttons
+    and to expiry -- completing one would retire a recommendation nobody acted
+    on, and would do it by way of an orders row that cannot exist yet.
+
+    `broker_status` is validated, not stored. The terminal status already lives
+    on the `orders` row, and the spec withdrew `recommendations.broker_order_id`
+    for exactly this reason: two columns recording one fact are a divergence
+    waiting to happen. What it buys here is a guard -- a caller sweeping on the
+    wrong predicate is refused rather than quietly freeing a live ticker.
+    """
+    if broker_status not in SWEEP_TERMINAL_BROKER_STATUSES:
+        raise ValueError(
+            f"refusing to complete recommendation {rec_id}: {broker_status!r} is "
+            "not a terminal broker status, so the order may still be live"
+        )
+
+    with get_cursor(db_path) as conn:
+        cursor = conn.execute(
+            "UPDATE recommendations SET status = 'completed' "
+            "WHERE id = ? AND status = 'approved'",
+            (rec_id,),
+        )
+        return cursor.rowcount == 1
 
 
 def set_discord_message_id(db_path: str, rec_id: int, message_id: str) -> None:
@@ -493,6 +553,21 @@ def mark_order_submit_unknown(conn, order_id: int, reason: str) -> None:
 def mark_order_submit_failed(conn, order_id: int, reason: str) -> None:
     """The broker definitively refused. This is the one zero-fill we can trust."""
     _mark(conn, order_id, "submit_failed", reason)
+
+
+def mark_order_terminal_unobserved(conn, order_id: int, status: str, reason: str) -> None:
+    """Record a terminal status WITHOUT claiming anyone verified the fills.
+
+    The counterpart to `observe_fills`, for a payload that names a terminal
+    status but does not really carry fills -- FILLED with no `filledQuantity`,
+    or a quantity with no execution prices to value it at.
+
+    Leaving `fills_observed` at 0 is the whole point: `order_commitment()`
+    charges such a row its FULL requested amount at the limit, because a default
+    zero and a verified zero are indistinguishable. Booking the zero would
+    release the entire reservation for an order that actually filled.
+    """
+    _mark(conn, order_id, status, reason)
 
 
 def observe_fills(conn, order_id: int, filled_shares: float,

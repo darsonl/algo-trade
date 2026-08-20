@@ -6,6 +6,25 @@ from config import Config
 from main import should_recommend, configure_scheduler
 
 
+@pytest.fixture(autouse=True)
+def _no_active_recommendations():
+    """Neutralise the active-recommendation skip for this module.
+
+    `run_scan` consults `queries.has_active_recommendation` -- the polite check
+    in front of `idx_active_rec_per_ticker` -- and these tests patch the queries
+    layer function by function against a database that was never created. It is
+    an autouse fixture rather than another `with patch(...)` because the scan
+    tests here are already nested to Python's 20-block limit.
+
+    Nothing in this module exercises that guard; it is covered by
+    tests/test_active_rec_index.py against a real database.
+    """
+    with patch("main.queries.has_active_recommendation", return_value=False):
+        yield
+
+
+
+
 # --- should_recommend ---
 
 def make_cfg(max_rsi=70.0):

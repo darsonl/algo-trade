@@ -12,7 +12,7 @@ from apscheduler.triggers.cron import CronTrigger
 import yfinance as yf
 
 from config import Config
-from database.models import initialize_db
+from database.models import get_cursor, initialize_db
 from risk import kill_switch
 from database import queries
 from screener.universe import get_watchlist, get_top_sp500_by_fundamentals, get_universe, partition_watchlist
@@ -22,8 +22,10 @@ from analyst.news import fetch_news_headlines
 from analyst.claude_analyst import analyze_ticker, create_analyst_client, create_fallback_client, create_fallback2_client, analyze_sell_ticker, analyze_etf_ticker
 from screener.macro import fetch_macro_context
 from screener.exit_signals import check_exit_signals
+from database.order_accounting import DEFINITIVELY_UNFILLED_STATUSES, OPEN_ORDER_STATUSES
 from risk.resolution import alert_stuck_orders
-from schwab_client.orders import get_positions
+from schwab_client.order_payload import extract_fills, map_broker_status
+from schwab_client.orders import fetch_order, get_positions
 from schwab_client.reconcile import diff_positions, format_reconciliation_report
 from discord_bot.bot import TradingBot
 
@@ -116,6 +118,139 @@ def all_providers_exhausted(config: Config) -> bool:
 # ---------------------------------------------------------------------------
 # Position reconciliation (RISK-05)
 # ---------------------------------------------------------------------------
+
+def _untrustworthy_fill(status: str, payload: dict, shares: float, notional: float) -> str | None:
+    """Why this payload's fills must not be booked, or None if they may be.
+
+    Three cases, and only the third is safe to trust blindly:
+
+    * a terminal status with no `filledQuantity` at all -- it says the order is
+      done but not how much of it happened;
+    * a quantity with no execution prices to value it at -- `extract_fills`
+      reports (n, 0.0) here deliberately and says the caller must decide, and
+      booking $0 for ten real shares releases the whole reservation;
+    * a definitively refused order (rejected / submit_failed), where the broker
+      turned it down outright, so no capital moved and the zero is real.
+    """
+    if status in DEFINITIVELY_UNFILLED_STATUSES:
+        return None
+    if "filledQuantity" not in payload:
+        return "the payload reports no filledQuantity"
+    if shares > 0 and notional <= 0:
+        return f"{shares:g} shares reported with no execution prices to value them"
+    return None
+
+
+def _apply_broker_status(config: Config, order: dict, payload: dict) -> int | None:
+    """Write one order's broker verdict to the ledger. Returns a rec_id to retire.
+
+    Split out of the sweep so the DB work is one short-lived connection per
+    order and `complete_recommendation` -- which opens its own -- is never
+    called while this one holds the write lock.
+    """
+    order_id = order["id"]
+    update = map_broker_status(payload)
+
+    with get_cursor(config.db_path) as conn:
+        if update.successor_id is not None:
+            # Follow the pointer the broker gave us. adopt_replacement closes
+            # the predecessor at its ACTUAL fills and inserts the successor with
+            # its OWN quantity and limit, so a 5@$100 replaced by 10@$150 stops
+            # reserving $500 against $1,500 of live exposure.
+            queries.adopt_replacement(conn, order_id, payload)
+            return None
+
+        if update.status == "submit_unknown":
+            queries.mark_order_submit_unknown(conn, order_id, update.reason or "")
+            return None
+
+        if not update.terminal:
+            return None
+
+        # `fills_observed` gates the release of capital, so the fills must be
+        # recorded in the same breath as the terminal status. A terminal row
+        # with an unverified zero fill releases the whole budget (finding 6) --
+        # which is why the flag is only flipped for fills we can actually trust.
+        filled_shares, filled_notional = extract_fills(payload)
+        unusable = _untrustworthy_fill(update.status, payload, filled_shares, filled_notional)
+        if unusable:
+            logger.warning(
+                "Sweep: order %s is %s but %s; keeping its full commitment",
+                order_id, update.status, unusable,
+            )
+            queries.mark_order_terminal_unobserved(
+                conn, order_id, update.status, f"terminal, fills unusable: {unusable}"
+            )
+        else:
+            queries.observe_fills(
+                conn, order_id, filled_shares, filled_notional, update.status
+            )
+
+    return order["recommendation_id"]
+
+
+async def sweep_terminal_recommendations(config: Config) -> int:
+    """Retire recommendations whose orders the broker says are done (§11).
+
+    This is the release valve for the `approved`-covering partial unique index.
+    Without it the first buy of any ticker blocks that ticker forever: the claim
+    flips the row to `approved`, and nothing ever moves it off.
+
+    Runs at the start of each scan. Every failure is per-order and non-fatal --
+    a sweep that aborts on the first broker outage leaves every later ticker
+    blocked for reasons that have nothing to do with those tickers, and an
+    outage must never be read as "the order is gone".
+
+    Skipped in DRY_RUN: simulated orders have no broker counterpart to ask about.
+    """
+    if config.dry_run:
+        return 0
+
+    with get_cursor(config.db_path) as conn:
+        open_orders = queries.get_orders_by_status(conn, OPEN_ORDER_STATUSES)
+
+    completed = 0
+    for order in open_orders:
+        broker_order_id = order["broker_order_id"]
+        if not broker_order_id:
+            # A pending_submit row has no id to ask about, and calling the
+            # broker with a NULL id is a request for somebody else's order.
+            continue
+
+        try:
+            payload = await asyncio.to_thread(fetch_order, config, broker_order_id)
+        except Exception as exc:
+            logger.warning(
+                "Sweep: could not read broker order %s for %s (%s); leaving it open",
+                broker_order_id, order["ticker"], exc,
+            )
+            continue
+
+        try:
+            rec_id = await asyncio.to_thread(_apply_broker_status, config, order, payload)
+        except Exception:
+            logger.exception(
+                "Sweep: could not apply broker status for order %s", order["id"]
+            )
+            continue
+
+        if rec_id is None:
+            continue
+
+        try:
+            if await asyncio.to_thread(
+                queries.complete_recommendation, config.db_path, rec_id, payload["status"]
+            ):
+                completed += 1
+                logger.info(
+                    "Sweep: recommendation %s (%s) completed — broker says %s",
+                    rec_id, order["ticker"], payload["status"],
+                )
+        except Exception:
+            logger.exception("Sweep: could not complete recommendation %s", rec_id)
+
+    return completed
+
 
 async def run_reconciliation(bot: TradingBot, config: Config, alert_on_discrepancy: bool = True) -> str:
     """Compare DB open positions against the Schwab account and report drift.
@@ -234,6 +369,13 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
     # Repeated on every scan: guard 11 blocks this ticker until a human
     # runs /resolve, and an alert nobody repeats is a block nobody sees.
     await alert_stuck_orders(bot, config)
+    # Before anything is screened, not after: a ticker whose order the broker
+    # has finished with should be eligible in THIS scan, not the next one.
+    try:
+        await sweep_terminal_recommendations(config)
+    except Exception:
+        # Reporting and housekeeping must never abort the scan they run inside.
+        logger.exception("Terminal-order sweep failed; continuing the scan")
     queries.expire_stale_recommendations(config.db_path)
 
     watchlist_path = str(Path(__file__).parent / "watchlist.txt")
@@ -283,6 +425,12 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
             continue
         if queries.has_open_position(config.db_path, ticker):
             logger.debug("Skipping %s: open position exists", ticker)
+            continue
+        if queries.has_active_recommendation(config.db_path, ticker):
+            # Not the same question as ticker_recommended_today, which is
+            # session-scoped: an `approved` row left by an ambiguous submission
+            # days ago is invisible to that guard but blocks this insert.
+            logger.debug("Skipping %s: an active recommendation already exists", ticker)
             continue
 
         try:
@@ -587,6 +735,12 @@ async def run_scan_etf(bot: TradingBot, config: Config) -> None:
             continue
         if queries.has_open_position(config.db_path, ticker):
             logger.debug("Skipping %s: open position exists", ticker)
+            continue
+        if queries.has_active_recommendation(config.db_path, ticker):
+            # Not the same question as ticker_recommended_today, which is
+            # session-scoped: an `approved` row left by an ambiguous submission
+            # days ago is invisible to that guard but blocks this insert.
+            logger.debug("Skipping %s: an active recommendation already exists", ticker)
             continue
 
         try:

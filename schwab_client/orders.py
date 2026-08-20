@@ -219,6 +219,32 @@ def get_positions(config, client=None) -> list[dict]:
     return parse_positions(_checked(resp))
 
 
+def fetch_order(config, broker_order_id: str, client=None) -> dict:
+    """The broker's current view of ONE order, as a full validated payload.
+
+    Returns the payload rather than a status string. A string cannot carry
+    `replacingOrderCollection` or `filledQuantity`, and the sweep needs both --
+    the first to follow a replacement chain, the second to price a partial fill
+    that a terminal status would otherwise release in full.
+
+    Raises rather than returning a partial or empty answer. `{}` maps cleanly to
+    "not terminal", which reads as a successful "still working" and would let a
+    broker outage look like information. A READ may be retried by its caller;
+    what it may never do is answer.
+    """
+    if client is None:
+        from schwab_client.auth import get_client
+        client = get_client(config)
+
+    payload = _checked(client.get_order(broker_order_id, config.schwab_account_hash))
+    if not isinstance(payload, dict) or not payload:
+        raise ValueError(
+            f"Schwab returned no order object for {broker_order_id}; "
+            f"got {type(payload).__name__}"
+        )
+    return payload
+
+
 def get_working_orders(config, client=None) -> list[dict]:
     """Return the broker's LIVE orders, in the shape `risk.preflight` consumes.
 
