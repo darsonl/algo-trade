@@ -22,6 +22,7 @@ from analyst.news import fetch_news_headlines
 from analyst.claude_analyst import analyze_ticker, create_analyst_client, create_fallback_client, create_fallback2_client, analyze_sell_ticker, analyze_etf_ticker
 from screener.macro import fetch_macro_context
 from screener.exit_signals import check_exit_signals
+from risk.resolution import alert_stuck_orders
 from schwab_client.orders import get_positions
 from schwab_client.reconcile import diff_positions, format_reconciliation_report
 from discord_bot.bot import TradingBot
@@ -230,6 +231,9 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
     """Run the full screening pipeline and post qualifying tickers to Discord."""
     logger.info("Starting scan...")
     await _drain_ops_outbox(bot)
+    # Repeated on every scan: guard 11 blocks this ticker until a human
+    # runs /resolve, and an alert nobody repeats is a block nobody sees.
+    await alert_stuck_orders(bot, config)
     queries.expire_stale_recommendations(config.db_path)
 
     watchlist_path = str(Path(__file__).parent / "watchlist.txt")
@@ -545,6 +549,9 @@ async def run_scan_etf(bot: TradingBot, config: Config) -> None:
     """Run the ETF screening pipeline and post qualifying tickers to Discord (per ETF-02)."""
     logger.info("Starting ETF scan...")
     await _drain_ops_outbox(bot)
+    # Repeated on every scan: guard 11 blocks this ticker until a human
+    # runs /resolve, and an alert nobody repeats is a block nobody sees.
+    await alert_stuck_orders(bot, config)
     queries.expire_stale_recommendations(config.db_path)
 
     etf_watchlist_path = str(Path(__file__).parent / "etf_watchlist.txt")

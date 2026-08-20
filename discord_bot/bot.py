@@ -6,6 +6,7 @@ import threading
 import weakref
 from dataclasses import replace
 from datetime import datetime, timezone
+from typing import Literal
 
 import discord
 from discord import app_commands
@@ -33,6 +34,7 @@ from schwab_client.orders import (
     classify_submission,
     collect_broker_snapshot,
 )
+from risk.resolution import report_unknown_submissions
 from schwab_client.quotes import QuoteUnavailable, fetch_quote, marketable_sell_limit
 
 logger = logging.getLogger(__name__)
@@ -41,6 +43,36 @@ logger = logging.getLogger(__name__)
 def _utcnow() -> datetime:
     """One seam for the clock, so tests can pin time without freezegun."""
     return datetime.now(timezone.utc)
+
+
+def _chunk_message(text: str, limit: int = 1900) -> list[str]:
+    """Split a long report into Discord-sized messages, on line boundaries.
+
+    Discord rejects anything over 2000 characters. A resolution report grows
+    with the number of candidates, so truncating would drop exactly the
+    candidates an operator has not seen yet. Splitting on newlines keeps each
+    order's block readable rather than cutting mid-line.
+    """
+    if not text:
+        return [""]
+
+    chunks, current = [], ""
+    for line in text.split("\n"):
+        # A single line longer than the limit is hard-split; nothing is dropped.
+        while len(line) > limit:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.append(line[:limit])
+            line = line[limit:]
+        if len(current) + len(line) + 1 > limit:
+            chunks.append(current)
+            current = line
+        else:
+            current = f"{current}\n{line}" if current else line
+    if current:
+        chunks.append(current)
+    return chunks
 
 
 def _parse_stamp(value) -> datetime | None:
@@ -753,6 +785,13 @@ class TradingBot(discord.Client):
                 callback=self._resume_command,
             )
         )
+        self.tree.add_command(
+            app_commands.Command(
+                name="resolve",
+                description="Report on ambiguous submissions, or record how one was resolved",
+                callback=self._resolve_command,
+            )
+        )
         await self.tree.sync()
         self._register_persistent_views()
 
@@ -978,6 +1017,93 @@ class TradingBot(discord.Client):
         )
         await interaction.response.send_message(
             f"Trading RESUMED by <@{interaction.user.id}> ({reason})."
+        )
+
+    async def _resolve_command(
+        self,
+        interaction,
+        order_id: int | None = None,
+        resolution: Literal["adopt", "confirmed_absent", "keep_blocked"] | None = None,
+        evidence: str = "",
+        broker_order_id: str | None = None,
+    ) -> None:
+        """/resolve — the operator's only way out of an ambiguous submission.
+
+        Two modes, and the split is the whole design:
+
+        With no resolution it REPORTS: it searches the broker for orders that
+        might be ours and shows how each differs from what we submitted. It
+        never resolves anything, not even a single exact match, because
+        matching fields establish shape and not provenance.
+
+        With a resolution it WRITES, through the audited
+        `resolve_order_manually` — actor, evidence and the transition are
+        recorded. `adopt` and `confirmed_absent` both release the worst-case
+        reservation, which is why this shares /halt's allowlist rather than
+        being open to the channel.
+
+        Every refusal from the database layer (unknown order, already resolved,
+        adopt without a broker id, missing evidence) comes back as an ephemeral
+        message. A stuck order is already an incident; a traceback in the
+        channel does not help it.
+        """
+        if not is_authorized(self.config, interaction.user.id):
+            logger.warning("Unauthorized /resolve from user %s", interaction.user.id)
+            await interaction.response.send_message(
+                "You are not authorized to resolve orders.", ephemeral=True
+            )
+            return
+
+        # Report mode. An order_id WITHOUT a resolution also lands here on
+        # purpose: half a write must never fall through to a default action.
+        if resolution is None:
+            await interaction.response.defer()
+            try:
+                report = await asyncio.to_thread(
+                    report_unknown_submissions, self.config
+                )
+            except Exception as exc:
+                logger.exception("/resolve report failed")
+                await interaction.followup.send(
+                    f"Could not build the resolution report: {exc}\n"
+                    "Nothing was resolved. Capital stays reserved."
+                )
+                return
+            for chunk in _chunk_message(report):
+                await interaction.followup.send(chunk)
+            return
+
+        if order_id is None:
+            await interaction.response.send_message(
+                "A resolution needs `order_id`. Run `/resolve` with no arguments "
+                "to see which orders are unresolved.", ephemeral=True
+            )
+            return
+
+        actor = f"discord:{interaction.user.id}"
+
+        def _write():
+            with immediate_transaction(self.config.db_path) as conn:
+                return queries.resolve_order_manually(
+                    conn, order_id, resolution, actor=actor, evidence=evidence,
+                    broker_order_id=broker_order_id,
+                )
+
+        try:
+            await asyncio.to_thread(_write)
+        except ValueError as exc:
+            await interaction.response.send_message(f"Refused: {exc}", ephemeral=True)
+            return
+        except Exception as exc:
+            logger.exception("/resolve write failed for order %s", order_id)
+            await interaction.response.send_message(
+                f"Could not resolve order {order_id}: {exc}", ephemeral=True
+            )
+            return
+
+        await interaction.response.send_message(
+            f"Order #{order_id} resolved `{resolution}` by <@{interaction.user.id}>.\n"
+            f"Evidence: {evidence}"
         )
 
     async def _deliver_ops_alert(self, alert_id: int, message: str) -> bool:

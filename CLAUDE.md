@@ -101,7 +101,8 @@ python main.py
 | `risk/kill_switch.py` | Durable, cross-process trading halt: persisted state, fail-closed reads, `submission_gate()`, audited transitions |
 | `risk/preflight.py` | The 12-guard approval table (`evaluate_trade`, `check_authorization`) + the `Quote`/`TradeRequest`/`Decision`/`BrokerSnapshot` types. Pure: no network, no DB, no clock, no mocks needed |
 | `schwab_client/quotes.py` | Validated bid/ask (`parse_quote`, `fetch_quote`) + `marketable_sell_limit` pricing |
-| `schwab_client/order_payload.py` | Pure Schwab-payload parsing: fills, replacements, `parse_working_orders` + `TERMINAL_BROKER_STATUSES` |
+| `schwab_client/order_payload.py` | Pure Schwab-payload parsing: fills, replacements, `parse_working_orders` + `TERMINAL_BROKER_STATUSES`, `parse_candidate_orders` |
+| `risk/resolution.py` | Ambiguous submissions: `report_unknown_submissions` (candidate search, report-only) + `alert_stuck_orders`. Lives outside `main.py` because `discord_bot.bot` needs the report and `main` already imports `TradingBot` |
 
 ### Key Design Decisions
 
@@ -154,6 +155,11 @@ python main.py
 
   Both prices are now computed **inside the approval path**, from the quote the guards evaluated. `place_marketable_sell_order` still exists but is no longer on the approval path — it fetched a *second* quote of its own, so the price the guards checked and the price sent to the broker could differ.
 - **Quote parsing has no defaults, and there is no market-order fallback**: every field in `parse_quote` is mandatory and every failure raises, because `.get("bidPrice", 0)` on an error body prices a sell at give-it-away — the same shape that made `get_positions` read a 401 as "the account holds nothing". Staleness is enforced separately (`QUOTE_MAX_AGE_S`) since a stale quote looks usable; `age_seconds` clamps at zero so clock skew cannot fake freshness. No usable quote means **no sell** — the recommendation re-opens for a human.
+- **`/resolve` reports; only a human resolves.** A `submit_unknown` row may or may not exist at the broker, and guard 11 blocks every new order for its ticker until it is settled — so before this existed, one ambiguous submission blocked a symbol **forever, silently**. The candidate search (`parse_candidate_orders` → `find_recent_orders` → `report_unknown_submissions`) never transitions an order, **not even on a single exact match**: matching fields establish an order's *shape*, not its *provenance*, and Schwab exposes no client-supplied correlation id, so two identical buys may both be ours. Only `resolve_order_manually` moves a row, and it demands an actor and an evidence string.
+
+  **`parse_candidate_orders` inverts `parse_working_orders` on two axes, deliberately.** It **includes** `TERMINAL_BROKER_STATUSES` — a `FILLED` candidate is the most dangerous one, meaning a real position the ledger never recorded — and it **does not raise** on an unpriceable candidate, carrying `limit_price=None` so `record_candidate_observation` prices it at our own `reference_price`. Reusing the working-order parser here would hide the worst case and abort whole reports over one market order.
+
+  A failed broker read is **reported, never fatal, and never resolves anything**: `[]` from an outage would look like "no candidate exists", which is exactly what makes `confirmed_absent` — the resolution that *releases capital* — look justified. `alert_stuck_orders` re-alerts on **every** scan past `STUCK_APPROVAL_ALERT_H`, because an alert nobody repeats is a block nobody sees. Gated on `OPS_USER_IDS`, like `/halt`.
 - **Ops alerts are a durable outbox**: `send_ops_alert` persists before delivering, so a Discord outage leaves a retryable row rather than a log line; `drain_ops_alerts` retries oldest-first at each scan start and stops at the first still-failing alert (an outage is not a per-alert condition). Neither send nor drain raises — both run inside scans that must not be aborted by their own reporting.
 - **Position reconciliation (report-only)**: `run_reconciliation()` in `main.py` compares DB open positions against the Schwab account (RISK-05: positions are recorded on order acknowledgement, not fill). Runs before each scan's sell pass and via `/reconcile`. It NEVER mutates positions — discrepancies (phantom / untracked / mismatched) are posted as ops alerts for human correction. Skipped entirely when `DRY_RUN=true` (simulated positions have no broker counterpart). Tests that call `run_scan` must set `config.dry_run = True` (or patch `main.get_positions`) so the suite never touches the live Schwab API.
 - **Config reads env at construction, not import**: `Config` fields use `field(default_factory=lambda: os.getenv(...))` (via the `_env_str/_int/_float/_bool` helpers), so `Config()` reflects the environment at call time. The old `= os.getenv(...)` defaults froze at import, forcing `importlib.reload(config)` in env-dependent tests — don't reintroduce that pattern. `test_config.py`'s reload-based USE_LIMIT_BUY tests still pass (now via construction-time reads).
@@ -203,12 +209,14 @@ MAX_POSITION_SIZE_USD=500
 - `/reconcile` — compare DB open positions against the Schwab account (report-only; skipped in DRY_RUN)
 - `/halt` — stop all new order submissions (durable, cross-process; allowlisted via `OPS_USER_IDS`)
 - `/resume` — re-enable submissions after a halt (same allowlist — both directions are guarded)
+- `/resolve` — the only operator exit from an ambiguous submission (`OPS_USER_IDS`). With no arguments it **reports**: searches the broker for orders that might be ours and shows how each differs from what we submitted. With `order_id` + `resolution` (`adopt`/`confirmed_absent`/`keep_blocked`) + `evidence` it **writes**, through the audited `resolve_order_manually`. An `order_id` without a resolution reports rather than defaulting — half a write is not a write.
 
 Pre-flight helper: `.venv/Scripts/python.exe scripts/check_ops_ids.py` reports the operator allowlist and the current kill-switch state, exiting non-zero if nobody is authorized. An empty or all-malformed `OPS_USER_IDS` locks you out of `/halt` **quietly**, which is why it is worth checking before startup.
 
 ### Test Suite
 
-952 tests as of 2026-08-16. Run with `.venv/Scripts/python.exe -m pytest -q` (~21s). Key test files:
+1011 tests as of 2026-08-16. Run with `.venv/Scripts/python.exe -m pytest -q` (~25s). Key test files:
+- `test_resolve_reporting.py` / `test_resolve_command.py` — `/resolve`: the candidate search never mutates order status, terminal candidates are *included* (the inverse of `parse_working_orders`), worst-case reservation, the ops allowlist, and the repeating stuck-order alert (59 tests)
 - `test_kill_switch.py` / `test_kill_switch_gate.py` / `test_kill_switch_wiring.py` / `test_halt_commands.py` — the kill switch (61 tests)
 - `test_quotes.py` / `test_marketable_sells.py` — validated quotes + sell pricing (46 tests)
 - `test_ops_alert_outbox.py` — durable ops-alert outbox (22 tests)

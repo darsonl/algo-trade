@@ -11,6 +11,7 @@ places real trades against a ceiling that has already been consumed.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
 
 # Statuses that mean an order is DONE and no longer holds capital. This is an
@@ -216,3 +217,98 @@ def parse_working_orders(payload) -> list[dict]:
         })
 
     return working
+
+
+def _as_datetime(value) -> datetime | None:
+    """Best-effort ISO8601 -> datetime. None when it cannot be read."""
+    if isinstance(value, datetime):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def parse_candidate_orders(payload, *, symbol: str, side: str,
+                           since, until) -> list[dict]:
+    """Broker orders that MIGHT be an ambiguous submission of ours.
+
+    Two rules here are the deliberate inverse of `parse_working_orders`, and
+    neither is an oversight:
+
+    **Terminal statuses are INCLUDED.** `parse_working_orders` skips them
+    because filled shares already count as position market value. Here a
+    `FILLED` order in the window is the single most dangerous candidate: it
+    means a real position exists that our ledger never recorded. Filtering it
+    out would hide precisely the case an operator needs to see.
+
+    **An unpriceable candidate does not raise.** `parse_working_orders` raises,
+    because reserving zero for a live order opens the ceiling. A candidate
+    instead carries `limit_price=None`, and `record_candidate_observation`
+    prices it at OUR order's `reference_price` -- a defined, conservative
+    number. Raising would abort a whole report over one market order.
+
+    Reports only. Nothing here decides that a candidate IS ours: matching
+    fields establish shape, not provenance, and Schwab offers no
+    client-supplied correlation id. A human owns that judgement.
+    """
+    if not isinstance(payload, list):
+        # An HTTP error body is a structurally valid dict, and letting it fall
+        # through a .get() chain is how "no candidates exist" gets invented.
+        raise ValueError(
+            f"Schwab orders response is {type(payload).__name__}, not a list"
+        )
+
+    want_symbol = str(symbol).upper()
+    want_side = str(side).lower()
+    since_dt, until_dt = _as_datetime(since), _as_datetime(until)
+
+    candidates = []
+    for entry in payload:
+        if not isinstance(entry, dict):
+            raise ValueError(f"orders response contains a {type(entry).__name__}, not an order")
+
+        entry_symbol = _symbol(entry)
+        if not entry_symbol:
+            # Cannot tell whether this is a candidate. Dropping it silently
+            # would under-state the worst case the reservation must cover.
+            raise ValueError(
+                f"order {entry.get('orderId')!r} does not name a symbol; "
+                "cannot tell whether it is a candidate"
+            )
+        if entry_symbol.upper() != want_symbol or _side(entry) != want_side:
+            continue
+
+        # An unreadable timestamp is KEPT. Over-counting rejects a legitimate
+        # trade, which is recoverable; under-counting opens the ceiling.
+        entered = entry.get("enteredTime")
+        entered_dt = _as_datetime(entered)
+        if entered_dt is not None:
+            if since_dt is not None and entered_dt < since_dt:
+                continue
+            if until_dt is not None and entered_dt > until_dt:
+                continue
+
+        order_id = entry.get("orderId")
+        if order_id in (None, ""):
+            raise ValueError(
+                f"a candidate for {entry_symbol} has no orderId; "
+                "it could not be adopted even if it is ours"
+            )
+
+        price = entry.get("price")
+        limit_price = float(price) if price not in (None, "") and float(price) > 0 else None
+
+        candidates.append({
+            "broker_order_id": str(order_id),
+            "symbol": entry_symbol,
+            "side": want_side,
+            "quantity": float(entry.get("quantity") or 0.0),
+            "limit_price": limit_price,
+            "status": str(entry.get("status", "")).upper() or None,
+            "entered_at": entered,
+        })
+
+    return candidates
