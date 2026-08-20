@@ -106,6 +106,7 @@ python main.py
 | `risk/preflight.py` | The 12-guard approval table (`evaluate_trade`, `check_authorization`) + the `Quote`/`TradeRequest`/`Decision`/`BrokerSnapshot` types. Pure: no network, no DB, no clock, no mocks needed |
 | `schwab_client/quotes.py` | Validated bid/ask (`parse_quote`, `fetch_quote`) + `marketable_sell_limit` pricing |
 | `schwab_client/order_payload.py` | Pure Schwab-payload parsing: fills, replacements, `parse_working_orders` + `TERMINAL_BROKER_STATUSES`, `parse_candidate_orders`, `map_broker_status` + `SWEEP_TERMINAL_BROKER_STATUSES` |
+| `risk/scan_lock.py` | One scan at a time across BOTH scan paths: `scan_lock()` (one asyncio.Lock per running loop) + `scan_in_progress()`. Outside `main.py` for the same reason as `resolution.py` |
 | `risk/resolution.py` | Ambiguous submissions: `report_unknown_submissions` (candidate search, report-only) + `alert_stuck_orders`. Lives outside `main.py` because `discord_bot.bot` needs the report and `main` already imports `TradingBot` |
 
 ### Key Design Decisions
@@ -134,6 +135,12 @@ python main.py
   The calendar is memoised but rebuilds when an instant passes its end (it only spans ~1 year ahead), because a process alive longer would otherwise raise `MinuteOutOfBounds` from inside the order path. Only the *upper* bound rebuilds — an instant before the calendar starts is bad data in a ledger created this month, and should raise.
 - **ETF bypass**: ETFs are partitioned out of the stock scan by `partition_watchlist()` using `yfinance quoteType`. They run through `run_scan_etf()` which skips `passes_fundamental_filter` entirely and uses `build_etf_prompt` (no earnings/P/E context).
 - **sell_blocked flag**: After a rejected sell, `sell_blocked=True` prevents re-triggering the sell signal for the same position on the same day. Auto-resets when RSI drops back below threshold.
+- **One scan at a time, across BOTH scan paths — one lock, not one each**: `risk/scan_lock.py`. A symbol can appear in the stock universe *and* in the ETF universe, so two concurrent scans can reach the same ticker; `ticker_recommended_today` is a read followed by a much later write with network awaits in between, the classic check-then-act race. `idx_active_rec_per_ticker` is the durable backstop but it only turns that race into an `IntegrityError`, and an aborted scan is not a good outcome either.
+
+  **A scan that arrives while one is running is SKIPPED, never queued.** Running it afterwards would screen a market that has already moved on, spend analyst quota a second time, and post recommendations stamped to a moment that has passed. The slash commands answer *before* `create_task`, so the operator is told immediately rather than waiting on results that will never come.
+
+  It is **one lock per running loop** (`WeakKeyDictionary`) — the same trap and fix as `submission_gate()` and `approval_gate()`. Checking `locked()` and then acquiring is *not* a race on one loop: `Lock.acquire()` returns without suspending when the lock is free, so nothing can interleave between the two.
+
 - **Kill switch is durable, cross-process, and fails closed**: state lives in the `kill_switch` table, not a module variable, because a `/halt` typed into the Discord process must stop a scan running in another one and must survive a restart. `is_enabled()` re-reads the DB on every call for that reason. Everything unknown — no row, no table, unreadable DB, unrecognised value — returns False. `TRADING_ENABLED` seeds only a database that has never been written, so a restart can never undo an operator's halt.
 - **The submission gate is an `asyncio.Lock`, never a `threading.RLock`**: an RLock is reentrant *per thread* and all coroutines share the loop thread, so `/halt` would acquire the "same gate" as an in-flight submission and walk straight into the critical section — no exclusion at all, while looking correct. It is also **one lock per running loop** (`WeakKeyDictionary`), because a module-level `asyncio.Lock` binds to the first loop that *contends* on it and raises for every loop after; `acquire()`'s uncontended fast path hides this from tests. Both behaviours are pinned by `tests/test_kill_switch_gate.py`. Do not "simplify" either.
 - **The preflight guard table is ordered, and the order is load-bearing**: `risk/preflight.py` runs 12 guards and returns the first rejection. **Guard 1 (`unauthorized`) is first** so a rejection message cannot be used as a side channel into the book — an unauthorized clicker must not be able to distinguish a halted bot from a blown ceiling. **Guard 5 (`broker_unavailable`) precedes every guard that consumes broker data**; if it ran after guard 9, exposure would already have been evaluated against an empty list and a broker outage would *open* the ceiling. `None` and `[]` are different inputs throughout (`BrokerSnapshot.readable`): None means the read failed, `[]` means it succeeded and there is nothing. Removing guard 5 was verified to leave no clean refusal at all, only a `TypeError`.
@@ -221,8 +228,8 @@ MAX_POSITION_SIZE_USD=500
 
 ### Discord Slash Commands
 
-- `/scan` — manually trigger stock scan (same as scheduled daily run)
-- `/scan_etf` — manually trigger ETF-only scan
+- `/scan` — manually trigger stock scan (same as scheduled daily run). Replies "a scan is already running" instead of starting a second one
+- `/scan_etf` — manually trigger ETF-only scan. Shares `/scan`'s lock, so it refuses while either scan is running
 - `/positions` — display open positions with live P&L embed
 - `/stats` — win rate and P&L stats for closed trades
 - `/history` — last 20 closed trades
@@ -235,8 +242,9 @@ Pre-flight helper: `.venv/Scripts/python.exe scripts/check_ops_ids.py` reports t
 
 ### Test Suite
 
-1060 tests as of 2026-08-20. Run with `.venv/Scripts/python.exe -m pytest -q` (~25s). Key test files:
+1070 tests as of 2026-08-21. Run with `.venv/Scripts/python.exe -m pytest -q` (~25s). Key test files:
 - `test_order_status_sweep.py` / `test_order_status_mapping.py` / `test_active_rec_index.py` — step 11: chain-following, the sweep, the trustworthy-fill rule, and the index that cannot ship before its release valve (48 tests)
+- `test_scan_lock.py` — one scan at a time: the shared lock, the per-loop binding trap, and the two slash commands (10 tests)
 - `test_execution_mode.py` — `EXECUTION_MODE`: the derived `dry_run`, the loud migration, and the sink's both-signals-must-agree guard (21 tests)
 - `test_resolve_reporting.py` / `test_resolve_command.py` — `/resolve`: the candidate search never mutates order status, terminal candidates are *included* (the inverse of `parse_working_orders`), worst-case reservation, the ops allowlist, and the repeating stuck-order alert (59 tests)
 - `test_kill_switch.py` / `test_kill_switch_gate.py` / `test_kill_switch_wiring.py` / `test_halt_commands.py` — the kill switch (61 tests)

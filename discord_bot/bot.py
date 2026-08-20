@@ -16,6 +16,7 @@ from database import queries
 from database.models import get_cursor, immediate_transaction
 from database.order_accounting import BLOCKING_ORDER_STATUSES
 from risk import kill_switch
+from risk.scan_lock import scan_in_progress
 from risk.kill_switch import TradingHalted
 from risk.preflight import (
     BrokerSnapshot,
@@ -814,6 +815,13 @@ class TradingBot(discord.Client):
             logger.info("Restored %d persistent recommendation view(s) after startup", restored)
 
     async def _scan_command(self, interaction: discord.Interaction):
+        # Answered BEFORE the task is created, so the operator is told now
+        # rather than watching for results from a scan that was silently
+        # dropped. ONE lock covers both scan paths -- a symbol can appear in
+        # the stock universe and in the ETF universe.
+        if scan_in_progress():
+            await self._reply_scan_busy(interaction)
+            return
         try:
             await interaction.response.send_message("Scan triggered — results incoming...")
         except Exception:
@@ -822,12 +830,25 @@ class TradingBot(discord.Client):
             asyncio.create_task(self._scan_callback())
 
     async def _scan_etf_command(self, interaction: discord.Interaction):
+        if scan_in_progress():
+            await self._reply_scan_busy(interaction)
+            return
         try:
             await interaction.response.send_message("ETF scan triggered — results incoming...")
         except Exception:
             pass
         if self._scan_etf_callback is not None:
             asyncio.create_task(self._scan_etf_callback())
+
+    @staticmethod
+    async def _reply_scan_busy(interaction: discord.Interaction) -> None:
+        try:
+            await interaction.response.send_message(
+                "A scan is already running — this one was skipped rather than "
+                "queued, so nothing is lost by letting the first one finish."
+            )
+        except Exception:
+            pass  # the interaction may have expired; there is nothing to run
 
     async def _reconcile_command(self, interaction: discord.Interaction):
         """Handle /reconcile: compare DB positions against Schwab and report the result."""
