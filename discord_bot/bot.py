@@ -1,6 +1,5 @@
 from __future__ import annotations
 import asyncio
-import math
 import logging
 import threading
 import weakref
@@ -215,13 +214,6 @@ def is_authorized(config, user_id: int) -> bool:
         except ValueError:
             logger.warning("Ignoring malformed OPS_USER_IDS entry %r", part)
     return user_id in allowed
-
-
-def compute_share_quantity(price: float, max_position_usd: float) -> int:
-    """Return how many whole shares can be bought without exceeding max_position_usd."""
-    if price <= 0:
-        return 0
-    return math.floor(max_position_usd / price)
 
 
 class ApproveRejectView(discord.ui.View):

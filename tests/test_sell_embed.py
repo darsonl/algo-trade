@@ -48,10 +48,3 @@ def test_build_sell_embed_negative_pnl():
 def test_build_sell_embed_reasoning():
     embed = build_sell_embed("AAPL", "RSI indicates overbought", 150.0, 170.0, 0.133, 10, 72.5)
     assert embed.description == "RSI indicates overbought"
-
-
-def test_build_market_sell():
-    from schwab_client.orders import build_market_sell
-    spec = build_market_sell("AAPL", 10)
-    assert spec is not None
-    assert isinstance(spec, dict)

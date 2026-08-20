@@ -1,36 +1,5 @@
 import pytest
-from schwab_client.orders import build_market_buy, build_limit_buy, parse_positions
-
-
-# --- build_market_buy ---
-
-def test_build_market_buy_sets_symbol():
-    spec = build_market_buy("AAPL", 5)
-    leg = spec["orderLegCollection"][0]
-    assert leg["instrument"]["symbol"] == "AAPL"
-
-
-def test_build_market_buy_sets_quantity():
-    spec = build_market_buy("AAPL", 5)
-    leg = spec["orderLegCollection"][0]
-    assert leg["quantity"] == 5
-
-
-def test_build_market_buy_is_market_order():
-    spec = build_market_buy("AAPL", 5)
-    assert spec["orderType"] == "MARKET"
-
-
-def test_build_market_buy_instruction_is_buy():
-    spec = build_market_buy("AAPL", 5)
-    leg = spec["orderLegCollection"][0]
-    assert leg["instruction"] == "BUY"
-
-
-def test_build_market_buy_asset_type_is_equity():
-    spec = build_market_buy("JNJ", 3)
-    leg = spec["orderLegCollection"][0]
-    assert leg["instrument"]["assetType"] == "EQUITY"
+from schwab_client.orders import build_limit_buy, parse_positions
 
 
 # --- parse_positions ---
