@@ -24,6 +24,7 @@ from screener.macro import fetch_macro_context
 from screener.exit_signals import check_exit_signals
 from database.order_accounting import DEFINITIVELY_UNFILLED_STATUSES, OPEN_ORDER_STATUSES
 from risk.resolution import alert_stuck_orders
+from risk.scan_lock import scan_lock
 from schwab_client.order_payload import extract_fills, map_broker_status
 from schwab_client.orders import fetch_order, get_positions
 from schwab_client.reconcile import diff_positions, format_reconciliation_report
@@ -385,6 +386,23 @@ async def _drain_ops_outbox(bot: TradingBot) -> None:
 
 
 async def run_scan(bot: TradingBot, config: Config) -> None:
+    """Run the full screening pipeline, one scan at a time.
+
+    Skipped, never queued, when another scan already holds the lock. Running it
+    afterwards would screen a market that has already moved on, spend analyst
+    quota a second time, and post recommendations stamped to a moment that has
+    passed. ONE lock covers both scan paths: a symbol can appear in the stock
+    universe and in the ETF universe.
+    """
+    lock = scan_lock()
+    if lock.locked():
+        logger.warning("Scan skipped: another scan is already running")
+        return
+    async with lock:
+        await _run_scan_locked(bot, config)
+
+
+async def _run_scan_locked(bot: TradingBot, config: Config) -> None:
     """Run the full screening pipeline and post qualifying tickers to Discord."""
     logger.info("Starting scan...")
     await _drain_ops_outbox(bot)
@@ -716,6 +734,23 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
 # ---------------------------------------------------------------------------
 
 async def run_scan_etf(bot: TradingBot, config: Config) -> None:
+    """Run the ETF-only screening pipeline, one scan at a time.
+
+    Skipped, never queued, when another scan already holds the lock. Running it
+    afterwards would screen a market that has already moved on, spend analyst
+    quota a second time, and post recommendations stamped to a moment that has
+    passed. ONE lock covers both scan paths: a symbol can appear in the stock
+    universe and in the ETF universe.
+    """
+    lock = scan_lock()
+    if lock.locked():
+        logger.warning("ETF scan skipped: another scan is already running")
+        return
+    async with lock:
+        await _run_scan_etf_locked(bot, config)
+
+
+async def _run_scan_etf_locked(bot: TradingBot, config: Config) -> None:
     """Run the ETF screening pipeline and post qualifying tickers to Discord (per ETF-02)."""
     logger.info("Starting ETF scan...")
     await _drain_ops_outbox(bot)
