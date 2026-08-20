@@ -274,10 +274,21 @@ def test_expire_stale_expires_past_boundary():
     assert get_recommendation(DB_PATH, rec_id)["status"] == "expired"
 
 
-def test_expire_stale_does_not_expire_at_exact_now():
-    """
-    Production SQL uses strict < so a record expiring exactly at 'now' stays pending.
-    This documents the intended boundary semantics.
+def test_expire_stale_expires_at_exact_now():
+    """A record expiring exactly at 'now' IS expired (spec v4 §10).
+
+    This replaces a test that asserted the opposite and called it "the intended
+    boundary semantics". It was not intent — it was a restatement of what the
+    SQL happened to do (`datetime('now')` is not `< datetime('now')`), written
+    without reference to the claim side. `claim_recommendation_tx` requires
+    `expires_at > now`, so at that exact instant the row was ALREADY
+    unclaimable; leaving it unexpirable too put it in a one-second limbo where
+    the Approve button refuses a recommendation that still reads `pending`.
+
+    The old test was also latently flaky: one second ticking between the UPDATE
+    and the call makes `<` true, and it would have failed for the right reason
+    by accident. The boundary is pinned properly, against a fixed instant, in
+    tests/test_expiry_boundary.py.
     """
     import sqlite3
     rec_id = create_recommendation(
@@ -292,8 +303,7 @@ def test_expire_stale_does_not_expire_at_exact_now():
     conn.commit()
     conn.close()
     expire_stale_recommendations(DB_PATH)
-    # datetime('now') is NOT < datetime('now'), so the record should remain pending
-    assert get_recommendation(DB_PATH, rec_id)["status"] == "pending"
+    assert get_recommendation(DB_PATH, rec_id)["status"] == "expired"
 
 
 # --- asset_type column tests ---
