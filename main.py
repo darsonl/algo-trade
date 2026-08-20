@@ -66,6 +66,25 @@ def should_recommend(signal: str, tech_data: dict, config: Config) -> bool:
     return passes_technical_filter(tech_data, config)
 
 
+def scheduler_summary(label: str, times: list[str], timezone: str | None) -> str:
+    """Describe the schedule that was ACTUALLY registered.
+
+    Built from the same list `configure_scheduler` iterates, because the
+    previous version read `config.scan_hour`/`scan_minute` -- the FALLBACK
+    fields, used only when SCAN_TIMES is empty. With SCAN_TIMES set the bot
+    announced "daily scan at 22:00", a time at which nothing happens, and never
+    mentioned the two times at which scans actually run.
+
+    The timezone is named because this host is Asia/Taipei while the markets are
+    in New York: "21:45 machine-local" is legible as an ET market time only if
+    the reader is told which clock it is on.
+    """
+    where = timezone or "machine-local time — set SCAN_TIMEZONE to read these as market times"
+    if not times:
+        return f"{label}: NO times scheduled — this scan will never run."
+    return f"{label} scheduled at {', '.join(times)} ({where})"
+
+
 def configure_scheduler(
     scheduler: BackgroundScheduler,
     config: Config,
@@ -972,12 +991,10 @@ def main() -> None:
         )
         scheduler.start()
         logger.info(
-            "Scheduler started — daily scan at %02d:%02d",
-            config.scan_hour, config.scan_minute,
+            "%s", scheduler_summary("Stock scan", config.scan_times, config.scan_timezone)
         )
         logger.info(
-            "ETF scheduler started — daily ETF scan at %02d:%02d",
-            config.etf_scan_hour, config.etf_scan_minute,
+            "%s", scheduler_summary("ETF scan", config.etf_scan_times, config.scan_timezone)
         )
 
     bot.run(config.discord_token)
