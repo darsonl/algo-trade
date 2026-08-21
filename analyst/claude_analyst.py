@@ -78,10 +78,44 @@ _OPENAI_BASE_URLS: dict[str, str] = {
 _DEFAULT_MODELS: dict[str, str] = {
     "claude": "claude-opus-4-8",
     "openai": "gpt-4o-mini",
+    # Measured 2026-08-21: 9/9 clean parses, zero 503s. gemini-3.7-flash is
+    # newer and faster but showed a parse miss and a ~33% raw 503 rate, so it
+    # is not the default. See tests/test_fallback_is_real.py for why the
+    # FALLBACK must differ from whatever this is.
     "gemini": "gemini-2.5-flash",
     "github": "gpt-4o-mini",
     "deepseek": "deepseek-chat",
 }
+
+
+def degenerate_fallback_reason(provider: str, model: str,
+                               fallback_provider: str, fallback_model: str) -> str | None:
+    """Why this fallback tier cannot help, or None if it can.
+
+    `_run_with_fallbacks` resolves each tier as `config.<tier>_model or
+    _DEFAULT_MODELS[provider]`. So a fallback provider set without an explicit
+    fallback model resolves to the SAME model as the primary, and the tier then
+    retries that model against the same per-model quota that just refused it.
+
+    Gemini enforces quota per project and per model, so a second API key buys
+    nothing -- the tier's entire value is being a different MODEL. Same provider
+    AND same model means it costs a call and its latency to return the same
+    failure. Different providers are always fine, even under an identical model
+    name, because those are two services with two quotas.
+
+    Returns a reason rather than raising: a misconfigured fallback degrades the
+    chain, it does not make trading unsafe, and refusing to start over it would
+    be out of proportion.
+    """
+    if not fallback_provider or not fallback_model:
+        return None
+    if provider == fallback_provider and model == fallback_model:
+        return (
+            f"fallback is the same model as the primary ({model!r} on "
+            f"{provider!r}), so it retries the quota that just refused it -- "
+            "set a different ANALYST_FALLBACK_MODEL"
+        )
+    return None
 
 
 def create_analyst_client(config: Config):
@@ -104,6 +138,15 @@ def create_fallback_client(config: Config):
     if provider == "claude":
         return anthropic.Anthropic(api_key=config.analyst_fallback_api_key)
     base_url = _OPENAI_BASE_URLS.get(provider)
+    reason = degenerate_fallback_reason(
+        config.analyst_provider,
+        config.analyst_model or _DEFAULT_MODELS.get(config.analyst_provider, ""),
+        provider,
+        config.analyst_fallback_model or _DEFAULT_MODELS.get(provider, ""),
+    )
+    if reason:
+        # Once per scan, where the client is built -- not once per ticker.
+        logger.warning("Analyst fallback will not help: %s", reason)
     return openai.OpenAI(api_key=config.analyst_fallback_api_key, base_url=base_url)
 
 
