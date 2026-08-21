@@ -919,7 +919,7 @@ def observe(config, ticker: str, scan_kind: str, stage: str, outcome: str,
         now = instant or datetime.now(timezone.utc)
         obs = build_observation(
             ticker, scan_kind, stage, outcome,
-            session_date=market_session_date(now),
+            session_date=market_session_date(now).isoformat(),
             observed_at=now.strftime("%Y-%m-%dT%H:%M:%SZ"),
             **kw,
         )
@@ -929,7 +929,7 @@ def observe(config, ticker: str, scan_kind: str, stage: str, outcome: str,
     return record(config, obs)
 ```
 
-**Note for the implementer:** confirm `market_session_date`'s parameter name by reading `market_time.py` before wiring it; if it takes the instant positionally, call it positionally as shown.
+**Note for the implementer:** `market_session_date` returns a `date` OBJECT, not a string, which is why `.isoformat()` is called on it -- `session_date` is a TEXT column and Task 7 does `datetime.strptime(row["session_date"], "%Y-%m-%d")` on the stored value. Writing the bare `date` would be silently coerced by SQLite and only surface as a failure two tasks later. Confirm the parameter name by reading `market_time.py` before wiring it.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
