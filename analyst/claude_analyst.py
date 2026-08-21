@@ -78,11 +78,18 @@ _OPENAI_BASE_URLS: dict[str, str] = {
 _DEFAULT_MODELS: dict[str, str] = {
     "claude": "claude-opus-4-8",
     "openai": "gpt-4o-mini",
-    # Measured 2026-08-21: 9/9 clean parses, zero 503s. gemini-3.7-flash is
-    # newer and faster but showed a parse miss and a ~33% raw 503 rate, so it
-    # is not the default. See tests/test_fallback_is_real.py for why the
-    # FALLBACK must differ from whatever this is.
-    "gemini": "gemini-2.5-flash",
+    # gemini-3.7-flash: newest, ~2x faster than 2.5-flash, free tier.
+    #
+    # An earlier probe read its HTTP 503s as instability and kept 2.5-flash. That
+    # diagnosis was WRONG: the AI Studio dashboard showed the model's DAILY QUOTA
+    # exhausted, and the probing itself is what exhausted it. 503 rather than 429
+    # is how the free tier reports that for this model, which is worth knowing --
+    # `_should_retry` treats 503 as retryable, so an exhausted model burns all
+    # three attempts before the fallback engages.
+    #
+    # See tests/test_fallback_is_real.py for why the FALLBACK must differ from
+    # whatever this is.
+    "gemini": "gemini-3.7-flash",
     "github": "gpt-4o-mini",
     "deepseek": "deepseek-chat",
 }

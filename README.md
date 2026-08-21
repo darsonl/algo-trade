@@ -98,7 +98,7 @@ Or run a free-tier primary with paid fallbacks behind it:
 ```env
 ANALYST_PROVIDER=gemini
 ANALYST_API_KEY=...
-ANALYST_MODEL=gemini-2.5-flash
+ANALYST_MODEL=gemini-3.7-flash
 
 ANALYST_FALLBACK_PROVIDER=github        # free GPT-4o-mini via GitHub Models
 ANALYST_FALLBACK_API_KEY=<PAT with models:read>
