@@ -126,6 +126,65 @@ def _backfill_intended_session_dates(conn) -> int:
     return filled
 
 
+def _create_shadow_tables(conn) -> None:
+    """Research tables: every candidate the pipeline saw, and its forward marks.
+
+    Separate from `recommendations` on purpose. That table is operational -- the
+    approval path, the dupe guard and `idx_active_rec_per_ticker` all read it,
+    and it holds only candidates that survived every filter. Research needs the
+    opposite: every candidate INCLUDING the rejected ones, because a conversion
+    rate whose denominator omits the rejects is not a conversion rate.
+
+    `human_action` lives here rather than in its own table because it is
+    one-to-one with the observation and never re-stated.
+    """
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS shadow_observations (
+               id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+               session_date          TEXT NOT NULL,
+               observed_at           TEXT NOT NULL,
+               ticker                TEXT NOT NULL,
+               scan_kind             TEXT NOT NULL,
+               stage_reached         TEXT NOT NULL,
+               outcome               TEXT NOT NULL,
+               reject_reason         TEXT,
+               fundamentals_json     TEXT,
+               technicals_json       TEXT,
+               headlines_json        TEXT,
+               macro_json            TEXT,
+               analyst_provider      TEXT,
+               analyst_model         TEXT,
+               analyst_signal        TEXT,
+               analyst_confidence    TEXT,
+               analyst_prompt_sha256 TEXT,
+               analyst_raw_response  TEXT,
+               cache_hit             INTEGER NOT NULL DEFAULT 0,
+               recommendation_id     INTEGER,
+               reference_price       REAL,
+               human_action          TEXT,
+               human_action_at       TEXT
+           )"""
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_shadow_obs_session
+               ON shadow_observations(session_date, ticker)"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS shadow_outcomes (
+               id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+               observation_id       INTEGER NOT NULL REFERENCES shadow_observations(id),
+               horizon              TEXT NOT NULL,
+               as_of                TEXT NOT NULL,
+               price                REAL,
+               return_pct           REAL,
+               benchmark_price      REAL,
+               benchmark_return_pct REAL,
+               UNIQUE(observation_id, horizon)
+           )"""
+    )
+    conn.commit()
+
+
 def get_connection(db_path: str) -> sqlite3.Connection:
     """Open a SQLite connection to db_path with WAL mode and Row factory enabled.
 
@@ -416,9 +475,18 @@ def initialize_db(db_path: str) -> None:
         conn.commit()
     except sqlite3.OperationalError:
         pass  # Column already exists
+
+    try:
+        conn.execute(
+            "ALTER TABLE recommendations ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'"
+        )
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # Column already exists
     _migrate_analyst_calls_to_per_model(conn)
     _create_active_recommendation_index(conn)
     _backfill_intended_session_dates(conn)
+    _create_shadow_tables(conn)
     # After the column is guaranteed to exist -- inside the schema block above
     # this would raise "no such column" on any pre-existing database.
     conn.execute(
