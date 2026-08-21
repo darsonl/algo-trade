@@ -130,7 +130,21 @@ python main.py
 - **Analyst fallback provider**: When the primary analyst call fails, `analyze_ticker()` (and `analyze_etf_ticker`/`analyze_sell_ticker`) falls through the chain `primary → fallback → fallback2`. Configured via `ANALYST_FALLBACK_PROVIDER`/`_API_KEY`/`_MODEL` and `ANALYST_FALLBACK2_*` in `.env`. Both API-level failures (quota exhausted, rate limit, network) **and** parse errors (`ValueError` from `parse_claude_response`, e.g. a template-echo response) trigger the fallback; the failure only propagates once no further fallback client is configured.
 - **asyncio.to_thread for all yfinance I/O**: Every yfinance call inside async functions (`fetch_fundamental_info`, `fetch_news_headlines`, `fetch_technical_data`, `partition_watchlist`, `get_top_sp500_by_fundamentals`) must be wrapped in `await asyncio.to_thread(...)` to prevent blocking the Discord gateway heartbeat. Zero bare synchronous yfinance calls on the event loop.
 - **Two-gate sell signal**: `check_exit_signals` requires BOTH RSI above threshold AND MACD bearish (macd_line < signal_line). Either condition alone does not trigger a sell recommendation.
-- **Analyst quota tracking**: `analyst_calls` table tracks daily call counts per provider. Counting happens per provider **attempt** (the `on_attempt` callback passed from `main.py` into `_run_with_fallbacks`, invoked before each provider call) — failed calls burn provider quota just like successes, so they count too. Cache hits bypass both the quota guard and the increment. Configured via `ANALYST_DAILY_LIMIT` (default 18) to respect Gemini free-tier limits.
+- **Analyst quota tracking is PER MODEL, because Google meters per model**: `analyst_calls` is keyed `(date, provider, model)`. Counting happens per **attempt** (`on_attempt(provider, model)`, passed from `main.py` into `_run_with_fallbacks` and invoked before each call) — failed calls burn quota just like successes. Cache hits bypass both the guard and the increment.
+
+  Read off the AI Studio dashboard, free tier, 2026-08-21 — and these are **per model**, not per provider:
+
+  | model | RPM | RPD |
+  |---|---|---|
+  | `gemini-3.1-flash-lite` | 15 | **500** |
+  | every `gemini-*-flash` (2.5, 3, 3.5, 3.6, 3.7) | 5 | **20** |
+  | `gemma-4-31b-it` | 30 | 14,400 — but parses 0/3, banned |
+
+  The counter used to be keyed `(date, provider)`. Both tiers of the chain are provider `gemini`, so they **shared one budget** and `all_providers_exhausted` compared a number against itself; a fallback with 25× the primary's allowance was unreachable. Each tier now has its own limit — `ANALYST_DAILY_LIMIT` / `ANALYST_FALLBACK_DAILY_LIMIT` / `ANALYST_FALLBACK2_DAILY_LIMIT` — because one shared number has to be set to the smallest model's, throwing the rest away.
+
+  **`gemini-3.1-flash-lite` is the primary for its quota, not its quality.** At 20 RPD a `*-flash` primary caps the entire day at ~20 analyst calls, which is what held `TOP_SP500_COUNT` at 10. 500 RPD is what makes a real universe affordable (now 50, delay 12.0s → 4.0s for 15 RPM). `gemini-3.7-flash` is the fallback: better per call, but only 20 of them a day.
+
+  **This free tier reports per-model exhaustion as 503, not 429.** `_should_retry` only short-circuits on a `QuotaFailure` detail in the body, so an exhausted model burns all three `@_retry` attempts before the fallback engages. A 503 here is as likely to be a spent budget as a busy server — check the dashboard before concluding a model is flaky, which is a mistake already made once on this path.
 - **Market-session day bucketing**: all "today" logic uses the **US market session date** (the `America/New_York` calendar date), via `market_time.market_session_date()` / `market_session_bounds_utc()`. Timestamps stay UTC in storage. `ticker_recommended_today`, `positions.entry_date`, and analyst quota tracking all use it, and each takes an optional `instant` parameter so tests can pin time without freezegun.
 
   **Both earlier conventions were wrong and must not be reintroduced.** Bare `date('now')` compares UTC days, which roll over mid-afternoon US time. `date(..., 'localtime')` compares the *host's* days — and this host is Asia/Taipei (UTC+8), where a US session (09:30–16:00 ET) runs 21:30–04:00 local and crosses local midnight. With `SCAN_TIMES=21:45,03:30` both scheduled scans are 09:45 ET and 15:30 ET of the **same** session but land on different local dates, so the dupe guard never matched between them and `ANALYST_DAILY_LIMIT` reset mid-session. Prefer the range predicate `created_at >= ? AND created_at < ?` over wrapping the column in `date()` — it stays index-usable.
@@ -222,7 +236,7 @@ MAX_POSITION_SIZE_USD=500
 
 **`analyst_cache`**: cache_key (SHA-256 of headlines), provider, signal, reasoning, created_at
 
-**`analyst_calls`**: PRIMARY KEY (date, provider), call_count — daily quota tracking per provider
+**`analyst_calls`**: PRIMARY KEY (date, provider, **model**), count — daily quota per model, matching how Google meters. Legacy rows migrated to `model=''` rather than dropped (those calls were really made) or attributed to a current model (they never consumed its budget)
 
 **`orders`**: the durable order ledger — status, broker_order_id, filled_shares/notional, `fills_observed`, `predecessor_order_id`, `reserved_notional_override`, `intended_session_date` (the session the broker will actually run it in — what the daily ceiling buckets on; backfilled for pre-existing rows, since a NULL would be invisible to the ceiling and fail open)
 
@@ -252,9 +266,10 @@ Pre-flight helper: `.venv/Scripts/python.exe scripts/check_ops_ids.py` reports t
 
 ### Test Suite
 
-1088 tests as of 2026-08-21. Run with `.venv/Scripts/python.exe -m pytest -q` (~25s). Key test files:
+1096 tests as of 2026-08-21. Run with `.venv/Scripts/python.exe -m pytest -q` (~25s). Key test files:
 - `test_order_status_sweep.py` / `test_order_status_mapping.py` / `test_active_rec_index.py` — step 11: chain-following, the sweep, the trustworthy-fill rule, and the index that cannot ship before its release valve (48 tests)
 - `test_scan_lock.py` — one scan at a time: the shared lock, the per-loop binding trap, and the two slash commands (10 tests)
+- `test_per_model_quota.py` — quota metered per model, and the `analyst_calls` rebuild against a PRE-EXISTING table (8 tests)
 - `test_execution_mode.py` — `EXECUTION_MODE`: the derived `dry_run`, the loud migration, and the sink's both-signals-must-agree guard (21 tests)
 - `test_resolve_reporting.py` / `test_resolve_command.py` — `/resolve`: the candidate search never mutates order status, terminal candidates are *included* (the inverse of `parse_working_orders`), worst-case reservation, the ops allowlist, and the repeating stuck-order alert (59 tests)
 - `test_kill_switch.py` / `test_kill_switch_gate.py` / `test_kill_switch_wiring.py` / `test_halt_commands.py` — the kill switch (61 tests)

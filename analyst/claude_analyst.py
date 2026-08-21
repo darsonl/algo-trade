@@ -78,18 +78,11 @@ _OPENAI_BASE_URLS: dict[str, str] = {
 _DEFAULT_MODELS: dict[str, str] = {
     "claude": "claude-opus-4-8",
     "openai": "gpt-4o-mini",
-    # gemini-3.7-flash: newest, ~2x faster than 2.5-flash, free tier.
-    #
-    # An earlier probe read its HTTP 503s as instability and kept 2.5-flash. That
-    # diagnosis was WRONG: the AI Studio dashboard showed the model's DAILY QUOTA
-    # exhausted, and the probing itself is what exhausted it. 503 rather than 429
-    # is how the free tier reports that for this model, which is worth knowing --
-    # `_should_retry` treats 503 as retryable, so an exhausted model burns all
-    # three attempts before the fallback engages.
-    #
-    # See tests/test_fallback_is_real.py for why the FALLBACK must differ from
-    # whatever this is.
-    "gemini": "gemini-3.7-flash",
+    # gemini-3.1-flash-lite: 15 RPM / 500 RPD on the free tier, against 5 RPM /
+    # 20 RPD for EVERY gemini-*-flash (AI Studio dashboard, 2026-08-21). It is
+    # the only model on this list whose budget supports a real scan universe --
+    # a *-flash primary caps the entire day at ~20 analyst calls.
+    "gemini": "gemini-3.1-flash-lite",
     "github": "gpt-4o-mini",
     "deepseek": "deepseek-chat",
 }
@@ -359,8 +352,12 @@ def _call_api(client, model: str, prompt: str) -> str:
     return response.choices[0].message.content
 
 
-def _note_attempt(on_attempt, provider: str) -> None:
-    """Record a quota-consuming provider attempt via the on_attempt callback.
+def _note_attempt(on_attempt, provider: str, model: str) -> None:
+    """Record a quota-consuming attempt for one (provider, MODEL) pair.
+
+    The model is passed because the free tier meters per model, not per
+    provider: two tiers of this chain are both 'gemini' with wildly different
+    daily budgets, and counting them together hid the larger one.
 
     Recording failures (e.g. a locked DB) must never block the analysis itself,
     so any exception is logged and swallowed.
@@ -368,9 +365,11 @@ def _note_attempt(on_attempt, provider: str) -> None:
     if on_attempt is None:
         return
     try:
-        on_attempt(provider)
+        on_attempt(provider, model)
     except Exception as exc:
-        logger.warning("Failed to record analyst call attempt for '%s': %s", provider, exc)
+        logger.warning(
+            "Failed to record analyst call attempt for '%s'/'%s': %s", provider, model, exc
+        )
 
 
 def _run_with_fallbacks(
@@ -407,7 +406,7 @@ def _run_with_fallbacks(
 
     # --- Primary provider ---
     try:
-        _note_attempt(on_attempt, config.analyst_provider)
+        _note_attempt(on_attempt, config.analyst_provider, model)
         text = _call_api(client, model, prompt)
         result = parse_claude_response(text)
         result["provider_used"] = config.analyst_provider
@@ -429,7 +428,7 @@ def _run_with_fallbacks(
 
     # --- First fallback provider ---
     try:
-        _note_attempt(on_attempt, config.analyst_fallback_provider)
+        _note_attempt(on_attempt, config.analyst_fallback_provider, fallback_model)
         text = _call_api(fallback_client, fallback_model, prompt)
         result = parse_claude_response(text)
         result["provider_used"] = config.analyst_fallback_provider
@@ -450,7 +449,7 @@ def _run_with_fallbacks(
         )
 
     # --- Second fallback provider (failure propagates from here) ---
-    _note_attempt(on_attempt, config.analyst_fallback2_provider)
+    _note_attempt(on_attempt, config.analyst_fallback2_provider, fallback2_model)
     text = _call_api(fallback2_client, fallback2_model, prompt)
     result = parse_claude_response(text)
     result["provider_used"] = config.analyst_fallback2_provider

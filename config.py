@@ -137,7 +137,13 @@ class Config:
     min_earnings_growth: float = _env_float("MIN_EARNINGS_GROWTH", "0.05")
     max_rsi: float = _env_float("MAX_RSI", "70.0")
     sell_rsi_threshold: float = _env_float("SELL_RSI_THRESHOLD", "70.0")
-    analyst_daily_limit: int = _env_int("ANALYST_DAILY_LIMIT", "18")
+    # One limit PER TIER, because the free tier meters per MODEL and the models
+    # on this chain differ by 25x: gemini-3.1-flash-lite is 500 RPD, while every
+    # gemini-*-flash is 20. A single shared limit had to be set to the smaller
+    # one, which threw away the larger budget.
+    analyst_daily_limit: int = _env_int("ANALYST_DAILY_LIMIT", "450")
+    analyst_fallback_daily_limit: int = _env_int("ANALYST_FALLBACK_DAILY_LIMIT", "18")
+    analyst_fallback2_daily_limit: int = _env_int("ANALYST_FALLBACK2_DAILY_LIMIT", "18")
     min_volume_ratio: float = _env_float("MIN_VOLUME_RATIO", "0.5")
     etf_max_expense_ratio: float = _env_float("ETF_MAX_EXPENSE_RATIO", "0.005")
 
@@ -153,8 +159,8 @@ class Config:
     etf_scan_hour: int = _env_int("ETF_SCAN_HOUR", "9")
     etf_scan_minute: int = _env_int("ETF_SCAN_MINUTE", "30")
     etf_scan_times: list = field(default_factory=_parse_etf_scan_times)
-    top_sp500_count: int = _env_int("TOP_SP500_COUNT", "10")
-    analyst_call_delay_s: float = _env_float("ANALYST_CALL_DELAY_S", "12.0")
+    top_sp500_count: int = _env_int("TOP_SP500_COUNT", "50")
+    analyst_call_delay_s: float = _env_float("ANALYST_CALL_DELAY_S", "4.0")
 
     alpha_vantage_api_key: str = _env_str("ALPHA_VANTAGE_API_KEY")
 

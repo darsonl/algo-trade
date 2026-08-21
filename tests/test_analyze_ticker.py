@@ -83,7 +83,7 @@ def test_analyze_ticker_uses_configured_model():
 def test_on_attempt_called_once_for_successful_primary():
     client = _make_anthropic_client("SIGNAL: BUY\nREASONING: ok.")
     attempts = []
-    analyze_ticker("AAPL", {}, [], _make_config(), client=client, on_attempt=attempts.append)
+    analyze_ticker("AAPL", {}, [], _make_config(), client=client, on_attempt=lambda provider, model: attempts.append(provider))
     assert attempts == ["claude"]
 
 
@@ -99,7 +99,7 @@ def test_on_attempt_counts_failed_primary_and_fallback():
         result = analyze_ticker(
             "AAPL", {}, [], c,
             client=MagicMock(), fallback_client=MagicMock(),
-            on_attempt=attempts.append,
+            on_attempt=lambda provider, model: attempts.append(provider),
         )
     assert attempts == ["claude", "github"]
     assert result["provider_used"] == "github"
@@ -117,7 +117,7 @@ def test_on_attempt_counts_all_three_providers_in_chain():
         result = analyze_ticker(
             "AAPL", {}, [], c,
             client=MagicMock(), fallback_client=MagicMock(), fallback2_client=MagicMock(),
-            on_attempt=attempts.append,
+            on_attempt=lambda provider, model: attempts.append(provider),
         )
     assert attempts == ["claude", "github", "deepseek"]
     assert result["provider_used"] == "deepseek"
@@ -127,7 +127,10 @@ def test_on_attempt_failure_does_not_break_analysis():
     """A failing quota write (e.g. locked DB) must never abort the analysis itself."""
     client = _make_anthropic_client("SIGNAL: BUY\nREASONING: ok.")
 
-    def boom(provider):
+    def boom(provider, model):
+        # Must accept the model arg: with the old one-arg signature this raised
+        # TypeError instead of the RuntimeError under test, and passed anyway
+        # because _note_attempt swallows everything.
         raise RuntimeError("database is locked")
 
     result = analyze_ticker("AAPL", {}, [], _make_config(), client=client, on_attempt=boom)

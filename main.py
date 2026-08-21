@@ -127,33 +127,47 @@ def compute_headline_hash(headlines: list[str]) -> str:
     return hashlib.sha256(content.encode()).hexdigest()
 
 
-def all_providers_exhausted(config: Config) -> bool:
-    """Return True only when every configured analyst provider is at/over its daily quota.
+def analyst_tiers(config: Config) -> list[tuple[str, str, int]]:
+    """The configured chain as (provider, model, daily_limit), skipping empties.
 
-    An unconfigured fallback slot counts as exhausted (treated as at-limit) so the
-    result reflects only providers that could actually serve a call today (D-11).
+    Resolves the model the same way `_run_with_fallbacks` does, so the quota
+    counter and the caller cannot disagree about which model a tier uses.
     """
-    primary_count = queries.get_analyst_call_count_today(
-        config.db_path, config.analyst_provider
-    )
-    fallback_count = (
-        queries.get_analyst_call_count_today(
-            config.db_path, config.analyst_fallback_provider
-        )
-        if config.analyst_fallback_provider
-        else config.analyst_daily_limit
-    )
-    fallback2_count = (
-        queries.get_analyst_call_count_today(
-            config.db_path, config.analyst_fallback2_provider
-        )
-        if config.analyst_fallback2_provider
-        else config.analyst_daily_limit
-    )
-    return (
-        primary_count >= config.analyst_daily_limit
-        and fallback_count >= config.analyst_daily_limit
-        and fallback2_count >= config.analyst_daily_limit
+    from analyst.claude_analyst import _DEFAULT_MODELS
+
+    tiers = [
+        (config.analyst_provider, config.analyst_model, config.analyst_daily_limit),
+        (config.analyst_fallback_provider, config.analyst_fallback_model,
+         config.analyst_fallback_daily_limit),
+        (config.analyst_fallback2_provider, config.analyst_fallback2_model,
+         config.analyst_fallback2_daily_limit),
+    ]
+    return [
+        (provider, model or _DEFAULT_MODELS.get(provider, ""), limit)
+        for provider, model, limit in tiers
+        if provider
+    ]
+
+
+def all_providers_exhausted(config: Config) -> bool:
+    """True only when every configured tier is at or over ITS OWN daily quota.
+
+    Per tier, and per MODEL within a provider, because that is how the free tier
+    meters: gemini-3.1-flash-lite allows 500 RPD and gemini-3.7-flash 20, both
+    under provider 'gemini'. The previous version counted per provider against
+    one shared limit, so those two tiers produced literally the same number and
+    the larger budget was unreachable.
+
+    An unconfigured tier is skipped rather than counted as exhausted: with no
+    tiers configured at all there is nothing to exhaust, and `all()` over an
+    empty list is True, which would stop analysis entirely -- hence the guard.
+    """
+    tiers = analyst_tiers(config)
+    if not tiers:
+        return False
+    return all(
+        queries.get_analyst_call_count_today(config.db_path, provider, model) >= limit
+        for provider, model, limit in tiers
     )
 
 
@@ -467,10 +481,11 @@ async def _run_scan_locked(bot: TradingBot, config: Config) -> None:
     fallback_client = create_fallback_client(config)
     fallback2_client = create_fallback2_client(config)
 
-    def on_attempt(provider: str) -> None:
-        # Count every provider attempt against today's quota — calls that reach
-        # a provider and then fail burn quota exactly like successes.
-        queries.increment_analyst_call_count(config.db_path, provider)
+    def on_attempt(provider: str, model: str) -> None:
+        # Count every attempt against today's quota — calls that reach a
+        # provider and then fail burn quota exactly like successes. Keyed on the
+        # MODEL too, because the free tier meters per model, not per provider.
+        queries.increment_analyst_call_count(config.db_path, provider, model)
 
     recommendations_posted = 0
     error_count = 0
@@ -798,9 +813,9 @@ async def _run_scan_etf_locked(bot: TradingBot, config: Config) -> None:
     fallback_client = create_fallback_client(config)
     fallback2_client = create_fallback2_client(config)
 
-    def on_attempt(provider: str) -> None:
-        # Count every provider attempt against today's quota (see run_scan).
-        queries.increment_analyst_call_count(config.db_path, provider)
+    def on_attempt(provider: str, model: str) -> None:
+        # Count every attempt against today's quota, per model (see run_scan).
+        queries.increment_analyst_call_count(config.db_path, provider, model)
 
     recommendations_posted = 0
     error_count = 0
