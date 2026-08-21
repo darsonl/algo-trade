@@ -10,10 +10,23 @@ from database.models import initialize_db
 
 
 def _preexisting_db(path):
-    """A database that predates the shadow tables."""
+    """A database that predates the shadow tables but is otherwise REAL.
+
+    `status` is included deliberately. It has been in `CREATE TABLE
+    recommendations` since this project's first commit, and
+    `_create_active_recommendation_index` builds a PARTIAL index whose
+    `WHERE status IN ('pending','approved')` clause is parsed against the table
+    at creation time. A fixture without it describes a database that has never
+    existed -- and forces production to carry a migration for a state that
+    cannot occur, which is the wrong direction of fix.
+    """
     conn = sqlite3.connect(path)
     conn.execute(
-        "CREATE TABLE recommendations (id INTEGER PRIMARY KEY, ticker TEXT)"
+        "CREATE TABLE recommendations ("
+        "    id INTEGER PRIMARY KEY,"
+        "    ticker TEXT,"
+        "    status TEXT NOT NULL DEFAULT 'pending'"
+        ")"
     )
     conn.commit()
     conn.close()

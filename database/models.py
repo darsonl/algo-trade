@@ -475,14 +475,6 @@ def initialize_db(db_path: str) -> None:
         conn.commit()
     except sqlite3.OperationalError:
         pass  # Column already exists
-
-    try:
-        conn.execute(
-            "ALTER TABLE recommendations ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'"
-        )
-        conn.commit()
-    except sqlite3.OperationalError:
-        pass  # Column already exists
     _migrate_analyst_calls_to_per_model(conn)
     _create_active_recommendation_index(conn)
     _backfill_intended_session_dates(conn)
