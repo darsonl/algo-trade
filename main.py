@@ -791,6 +791,15 @@ async def _run_scan_etf_locked(bot: TradingBot, config: Config) -> None:
     # Repeated on every scan: guard 11 blocks this ticker until a human
     # runs /resolve, and an alert nobody repeats is a block nobody sees.
     await alert_stuck_orders(bot, config)
+    # Before anything is screened, not after: a ticker whose order the broker
+    # has finished with should be eligible in THIS scan, not the next one.
+    # Both scan paths post recommendations, so both must be able to release a
+    # ticker the index is still holding.
+    try:
+        await sweep_terminal_recommendations(config)
+    except Exception:
+        # Reporting and housekeeping must never abort the scan they run inside.
+        logger.exception("Terminal-order sweep failed; continuing the ETF scan")
     queries.expire_stale_recommendations(config.db_path)
 
     etf_watchlist_path = str(Path(__file__).parent / "etf_watchlist.txt")

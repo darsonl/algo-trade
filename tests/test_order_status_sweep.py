@@ -473,3 +473,46 @@ async def test_run_scan_sweeps_before_it_screens(db_path):
         await main.run_scan(bot, config)
 
     assert order[:2] == ["sweep", "universe"]
+
+
+@pytest.mark.asyncio
+async def test_etf_scan_sweeps_before_it_screens(db_path):
+    """The ETF scan must sweep too, and before it screens.
+
+    Both scan paths post recommendations and both take the same lock, so both
+    can be the scan that discovers an order has gone terminal. Leaving the
+    sweep out of one of them means a ticker whose order the broker finished
+    with stays blocked by `idx_active_rec_per_ticker` until the OTHER path
+    happens to run.
+
+    Instrumented on `partition_watchlist`, NOT `get_universe`: the ETF path
+    never calls `get_universe`, and a test that patches it passes vacuously --
+    the exact mistake made once already on this file's sibling.
+    """
+    import main
+    from unittest.mock import AsyncMock, MagicMock
+
+    order = []
+    config = _config_db(db_path)
+    config.dry_run = True
+
+    async def _sweep(cfg):
+        order.append("sweep")
+        return 0
+
+    def _partition(tickers, info_by_ticker=None):
+        order.append("partition")
+        return [], []
+
+    bot = MagicMock()
+    bot.send_ops_alert = AsyncMock()
+
+    with patch.object(main, "sweep_terminal_recommendations", side_effect=_sweep), \
+         patch.object(main, "partition_watchlist", side_effect=_partition), \
+         patch.object(main, "fetch_macro_context", return_value={
+             "spy_trend_1m": None, "spy_trend_1y": None, "vix_level": None}), \
+         patch.object(main, "alert_stuck_orders", new=AsyncMock()), \
+         patch.object(main, "_drain_ops_outbox", new=AsyncMock()):
+        await main.run_scan_etf(bot, config)
+
+    assert order[:2] == ["sweep", "partition"]
