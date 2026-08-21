@@ -453,11 +453,19 @@ def reset_sell_blocked(db_path: str, ticker: str) -> None:
 
 
 def get_analyst_call_count_today(
-    db_path: str, provider: str, instant: datetime | None = None
+    db_path: str, provider: str, model: str, instant: datetime | None = None
 ) -> int:
-    """Return the number of analyst API calls made this session for provider.
+    """Analyst API calls made this session for one (provider, MODEL) pair.
 
-    Returns 0 if no row exists for the current session date and the given provider.
+    Per MODEL, because that is how Google meters the free tier: on this project
+    gemini-3.1-flash-lite allows 500 RPD and gemini-3.7-flash 20, and both are
+    provider 'gemini'. Counting per provider made the two share one budget and
+    hid the larger one entirely.
+
+    `model` is required rather than defaulted: a default would silently pool
+    two models back into one bucket, which is the exact bug this replaced.
+
+    Returns 0 if no row exists for the current session date and that pair.
 
     Bucketed on the US market session, not date.today(): on a UTC+8 host the
     local day rolls over mid-session, which let ANALYST_DAILY_LIMIT reset partway
@@ -466,27 +474,31 @@ def get_analyst_call_count_today(
     today = market_session_date(instant).isoformat()
     with get_cursor(db_path) as conn:
         row = conn.execute(
-            "SELECT count FROM analyst_calls WHERE date = ? AND provider = ?",
-            (today, provider),
+            "SELECT count FROM analyst_calls "
+            "WHERE date = ? AND provider = ? AND model = ?",
+            (today, provider, model),
         ).fetchone()
     return row["count"] if row else 0
 
 
 def increment_analyst_call_count(
-    db_path: str, provider: str, instant: datetime | None = None
+    db_path: str, provider: str, model: str, instant: datetime | None = None
 ) -> None:
-    """Upsert this session's call count for provider, incrementing by 1.
+    """Upsert this session's call count for one (provider, MODEL) pair.
 
-    Uses INSERT ... ON CONFLICT DO UPDATE to atomically increment the counter
-    or create a new row with count=1 if none exists for this session and provider.
-    Session-bucketed for the same reason as get_analyst_call_count_today.
+    Uses INSERT ... ON CONFLICT DO UPDATE to atomically increment the counter or
+    create a row with count=1 if none exists. Session-bucketed for the same
+    reason as get_analyst_call_count_today, and keyed per model for the same
+    reason it is.
     """
     today = market_session_date(instant).isoformat()
     with get_cursor(db_path) as conn:
         conn.execute(
-            """INSERT INTO analyst_calls (date, provider, count) VALUES (?, ?, 1)
-               ON CONFLICT(date, provider) DO UPDATE SET count = count + 1""",
-            (today, provider),
+            """INSERT INTO analyst_calls (date, provider, model, count)
+                   VALUES (?, ?, ?, 1)
+               ON CONFLICT(date, provider, model)
+                   DO UPDATE SET count = count + 1""",
+            (today, provider, model),
         )
 
 

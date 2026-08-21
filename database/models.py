@@ -6,6 +6,46 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 
+def _migrate_analyst_calls_to_per_model(conn) -> None:
+    """Re-key analyst_calls on (date, provider, MODEL).
+
+    Google meters the free tier per model, not per provider: on this project
+    gemini-3.1-flash-lite allows 500 RPD while gemini-3.7-flash allows 20. With
+    one counter per provider both tiers of the chain shared a single budget and
+    `all_providers_exhausted` compared a number against itself.
+
+    A rebuild rather than an ALTER, because SQLite cannot alter a PRIMARY KEY.
+    Guarded on the column being absent, so it runs once and is a no-op after.
+
+    Legacy rows keep their counts under model='' rather than being dropped or
+    attributed to whatever model happens to be configured now. Those calls
+    really were made -- discarding them hands back quota the provider has
+    already spent -- but we do not know which model made them, and guessing
+    would put them on a budget they never consumed.
+    """
+    columns = [row[1] for row in conn.execute("PRAGMA table_info(analyst_calls)")]
+    if not columns or "model" in columns:
+        return
+
+    conn.execute(
+        """CREATE TABLE analyst_calls_new (
+               date TEXT NOT NULL,
+               provider TEXT NOT NULL,
+               model TEXT NOT NULL DEFAULT '',
+               count INTEGER NOT NULL DEFAULT 0,
+               PRIMARY KEY (date, provider, model)
+           )"""
+    )
+    conn.execute(
+        """INSERT INTO analyst_calls_new (date, provider, model, count)
+               SELECT date, provider, '', count FROM analyst_calls"""
+    )
+    conn.execute("DROP TABLE analyst_calls")
+    conn.execute("ALTER TABLE analyst_calls_new RENAME TO analyst_calls")
+    conn.commit()
+    logger.info("analyst_calls migrated to per-model quota tracking")
+
+
 def _create_active_recommendation_index(conn) -> None:
     """One live recommendation per ticker, covering `approved` as well as `pending`.
 
@@ -204,8 +244,9 @@ def initialize_db(db_path: str) -> None:
         CREATE TABLE IF NOT EXISTS analyst_calls (
             date TEXT NOT NULL,
             provider TEXT NOT NULL,
+            model TEXT NOT NULL DEFAULT '',
             count INTEGER NOT NULL DEFAULT 0,
-            PRIMARY KEY (date, provider)
+            PRIMARY KEY (date, provider, model)
         );
 
         -- Durable state for anything that may have reached the broker. The row is
@@ -375,6 +416,7 @@ def initialize_db(db_path: str) -> None:
         conn.commit()
     except sqlite3.OperationalError:
         pass  # Column already exists
+    _migrate_analyst_calls_to_per_model(conn)
     _create_active_recommendation_index(conn)
     _backfill_intended_session_dates(conn)
     # After the column is guaranteed to exist -- inside the schema block above

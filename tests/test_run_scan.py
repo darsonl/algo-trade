@@ -302,12 +302,17 @@ async def test_run_scan_passes_none_macro_to_analyze_ticker_on_fetch_failure():
 
 @pytest.mark.asyncio
 async def test_run_scan_passes_on_attempt_that_increments_quota():
-    """run_scan wires analyze_ticker's on_attempt callback to increment_analyst_call_count."""
+    """run_scan wires analyze_ticker's on_attempt callback to increment_analyst_call_count.
+
+    The MODEL is passed through as well as the provider: the free tier meters
+    per model, and two tiers of this chain share the provider 'gemini' with
+    daily budgets that differ 25x.
+    """
     bot = _make_bot()
     config = _make_config()
     with _full_patch() as mocks:
         await run_scan(bot, config)
         on_attempt = mocks["analyze_ticker"].call_args.kwargs["on_attempt"]
         with patch("main.queries.increment_analyst_call_count") as mock_inc:
-            on_attempt("gemini")
-        mock_inc.assert_called_once_with(":memory:", "gemini")
+            on_attempt("gemini", "gemini-3.1-flash-lite")
+        mock_inc.assert_called_once_with(":memory:", "gemini", "gemini-3.1-flash-lite")

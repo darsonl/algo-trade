@@ -86,21 +86,23 @@ def test_rejected_recommendation_does_not_block():
 
 def test_quota_does_not_reset_mid_session():
     """ANALYST_DAILY_LIMIT must not silently double across Taipei midnight."""
-    increment_analyst_call_count(DB_PATH, "claude", instant=SCAN_A)
-    increment_analyst_call_count(DB_PATH, "claude", instant=SCAN_B)
-    assert get_analyst_call_count_today(DB_PATH, "claude", instant=SCAN_B) == 2
+    increment_analyst_call_count(DB_PATH, "claude", "m", instant=SCAN_A)
+    increment_analyst_call_count(DB_PATH, "claude", "m", instant=SCAN_B)
+    assert get_analyst_call_count_today(DB_PATH, "claude", "m", instant=SCAN_B) == 2
 
 
 def test_quota_does_reset_on_a_new_session():
-    increment_analyst_call_count(DB_PATH, "claude", instant=PREV_SESSION)
-    assert get_analyst_call_count_today(DB_PATH, "claude", instant=SCAN_B) == 0
+    increment_analyst_call_count(DB_PATH, "claude", "m", instant=PREV_SESSION)
+    assert get_analyst_call_count_today(DB_PATH, "claude", "m", instant=SCAN_B) == 0
 
 
 def test_quota_is_tracked_per_provider():
-    increment_analyst_call_count(DB_PATH, "claude", instant=SCAN_A)
-    increment_analyst_call_count(DB_PATH, "gemini", instant=SCAN_B)
-    assert get_analyst_call_count_today(DB_PATH, "claude", instant=SCAN_B) == 1
-    assert get_analyst_call_count_today(DB_PATH, "gemini", instant=SCAN_B) == 1
+    """Still true, and per MODEL within a provider too — see
+    tests/test_per_model_quota.py, which is where that half is pinned."""
+    increment_analyst_call_count(DB_PATH, "claude", "m", instant=SCAN_A)
+    increment_analyst_call_count(DB_PATH, "gemini", "m", instant=SCAN_B)
+    assert get_analyst_call_count_today(DB_PATH, "claude", "m", instant=SCAN_B) == 1
+    assert get_analyst_call_count_today(DB_PATH, "gemini", "m", instant=SCAN_B) == 1
 
 
 # --- positions.entry_date ---
