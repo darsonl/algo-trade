@@ -997,3 +997,43 @@ def get_undelivered_ops_alerts(conn, limit: int = 20) -> list[dict]:
         (limit,),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def record_shadow_observation(db_path: str, obs) -> int:
+    """Insert one shadow observation and return its id.
+
+    Takes the dataclass rather than 20 positional arguments so a new column is
+    one edit here and one in the dataclass, not a signature change rippling
+    through every call site.
+    """
+    with get_cursor(db_path) as conn:
+        cursor = conn.execute(
+            """INSERT INTO shadow_observations
+                   (session_date, observed_at, ticker, scan_kind, stage_reached,
+                    outcome, reject_reason, fundamentals_json, technicals_json,
+                    headlines_json, macro_json, analyst_provider, analyst_model,
+                    analyst_signal, analyst_confidence, analyst_prompt_sha256,
+                    analyst_raw_response, cache_hit, recommendation_id,
+                    reference_price)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (obs.session_date, obs.observed_at, obs.ticker, obs.scan_kind,
+             obs.stage_reached, obs.outcome, obs.reject_reason,
+             obs.fundamentals_json, obs.technicals_json, obs.headlines_json,
+             obs.macro_json, obs.analyst_provider, obs.analyst_model,
+             obs.analyst_signal, obs.analyst_confidence,
+             obs.analyst_prompt_sha256, obs.analyst_raw_response,
+             obs.cache_hit, obs.recommendation_id, obs.reference_price),
+        )
+        return cursor.lastrowid
+
+
+def set_shadow_human_action(db_path: str, recommendation_id: int,
+                            action: str, at: str) -> None:
+    """Attach the human's click to the observation that produced it."""
+    with get_cursor(db_path) as conn:
+        conn.execute(
+            """UPDATE shadow_observations
+                  SET human_action = ?, human_action_at = ?
+                WHERE recommendation_id = ?""",
+            (action, at, recommendation_id),
+        )

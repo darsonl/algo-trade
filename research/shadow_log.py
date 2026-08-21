@@ -13,7 +13,11 @@ the database live in the caller.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
+
+logger = logging.getLogger(__name__)
 
 # Ordered: a candidate reaches stages left to right and stops where it fails.
 STAGES = (
@@ -128,3 +132,39 @@ def build_observation(
         recommendation_id=recommendation_id,
         reference_price=reference_price,
     )
+
+
+def record(config, obs: ShadowObservation) -> int | None:
+    """Persist one observation. Never raises."""
+    from database import queries  # local: keeps this module importable pure
+    try:
+        return queries.record_shadow_observation(config.db_path, obs)
+    except Exception:
+        logger.exception("Shadow log write failed for %s; continuing", obs.ticker)
+        return None
+
+
+def observe(config, ticker: str, scan_kind: str, stage: str, outcome: str,
+            *, instant=None, **kw) -> int | None:
+    """Build and record one observation. NEVER RAISES -- this is the contract.
+
+    Every failure mode is absorbed, including a bad stage/outcome from a typo at
+    a call site. The scan is the product; this is instrumentation, and
+    instrumentation that can abort the thing it measures is worse than none.
+
+    `instant` is threaded through for the session date so tests can pin the
+    clock, matching every other time-dependent function in this repo.
+    """
+    from market_time import market_session_date
+    try:
+        now = instant or datetime.now(timezone.utc)
+        obs = build_observation(
+            ticker, scan_kind, stage, outcome,
+            session_date=market_session_date(now).isoformat(),
+            observed_at=now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            **kw,
+        )
+    except Exception:
+        logger.exception("Shadow log build failed for %s; continuing", ticker)
+        return None
+    return record(config, obs)
