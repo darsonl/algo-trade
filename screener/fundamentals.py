@@ -1,4 +1,6 @@
 import logging
+import math
+
 import pandas as pd
 import yfinance as yf
 from config import Config
@@ -91,3 +93,51 @@ def fetch_eps_data(yf_ticker: yf.Ticker) -> list[dict] | None:
     except Exception as exc:
         logger.debug("fetch_eps_data failed: %s", exc, exc_info=True)
         return None
+
+
+# The price fields we will accept, in preference order, paired with the
+# provenance string stored beside the price. `previousClose` is deliberately
+# ABSENT: it belongs to a different session, so substituting it silently moves
+# the holding-period start back a day and the forward return would cover a
+# window the benchmark does not.
+_SCREEN_PRICE_FIELDS = (
+    ("currentPrice", "info.currentPrice"),
+    ("regularMarketPrice", "info.regularMarketPrice"),
+)
+
+
+def screen_price(info) -> tuple[float | None, str | None]:
+    """The price a candidate was screened at, and where it came from.
+
+    Returns `(price, source)` or `(None, None)`. ONE price source for EVERY
+    candidate that got as far as having an `.info` dict, so the funnel's
+    cohorts are priced identically. The technical-stage price
+    (`closes.iloc[-1]`) is NOT interchangeable with this: yfinance history is
+    auto-adjusted and fetched minutes later from a different endpoint, so
+    mixing the two in one column would make a cohort comparison measure
+    provenance as much as outcome.
+
+    TOTAL BY CONTRACT -- it never raises, for any input. Callers pass this as an
+    ARGUMENT to `_record_shadow`, so it is evaluated before that wrapper's try
+    block: a raise here would turn a genuine rejection into an `error`
+    observation and could fire an ops alert, which is instrumentation
+    corrupting the data it exists to record.
+
+    Rejects more than "falsy": booleans (isinstance(True, int) is True, so a
+    naive check stores a price of 1.0), NaN and infinity (both are floats, and
+    NaN compares False to everything), strings (a string means the field
+    changed shape, and coercing would hide that), and anything non-positive.
+    """
+    try:
+        for key, source in _SCREEN_PRICE_FIELDS:
+            value = info.get(key)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            value = float(value)
+            if not math.isfinite(value) or value <= 0:
+                continue
+            return value, source
+    except Exception:
+        # Never raises. An unexpected shape means no price, not an exception.
+        logger.debug("screen_price could not read a price; continuing", exc_info=True)
+    return None, None
