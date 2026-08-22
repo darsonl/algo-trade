@@ -136,8 +136,12 @@ def build_observation(
 
 def record(config, obs: ShadowObservation) -> int | None:
     """Persist one observation. Never raises."""
-    from database import queries  # local: keeps this module importable pure
     try:
+        # Local, so this module stays importable without the database package.
+        # INSIDE the try, not above it: an import that raises would otherwise
+        # escape and break the never-raises contract from the one line in the
+        # function that is not covered by it.
+        from database import queries
         return queries.record_shadow_observation(config.db_path, obs)
     except Exception:
         logger.exception("Shadow log write failed for %s; continuing", obs.ticker)
@@ -155,8 +159,11 @@ def observe(config, ticker: str, scan_kind: str, stage: str, outcome: str,
     `instant` is threaded through for the session date so tests can pin the
     clock, matching every other time-dependent function in this repo.
     """
-    from market_time import market_session_date
     try:
+        # Inside the try for the same reason as `record`'s import: the contract
+        # in this docstring is only true if EVERY line of the function is
+        # covered by the guard.
+        from market_time import market_session_date
         now = instant or datetime.now(timezone.utc)
         obs = build_observation(
             ticker, scan_kind, stage, outcome,

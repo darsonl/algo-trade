@@ -108,6 +108,36 @@ def test_cache_hit_is_stored_as_int():
     assert _obs(cache_hit=False).cache_hit == 0
 
 
-def test_every_stage_and_outcome_constant_is_a_plain_string():
-    assert all(isinstance(s, str) for s in STAGES)
-    assert all(isinstance(o, str) for o in OUTCOMES)
+def test_the_stages_are_the_pipeline_in_order():
+    """`STAGES` is ordered, and the order is the funnel.
+
+    The old version of this test asserted only that each entry was a string,
+    which would have survived reordering the pipeline or dropping a stage
+    entirely -- and `stage_reached` is read positionally by anyone asking how
+    far a candidate got.
+    """
+    assert STAGES == (
+        "universe", "fundamental", "analyst", "technical", "recommended")
+
+
+def test_every_outcome_the_scan_can_record_is_declared():
+    """Pinned by VALUE, not by type.
+
+    Every entry here is written at a real exit point of a scan loop; dropping
+    one silently removes a category from the funnel, and adding one without
+    updating the report leaves rows nothing counts. The pair that matters most
+    is rejected_signal / rejected_technical -- the analyst and the technical
+    gate refusing the same candidate, which the funnel must keep apart.
+    """
+    assert set(OUTCOMES) == {
+        "skipped_recommended_today",
+        "skipped_open_position",
+        "skipped_active_recommendation",
+        "rejected_fundamental",
+        "skipped_quota_exhausted",
+        "rejected_signal",
+        "rejected_technical",
+        "recommended",
+        "error",
+    }
+    assert len(set(OUTCOMES)) == len(OUTCOMES)  # no duplicates

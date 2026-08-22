@@ -404,12 +404,19 @@ def _run_with_fallbacks(
     e.g. quota/rate-limit/network) and parse errors (ValueError from
     parse_claude_response, e.g. a template-echo response) advance to the next
     client. The failure only propagates once no further fallback client is
-    configured. Returns {"signal", "reasoning", "confidence", "provider_used"}.
+    configured.
+
+    Returns {"signal", "reasoning", "confidence", "provider_used",
+    "model_used", "raw_response", "prompt_sha256"}. The last three are what let
+    a shadow observation say WHICH MODEL answered: `analyst_cache` records
+    neither provider nor model, so a cache hit can never be attributed after
+    the fact, and quota is metered per model. `prompt_sha256` pins the exact
+    prompt text a signal came from, since the prompt builders change over time.
 
     `log_context` is an optional phrase (e.g. "ETF analysis", "sell analysis")
     inserted into the warning logs to distinguish the call site.
 
-    `on_attempt(provider)` is invoked before EACH provider attempt so quota
+    `on_attempt(provider, model)` is invoked before EACH provider attempt so quota
     tracking counts calls that reach the provider and then fail — those burn
     quota just like successes did. (Tenacity retries inside _call_api still
     count as one attempt; close enough, and _should_retry already stops
