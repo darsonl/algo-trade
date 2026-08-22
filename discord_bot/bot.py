@@ -45,6 +45,30 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _record_human_action(config: Config, rec_id: int, action: str, at: datetime) -> None:
+    """Attach the human's click to its shadow observation. Never raises.
+
+    Approval latency -- the gap between the signal and the click -- is the one
+    quantity no retrospective study can recover, so it has to be recorded live,
+    which means recording it on the order path itself.
+
+    That makes this wrapper load-bearing rather than decorative, and for a
+    different reason than `main._record_shadow`: `set_shadow_human_action` is a
+    plain UPDATE with no guard of its own (unlike `shadow_log.observe`, which
+    absorbs its own failures). An OperationalError escaping here would abort an
+    approval AFTER the order had already been sent to the broker -- the caller
+    would see a failure for a trade that actually exists.
+    """
+    try:
+        queries.set_shadow_human_action(
+            config.db_path, rec_id, action, at.strftime("%Y-%m-%dT%H:%M:%SZ")
+        )
+    except Exception:
+        logger.exception(
+            "Shadow human-action write failed for recommendation %s; continuing", rec_id
+        )
+
+
 def _chunk_message(text: str, limit: int = 1900) -> list[str]:
     """Split a long report into Discord-sized messages, on line boundaries.
 
@@ -337,6 +361,19 @@ class ApproveRejectView(discord.ui.View):
                 )
                 return
 
+            # Past the guards means `_reserve` claimed the row, so this click IS
+            # the approval — and only the first click ever gets here, because a
+            # second one loses the claim and returns above as `already_handled`.
+            #
+            # It sits BEFORE the dry-run branch on purpose: that branch returns
+            # without reaching the submission path, so recording further down
+            # would stop measuring latency the day the bot is armed — exactly
+            # when the number starts to matter. `now` is the same instant the
+            # guards evaluated, so the funnel measures against one clock.
+            await asyncio.to_thread(
+                _record_human_action, self.config, self.rec_id, "approved", now
+            )
+
             if self.config.dry_run:
                 await asyncio.to_thread(self._record_position, decision, None)
                 await interaction.followup.send(
@@ -449,6 +486,7 @@ class ApproveRejectView(discord.ui.View):
 
     @discord.ui.button(label="Reject", style=discord.ButtonStyle.danger, emoji="❌")
     async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
+        clicked = _utcnow()
         claimed = await asyncio.to_thread(
             queries.claim_recommendation, self.config.db_path, self.rec_id, "rejected"
         )
@@ -459,6 +497,13 @@ class ApproveRejectView(discord.ui.View):
             )
             return
         await interaction.response.send_message(f"Rejected {self.ticker}.")
+        # After the reply, not before: this handler never defers, so it owes
+        # Discord an answer inside 3 seconds and instrumentation must not sit in
+        # front of it. `clicked` was captured on entry, so the latency is still
+        # measured from the click rather than from whenever this line runs.
+        await asyncio.to_thread(
+            _record_human_action, self.config, self.rec_id, "rejected", clicked
+        )
         self.stop()
 
 
