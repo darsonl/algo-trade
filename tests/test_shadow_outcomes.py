@@ -93,7 +93,15 @@ def test_an_observation_with_no_reference_price_is_never_due(tmp_path):
     assert queries.pending_shadow_marks(cfg.db_path, "1w", "2026-08-21") == []
 
 
-def test_recording_the_same_horizon_twice_does_not_duplicate(tmp_path):
+def test_recording_the_same_horizon_twice_keeps_the_first_write(tmp_path):
+    """Not merely "does not duplicate" -- the FIRST write is the one that
+    survives.
+
+    Counting rows alone cannot tell IGNORE from REPLACE, and the difference is
+    not cosmetic: yfinance closes are back-adjusted, so a split between two
+    marking runs changes what the same `as_of` reports. Last-write-wins would
+    let a re-run silently restate a return that was already recorded.
+    """
     cfg = _config(tmp_path)
     oid = _observe(cfg, "AAPL", "2026-08-20", 100.0)
     queries.record_shadow_outcome(cfg.db_path, oid, "1w", "2026-08-27",
@@ -101,7 +109,11 @@ def test_recording_the_same_horizon_twice_does_not_duplicate(tmp_path):
     queries.record_shadow_outcome(cfg.db_path, oid, "1w", "2026-08-27",
                                   111.0, 11.0, 500.0, 1.0)
     conn = sqlite3.connect(cfg.db_path)
-    assert conn.execute("SELECT COUNT(*) FROM shadow_outcomes").fetchone()[0] == 1
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute("SELECT * FROM shadow_outcomes").fetchall()
+    assert len(rows) == 1
+    assert rows[0]["price"] == pytest.approx(110.0)
+    assert rows[0]["return_pct"] == pytest.approx(10.0)
 
 
 # --- marking ---

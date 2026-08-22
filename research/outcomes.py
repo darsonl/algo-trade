@@ -38,7 +38,25 @@ def compute_return(entry, exit_) -> float | None:
 
 
 def _close_on_or_before(ticker: str, as_of: str) -> float | None:
-    """Last close at or before `as_of` (YYYY-MM-DD), or None."""
+    """Last close at or before `as_of` (YYYY-MM-DD), or None.
+
+    KNOWN HAZARD, UNRESOLVED -- read before trusting `return_pct`. yfinance
+    returns BACK-ADJUSTED closes, so a split between the observation and the
+    mark rewrites this number retroactively. The ticker's entry price is
+    `reference_price`, captured live and unadjusted, so the two ends of the
+    return sit on different bases: a 4:1 split inside the window would read as
+    a ~75% loss that never happened.
+
+    The benchmark leg does not have this problem -- both its ends come from
+    this function, so an adjustment cancels.
+
+    Not fixed here because the fix is a choice about what the metric MEANS, not
+    an implementation detail. Using the session close as the entry would make
+    both ends consistent but would discard the intraday decision price, which
+    is the price a human would actually have transacted at. That is a spec
+    decision. Splits are rare enough that flagging beats guessing, and the
+    marks carry `as_of` and `price` so any affected row can be recomputed.
+    """
     end = datetime.strptime(as_of, "%Y-%m-%d") + timedelta(days=1)
     start = end - timedelta(days=10)  # enough to clear a long weekend
     hist = yf.Ticker(ticker).history(start=start.date(), end=end.date())
