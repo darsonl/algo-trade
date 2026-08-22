@@ -273,13 +273,23 @@ def test_a_negative_reference_price_is_never_eligible(tmp_path):
 
 def test_pending_marks_are_ordered_oldest_first(tmp_path):
     """A backlog must drain in a deterministic, fair order rather than whatever
-    the query planner happens to return."""
+    the query planner happens to return.
+
+    The tickers within one session date are deliberately inserted in REVERSE
+    alphabetical order. `idx_shadow_obs_session` is on (session_date, ticker),
+    so an index scan alone yields AAA before ZZZ -- which means an earlier
+    version of this test passed with the ORDER BY deleted, confirming SQLite's
+    index rather than the clause it claimed to pin. Ties must break on id
+    (insertion), so ZZZ comes first and only the explicit ORDER BY can produce
+    that.
+    """
     cfg = _config(tmp_path)
     _observe(cfg, "NEW", "2026-08-19", 100.0)
     _observe(cfg, "OLD", "2026-08-17", 100.0)
-    _observe(cfg, "MID", "2026-08-18", 100.0)
+    _observe(cfg, "ZZZ", "2026-08-18", 100.0)
+    _observe(cfg, "AAA", "2026-08-18", 100.0)
     rows = queries.pending_shadow_marks(cfg.db_path, "1w", "2026-08-21")
-    assert [r["ticker"] for r in rows] == ["OLD", "MID", "NEW"]
+    assert [r["ticker"] for r in rows] == ["OLD", "ZZZ", "AAA", "NEW"]
 
 
 def test_pending_marks_respect_a_limit(tmp_path):
