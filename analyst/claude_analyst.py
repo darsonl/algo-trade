@@ -1,4 +1,5 @@
 from __future__ import annotations
+import hashlib
 import logging
 import time
 import anthropic
@@ -372,6 +373,21 @@ def _note_attempt(on_attempt, provider: str, model: str) -> None:
         )
 
 
+def _attribute(result: dict, provider: str, model: str, prompt: str, text: str) -> dict:
+    """Stamp a parsed result with what produced it.
+
+    `provider_used` alone is not attribution: both gemini tiers are provider
+    'gemini', so it cannot distinguish the 500-RPD primary from the 20-RPD
+    fallback. The prompt is stored as a hash rather than in full -- the text is
+    reconstructable from the inputs and would multiply the row size.
+    """
+    result["provider_used"] = provider
+    result["model_used"] = model
+    result["raw_response"] = text
+    result["prompt_sha256"] = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+    return result
+
+
 def _run_with_fallbacks(
     prompt: str,
     config: Config,
@@ -388,12 +404,19 @@ def _run_with_fallbacks(
     e.g. quota/rate-limit/network) and parse errors (ValueError from
     parse_claude_response, e.g. a template-echo response) advance to the next
     client. The failure only propagates once no further fallback client is
-    configured. Returns {"signal", "reasoning", "confidence", "provider_used"}.
+    configured.
+
+    Returns {"signal", "reasoning", "confidence", "provider_used",
+    "model_used", "raw_response", "prompt_sha256"}. The last three are what let
+    a shadow observation say WHICH MODEL answered: `analyst_cache` records
+    neither provider nor model, so a cache hit can never be attributed after
+    the fact, and quota is metered per model. `prompt_sha256` pins the exact
+    prompt text a signal came from, since the prompt builders change over time.
 
     `log_context` is an optional phrase (e.g. "ETF analysis", "sell analysis")
     inserted into the warning logs to distinguish the call site.
 
-    `on_attempt(provider)` is invoked before EACH provider attempt so quota
+    `on_attempt(provider, model)` is invoked before EACH provider attempt so quota
     tracking counts calls that reach the provider and then fail — those burn
     quota just like successes did. (Tenacity retries inside _call_api still
     count as one attempt; close enough, and _should_retry already stops
@@ -409,8 +432,7 @@ def _run_with_fallbacks(
         _note_attempt(on_attempt, config.analyst_provider, model)
         text = _call_api(client, model, prompt)
         result = parse_claude_response(text)
-        result["provider_used"] = config.analyst_provider
-        return result
+        return _attribute(result, config.analyst_provider, model, prompt, text)
     except ValueError as exc:
         if fallback_client is None:
             raise
@@ -431,8 +453,8 @@ def _run_with_fallbacks(
         _note_attempt(on_attempt, config.analyst_fallback_provider, fallback_model)
         text = _call_api(fallback_client, fallback_model, prompt)
         result = parse_claude_response(text)
-        result["provider_used"] = config.analyst_fallback_provider
-        return result
+        return _attribute(result, config.analyst_fallback_provider,
+                          fallback_model, prompt, text)
     except ValueError as exc:
         if fallback2_client is None:
             raise
@@ -452,8 +474,8 @@ def _run_with_fallbacks(
     _note_attempt(on_attempt, config.analyst_fallback2_provider, fallback2_model)
     text = _call_api(fallback2_client, fallback2_model, prompt)
     result = parse_claude_response(text)
-    result["provider_used"] = config.analyst_fallback2_provider
-    return result
+    return _attribute(result, config.analyst_fallback2_provider,
+                      fallback2_model, prompt, text)
 
 
 def analyze_ticker(

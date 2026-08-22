@@ -15,6 +15,7 @@ from config import Config
 from database.models import get_cursor, initialize_db
 from risk import kill_switch
 from database import queries
+from research import outcomes, shadow_log
 from screener.universe import get_watchlist, get_top_sp500_by_fundamentals, get_universe, partition_watchlist
 from screener.fundamentals import passes_fundamental_filter, fetch_fundamental_info, fetch_eps_data, normalize_dividend_yield
 from screener.technicals import passes_technical_filter, fetch_technical_data
@@ -31,6 +32,22 @@ from schwab_client.reconcile import diff_positions, format_reconciliation_report
 from discord_bot.bot import TradingBot
 
 logger = logging.getLogger(__name__)
+
+
+def _record_shadow(config: Config, *args, **kwargs) -> None:
+    """Call shadow_log.observe defensively.
+
+    `observe()` itself never raises (Task 4 absorbs every failure mode inside
+    it) -- but the scan loops are the product and this is only instrumentation
+    for a research question, so even a violation of that contract (a bad
+    monkeypatch, a future regression in observe()) must not be able to abort a
+    scan. This is the one seam where that guarantee is enforced from the
+    outside as well as the inside.
+    """
+    try:
+        shadow_log.observe(config, *args, **kwargs)
+    except Exception:
+        logger.exception("shadow_log.observe raised unexpectedly; continuing")
 
 
 # ---------------------------------------------------------------------------
@@ -449,6 +466,11 @@ async def _run_scan_locked(bot: TradingBot, config: Config) -> None:
     except Exception:
         # Reporting and housekeeping must never abort the scan they run inside.
         logger.exception("Terminal-order sweep failed; continuing the scan")
+    # Research marks. Same contract as the sweep: never fatal to the scan.
+    try:
+        await outcomes.mark_due_outcomes(config)
+    except Exception:
+        logger.exception("Shadow outcome marking failed; continuing the scan")
     queries.expire_stale_recommendations(config.db_path)
 
     watchlist_path = str(Path(__file__).parent / "watchlist.txt")
@@ -496,15 +518,21 @@ async def _run_scan_locked(bot: TradingBot, config: Config) -> None:
 
     for ticker in universe:
         if queries.ticker_recommended_today(config.db_path, ticker):
+            _record_shadow(config, ticker, "stock", "universe",
+                           "skipped_recommended_today")
             continue
         if queries.has_open_position(config.db_path, ticker):
             logger.debug("Skipping %s: open position exists", ticker)
+            _record_shadow(config, ticker, "stock", "universe",
+                           "skipped_open_position")
             continue
         if queries.has_active_recommendation(config.db_path, ticker):
             # Not the same question as ticker_recommended_today, which is
             # session-scoped: an `approved` row left by an ambiguous submission
             # days ago is invisible to that guard but blocks this insert.
             logger.debug("Skipping %s: an active recommendation already exists", ticker)
+            _record_shadow(config, ticker, "stock", "universe",
+                           "skipped_active_recommendation")
             continue
 
         try:
@@ -515,6 +543,9 @@ async def _run_scan_locked(bot: TradingBot, config: Config) -> None:
             if info is None:
                 info = await asyncio.to_thread(fetch_fundamental_info, yf_ticker)
             if not passes_fundamental_filter(info, config):
+                _record_shadow(config, ticker, "stock", "fundamental",
+                               "rejected_fundamental", fundamentals=info,
+                               macro=macro_context)
                 continue
 
             # Phase 16 (SIG-05, SIG-06): earnings date from info dict — zero extra HTTP call (D-09).
@@ -590,10 +621,23 @@ async def _run_scan_locked(bot: TradingBot, config: Config) -> None:
 
             analysis = await analyze_with_cache(config, ticker, headlines, _analyze_buy)
             if analysis is None:
+                _record_shadow(config, ticker, "stock", "analyst",
+                               "skipped_quota_exhausted", fundamentals=info,
+                               headlines=headlines, macro=macro_context)
                 continue  # all providers quota-exhausted
 
             tech_data = await asyncio.to_thread(fetch_technical_data, yf_ticker)
             if not should_recommend(analysis["signal"], tech_data, config):
+                # Two different refusals share one bool; the funnel needs them
+                # apart, so re-check rather than change should_recommend's
+                # return type on the live path for a research need.
+                outcome = ("rejected_signal" if analysis["signal"] != "BUY"
+                           else "rejected_technical")
+                _record_shadow(config, ticker, "stock", "technical", outcome,
+                               fundamentals=info, technicals=tech_data,
+                               headlines=headlines, macro=macro_context,
+                               analysis=analysis,
+                               reference_price=tech_data.get("price"))
                 continue
 
             div_yield = normalize_dividend_yield(info.get("dividendYield"))
@@ -625,6 +669,11 @@ async def _run_scan_locked(bot: TradingBot, config: Config) -> None:
             queries.set_discord_message_id(config.db_path, rec_id, message_id)
             logger.info("Recommended %s", ticker)
             recommendations_posted += 1
+            _record_shadow(config, ticker, "stock", "recommended", "recommended",
+                           fundamentals=info, technicals=tech_data,
+                           headlines=headlines, macro=macro_context,
+                           analysis=analysis, recommendation_id=rec_id,
+                           reference_price=tech_data["price"])
 
         except Exception as exc:
             logger.error("Error processing %s: %s", ticker, exc)
@@ -632,6 +681,8 @@ async def _run_scan_locked(bot: TradingBot, config: Config) -> None:
             if errors_posted < 3:
                 await bot.send_ops_alert(f"[ERROR] {ticker}: {type(exc).__name__}")
                 errors_posted += 1
+            _record_shadow(config, ticker, "stock", "universe", "error",
+                           reject_reason=f"{type(exc).__name__}: {exc}")
             continue
 
     if error_count > 3:
@@ -791,6 +842,23 @@ async def _run_scan_etf_locked(bot: TradingBot, config: Config) -> None:
     # Repeated on every scan: guard 11 blocks this ticker until a human
     # runs /resolve, and an alert nobody repeats is a block nobody sees.
     await alert_stuck_orders(bot, config)
+    # Before anything is screened, not after: a ticker whose order the broker
+    # has finished with should be eligible in THIS scan, not the next one.
+    # Both scan paths post recommendations, so both must be able to release a
+    # ticker the index is still holding.
+    try:
+        await sweep_terminal_recommendations(config)
+    except Exception:
+        # Reporting and housekeeping must never abort the scan they run inside.
+        logger.exception("Terminal-order sweep failed; continuing the ETF scan")
+    # Marked here too, for the same reason the sweep is: a maintenance step
+    # wired into one scan path and not the other is exactly the bug that left
+    # the ETF path never sweeping. Marking is idempotent and universe-agnostic,
+    # so on a day only the ETF scan runs the marks still advance.
+    try:
+        await outcomes.mark_due_outcomes(config)
+    except Exception:
+        logger.exception("Shadow outcome marking failed; continuing the ETF scan")
     queries.expire_stale_recommendations(config.db_path)
 
     etf_watchlist_path = str(Path(__file__).parent / "etf_watchlist.txt")
@@ -823,15 +891,21 @@ async def _run_scan_etf_locked(bot: TradingBot, config: Config) -> None:
 
     for ticker in etfs:
         if queries.ticker_recommended_today(config.db_path, ticker):
+            _record_shadow(config, ticker, "etf", "universe",
+                           "skipped_recommended_today")
             continue
         if queries.has_open_position(config.db_path, ticker):
             logger.debug("Skipping %s: open position exists", ticker)
+            _record_shadow(config, ticker, "etf", "universe",
+                           "skipped_open_position")
             continue
         if queries.has_active_recommendation(config.db_path, ticker):
             # Not the same question as ticker_recommended_today, which is
             # session-scoped: an `approved` row left by an ambiguous submission
             # days ago is invisible to that guard but blocks this insert.
             logger.debug("Skipping %s: an active recommendation already exists", ticker)
+            _record_shadow(config, ticker, "etf", "universe",
+                           "skipped_active_recommendation")
             continue
 
         try:
@@ -865,10 +939,17 @@ async def _run_scan_etf_locked(bot: TradingBot, config: Config) -> None:
             # Shared analyst-cache + quota path (same helper as the run_scan buy pass)
             analysis = await analyze_with_cache(config, ticker, headlines, _analyze_etf)
             if analysis is None:
+                _record_shadow(config, ticker, "etf", "analyst",
+                               "skipped_quota_exhausted", technicals=tech_data,
+                               headlines=headlines, macro=macro_context)
                 continue  # all providers quota-exhausted
 
             # ETF uses BUY signal check but no technical filter (no fundamental filter per ETF-02)
             if analysis["signal"] != "BUY":
+                _record_shadow(config, ticker, "etf", "technical", "rejected_signal",
+                               technicals=tech_data, headlines=headlines,
+                               macro=macro_context, analysis=analysis,
+                               reference_price=tech_data.get("price"))
                 continue
 
             rec_id = queries.create_recommendation(
@@ -898,6 +979,11 @@ async def _run_scan_etf_locked(bot: TradingBot, config: Config) -> None:
             queries.set_discord_message_id(config.db_path, rec_id, message_id)
             logger.info("ETF recommended %s", ticker)
             recommendations_posted += 1
+            _record_shadow(config, ticker, "etf", "recommended", "recommended",
+                           technicals=tech_data, headlines=headlines,
+                           macro=macro_context, analysis=analysis,
+                           recommendation_id=rec_id,
+                           reference_price=tech_data.get("price"))
 
         except sqlite3.OperationalError as exc:
             logger.error("ETF scan aborted — DB schema error: %s", exc)
@@ -909,6 +995,8 @@ async def _run_scan_etf_locked(bot: TradingBot, config: Config) -> None:
             if errors_posted < 3:
                 await bot.send_ops_alert(f"[ERROR] {ticker}: {type(exc).__name__}")
                 errors_posted += 1
+            _record_shadow(config, ticker, "etf", "universe", "error",
+                           reject_reason=f"{type(exc).__name__}: {exc}")
             continue
 
     if error_count > 3:

@@ -234,7 +234,7 @@ MAX_POSITION_SIZE_USD=500
 
 **`positions`**: ticker, shares, avg_price, created_at, updated_at, sell_blocked (bool)
 
-**`analyst_cache`**: cache_key (SHA-256 of headlines), provider, signal, reasoning, created_at
+**`analyst_cache`**: ticker, headline_hash (SHA-256 of headlines), signal, reasoning, confidence, created_at; `UNIQUE(ticker, headline_hash)`. It records **neither provider nor model**, so a cache hit cannot be attributed to the model that produced it — worth knowing now that quota is metered per model, and the reason research data must capture both rather than inherit this gap
 
 **`analyst_calls`**: PRIMARY KEY (date, provider, **model**), count — daily quota per model, matching how Google meters. Legacy rows migrated to `model=''` rather than dropped (those calls were really made) or attributed to a current model (they never consumed its budget)
 
