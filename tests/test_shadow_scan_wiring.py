@@ -244,3 +244,114 @@ async def test_a_buy_that_fails_the_technicals_is_attributed_to_the_technicals(t
     bot.send_ops_alert = AsyncMock()
     await _scan_with(_reaches_the_technical_gate("BUY"), bot, cfg)
     assert ("AAPL", "rejected_technical") in _outcomes(cfg.db_path)
+
+
+# --- one screen price, at EVERY post-.info outcome ---
+#
+# Pricing only the rejected side does not produce a valid gate comparison: the
+# pass cohort would carry later, auto-adjusted technical prices and the
+# quota-exhausted rows would carry none at all, so whether a row is markable
+# would correlate with HOW it exited. That is a selection effect, and it is the
+# thing this subsystem exists to avoid.
+
+def _priced(db_path):
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    return {r["outcome"]: (r["reference_price"], r["reference_price_source"])
+            for r in conn.execute(
+                "SELECT outcome, reference_price, reference_price_source"
+                " FROM shadow_observations")}
+
+
+def _post_info_patches(*, signal="BUY", passes_fundamental=True,
+                       analysis_none=False, recommend=False):
+    analysis = None if analysis_none else {
+        "signal": signal, "reasoning": "r", "confidence": "high"}
+    return (
+        patch.object(main, "get_top_sp500_by_fundamentals", return_value=[]),
+        patch.object(main, "get_universe", return_value=["AAPL"]),
+        patch.object(main, "partition_watchlist",
+                     side_effect=lambda t, i=None: (["AAPL"], [])),
+        patch.object(main, "fetch_macro_context", return_value={}),
+        patch.object(main, "alert_stuck_orders", new=AsyncMock()),
+        patch.object(main, "sweep_terminal_recommendations", new=AsyncMock()),
+        patch.object(main, "_drain_ops_outbox", new=AsyncMock()),
+        patch.object(main.outcomes, "mark_due_outcomes", new=AsyncMock(return_value=0)),
+        patch.object(main, "fetch_fundamental_info",
+                     return_value={"trailingPE": 20.0, "currentPrice": 195.9}),
+        patch.object(main, "passes_fundamental_filter", return_value=passes_fundamental),
+        patch.object(main, "fetch_news_headlines", return_value=["a headline"]),
+        patch.object(main, "analyze_with_cache", new=AsyncMock(return_value=analysis)),
+        patch.object(main, "fetch_technical_data",
+                     return_value={"price": 999.0, "rsi": 50.0}),
+        patch.object(main, "should_recommend", return_value=recommend),
+    )
+
+
+async def _run(patches, cfg):
+    bot = MagicMock()
+    bot.send_ops_alert = AsyncMock()
+    bot.send_recommendation = AsyncMock(return_value=123)
+    for p in patches:
+        p.start()
+    try:
+        await main.run_scan(bot, cfg)
+    finally:
+        for p in patches:
+            p.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_fundamental_reject_is_priced(tmp_path):
+    """The 78% case: these carried no price at all, so they could never be
+    marked and the gate could never be evaluated."""
+    cfg = _config(tmp_path)
+    await _run(_post_info_patches(passes_fundamental=False), cfg)
+    assert _priced(cfg.db_path)["rejected_fundamental"] == (195.9, "info.currentPrice")
+
+
+@pytest.mark.asyncio
+async def test_a_quota_exhausted_candidate_is_priced(tmp_path):
+    """Quota exhaustion depends on scan order, day and provider budget, so
+    leaving these unpriced makes markability correlate with the outcome."""
+    cfg = _config(tmp_path)
+    await _run(_post_info_patches(analysis_none=True), cfg)
+    assert _priced(cfg.db_path)["skipped_quota_exhausted"] == (195.9, "info.currentPrice")
+
+
+@pytest.mark.asyncio
+async def test_a_signal_reject_is_priced_from_INFO_not_the_technicals(tmp_path):
+    """fetch_technical_data returns 999.0 here and .info returns 195.9. The
+    stored price must be 195.9 -- one source for every cohort. The technical
+    price still exists in technicals_json; it is simply not this column."""
+    cfg = _config(tmp_path)
+    await _run(_post_info_patches(signal="HOLD"), cfg)
+    assert _priced(cfg.db_path)["rejected_signal"] == (195.9, "info.currentPrice")
+
+
+@pytest.mark.asyncio
+async def test_a_technical_reject_is_priced_from_info(tmp_path):
+    cfg = _config(tmp_path)
+    await _run(_post_info_patches(signal="BUY"), cfg)
+    assert _priced(cfg.db_path)["rejected_technical"] == (195.9, "info.currentPrice")
+
+
+@pytest.mark.asyncio
+async def test_a_recommendation_is_priced_from_info(tmp_path):
+    cfg = _config(tmp_path)
+    await _run(_post_info_patches(signal="BUY", recommend=True), cfg)
+    assert _priced(cfg.db_path)["recommended"] == (195.9, "info.currentPrice")
+
+
+@pytest.mark.asyncio
+async def test_an_info_with_no_usable_price_still_records_the_observation(tmp_path):
+    """No price is not an error. The row must exist -- the funnel's denominator
+    depends on it -- it is simply not markable."""
+    cfg = _config(tmp_path)
+    patches = _post_info_patches(passes_fundamental=False)
+    patches = tuple(p for p in patches
+                    if getattr(p, "attribute", None) != "fetch_fundamental_info")
+    patches += (patch.object(main, "fetch_fundamental_info",
+                             return_value={"trailingPE": 20.0}),)
+    await _run(patches, cfg)
+    assert _priced(cfg.db_path)["rejected_fundamental"] == (None, None)

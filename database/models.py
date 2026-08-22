@@ -161,10 +161,21 @@ def _create_shadow_tables(conn) -> None:
                cache_hit             INTEGER NOT NULL DEFAULT 0,
                recommendation_id     INTEGER,
                reference_price       REAL,
+               reference_price_source TEXT,
                human_action          TEXT,
                human_action_at       TEXT
            )"""
     )
+    # Added after the table shipped: a database created by the first version of
+    # the shadow log has every other column but not this one, and a research row
+    # with no provenance cannot be told apart from one priced under a policy that
+    # has since changed. Same idiom as the `orders` columns below.
+    try:
+        conn.execute(
+            "ALTER TABLE shadow_observations ADD COLUMN reference_price_source TEXT"
+        )
+    except sqlite3.OperationalError:
+        pass  # Column already exists
     conn.execute(
         """CREATE INDEX IF NOT EXISTS idx_shadow_obs_session
                ON shadow_observations(session_date, ticker)"""

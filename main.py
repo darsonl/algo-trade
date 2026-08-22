@@ -17,7 +17,7 @@ from risk import kill_switch
 from database import queries
 from research import outcomes, shadow_log
 from screener.universe import get_watchlist, get_top_sp500_by_fundamentals, get_universe, partition_watchlist
-from screener.fundamentals import passes_fundamental_filter, fetch_fundamental_info, fetch_eps_data, normalize_dividend_yield
+from screener.fundamentals import passes_fundamental_filter, fetch_fundamental_info, fetch_eps_data, normalize_dividend_yield, screen_price
 from screener.technicals import passes_technical_filter, fetch_technical_data
 from analyst.news import fetch_news_headlines
 from analyst.claude_analyst import analyze_ticker, create_analyst_client, create_fallback_client, create_fallback2_client, analyze_sell_ticker, analyze_etf_ticker
@@ -543,9 +543,12 @@ async def _run_scan_locked(bot: TradingBot, config: Config) -> None:
             if info is None:
                 info = await asyncio.to_thread(fetch_fundamental_info, yf_ticker)
             if not passes_fundamental_filter(info, config):
+                _screen_price, _screen_src = screen_price(info)
                 _record_shadow(config, ticker, "stock", "fundamental",
                                "rejected_fundamental", fundamentals=info,
-                               macro=macro_context)
+                               macro=macro_context,
+                               reference_price=_screen_price,
+                               reference_price_source=_screen_src)
                 continue
 
             # Phase 16 (SIG-05, SIG-06): earnings date from info dict — zero extra HTTP call (D-09).
@@ -621,9 +624,12 @@ async def _run_scan_locked(bot: TradingBot, config: Config) -> None:
 
             analysis = await analyze_with_cache(config, ticker, headlines, _analyze_buy)
             if analysis is None:
+                _screen_price, _screen_src = screen_price(info)
                 _record_shadow(config, ticker, "stock", "analyst",
                                "skipped_quota_exhausted", fundamentals=info,
-                               headlines=headlines, macro=macro_context)
+                               headlines=headlines, macro=macro_context,
+                               reference_price=_screen_price,
+                               reference_price_source=_screen_src)
                 continue  # all providers quota-exhausted
 
             tech_data = await asyncio.to_thread(fetch_technical_data, yf_ticker)
@@ -633,11 +639,13 @@ async def _run_scan_locked(bot: TradingBot, config: Config) -> None:
                 # return type on the live path for a research need.
                 outcome = ("rejected_signal" if analysis["signal"] != "BUY"
                            else "rejected_technical")
+                _screen_price, _screen_src = screen_price(info)
                 _record_shadow(config, ticker, "stock", "technical", outcome,
                                fundamentals=info, technicals=tech_data,
                                headlines=headlines, macro=macro_context,
                                analysis=analysis,
-                               reference_price=tech_data.get("price"))
+                               reference_price=_screen_price,
+                               reference_price_source=_screen_src)
                 continue
 
             div_yield = normalize_dividend_yield(info.get("dividendYield"))
@@ -669,11 +677,13 @@ async def _run_scan_locked(bot: TradingBot, config: Config) -> None:
             queries.set_discord_message_id(config.db_path, rec_id, message_id)
             logger.info("Recommended %s", ticker)
             recommendations_posted += 1
+            _screen_price, _screen_src = screen_price(info)
             _record_shadow(config, ticker, "stock", "recommended", "recommended",
                            fundamentals=info, technicals=tech_data,
                            headlines=headlines, macro=macro_context,
                            analysis=analysis, recommendation_id=rec_id,
-                           reference_price=tech_data["price"])
+                           reference_price=_screen_price,
+                           reference_price_source=_screen_src)
 
         except Exception as exc:
             logger.error("Error processing %s: %s", ticker, exc)

@@ -210,6 +210,14 @@ python main.py
 
 - **A terminal status is not permission to book a zero fill.** `fills_observed` gates the release of capital, so the sweep flips it only for fills it can trust: a payload with no `filledQuantity` at all, or a quantity with no execution prices to value it at, is written through `mark_order_terminal_unobserved` and keeps its **full** commitment at the limit. `extract_fills` reports `(n, 0.0)` for the unpriceable case deliberately and leaves the decision to the caller; booking that $0 releases the whole reservation for an order that actually filled — round-4 finding 6, in a new place. The one trustworthy zero is a definitively refused order.
 
+- **One screen price, for every candidate that reached `.info`**: `reference_price` is taken from `screen_price(info)` at ALL five post-`.info` exits — `rejected_fundamental`, `skipped_quota_exhausted`, `rejected_signal`, `rejected_technical`, `recommended` — and never from the technical stage. The two are NOT interchangeable: `closes.iloc[-1]` comes from a different endpoint, is fetched minutes later, and yfinance history is **auto-adjusted** while `.info` is raw. Mixing them in one column makes a cohort comparison measure provenance as much as outcome, which is the one thing this subsystem exists to avoid. The technical price still lives in `technicals_json`.
+
+  Pricing only the *rejected* side is not a smaller version of this fix, it is a broken one: `skipped_quota_exhausted` depends on scan order, day and provider budget, so leaving it unpriced makes **markability correlate with how a candidate exited** — a selection effect in the denominator. Before this, only the 4 post-technical sites recorded a price and **78% of the funnel could never be marked** (measured: 39 of 50).
+
+  `screen_price` is **total by contract** — it is passed as an ARGUMENT to `_record_shadow`, so it is evaluated *before* that wrapper's `try`, and a raise would turn a genuine rejection into an `error` observation and could fire an ops alert. It refuses bools (`isinstance(True, int)` is True), NaN and infinity (both floats; NaN compares False to everything), strings, and non-positive values. **`previousClose` is deliberately not a fallback** — a different session silently moves the holding-period start. `reference_price_source` records provenance so the fallback is never silent and backfilled rows stay distinguishable.
+
+- **Marking is bounded, because it runs in front of a market-timed scan**: `mark_due_outcomes` is serial with a 10s yfinance timeout per fetch and sits before the universe is built, so `MAX_MARKS_PER_RUN` / `MARKING_TIME_BUDGET_S` plus `ORDER BY`/`LIMIT` cap the delay. Skipped rows stay due, so a bound costs a delay, never a mark. `pending_shadow_marks` requires `reference_price > 0`, not `IS NOT NULL`: zero makes a row eligible while guaranteeing `compute_return` returns None — a fetch per horizon and four permanently unusable marks. That predicate IS the eligibility invariant, so it belongs in the query rather than in whatever wrote the price.
+
 - **Position reconciliation (report-only)**: `run_reconciliation()` in `main.py` compares DB open positions against the Schwab account (RISK-05: positions are recorded on order acknowledgement, not fill). Runs before each scan's sell pass and via `/reconcile`. It NEVER mutates positions — discrepancies (phantom / untracked / mismatched) are posted as ops alerts for human correction. Skipped entirely in dry run (simulated positions have no broker counterpart). Tests that call `run_scan` must set `config.dry_run = True` (or patch `main.get_positions`) so the suite never touches the live Schwab API.
 - **Config reads env at construction, not import**: `Config` fields use `field(default_factory=lambda: os.getenv(...))` (via the `_env_str/_int/_float/_bool` helpers), so `Config()` reflects the environment at call time. The old `= os.getenv(...)` defaults froze at import, forcing `importlib.reload(config)` in env-dependent tests — don't reintroduce that pattern. `test_config.py`'s reload-based USE_LIMIT_BUY tests still pass (now via construction-time reads).
 - **Analyst enrichment built only on cache miss**: in `run_scan`, the `fundamental_trend` block (`fetch_eps_data` → `quarterly_income_stmt`, a slow network call) is computed inside the cache-miss branch, after `get_cached_analysis`. A cache hit skips it. The earnings block stays *before* the cache check because `earnings_date_embed` is shown on the recommendation embed even on a hit.
@@ -238,6 +246,8 @@ MAX_POSITION_SIZE_USD=500
 
 **`analyst_calls`**: PRIMARY KEY (date, provider, **model**), count — daily quota per model, matching how Google meters. Legacy rows migrated to `model=''` rather than dropped (those calls were really made) or attributed to a current model (they never consumed its budget)
 
+**`shadow_observations`**: every candidate a scan saw, including rejects — `reference_price` is the screen price from `.info` (see above) and `reference_price_source` its provenance; **`shadow_outcomes`**: forward marks per `(observation_id, horizon)`
+
 **`orders`**: the durable order ledger — status, broker_order_id, filled_shares/notional, `fills_observed`, `predecessor_order_id`, `reserved_notional_override`, `intended_session_date` (the session the broker will actually run it in — what the daily ceiling buckets on; backfilled for pre-existing rows, since a NULL would be invisible to the ceiling and fail open)
 
 **`ops_alerts`**: durable outbox — message, delivered_at (NULL = pending), attempts, last_error
@@ -262,11 +272,15 @@ MAX_POSITION_SIZE_USD=500
 
 Analyst-model helper: `.venv/Scripts/python.exe scripts/probe_analyst_models.py` measures parse reliability against the real API, through the app's own client and parser. Run it before changing `ANALYST_MODEL`/`ANALYST_FALLBACK_MODEL` — both models on this path have been chosen on assumption and been wrong. Each model has its own quota pool, so probing one does not spend another's.
 
+Screen-price backfill: `.venv/Scripts/python.exe scripts/backfill_screen_price.py` recovers `reference_price` for shadow rows recorded before the screen-price policy, from the `.info` dict each row already stores. Preview by default, `--apply` writes, idempotent. A script rather than an `initialize_db` migration on purpose — parsing research JSON per row is exactly the work that fails on malformed data, and an operator who cannot start the bot cannot `/halt` it either.
+
+Funnel report: `.venv/Scripts/python.exe scripts/shadow_report.py` — read-only, every statement a SELECT, safe against the live database while the bot runs.
+
 Pre-flight helper: `.venv/Scripts/python.exe scripts/check_ops_ids.py` reports the operator allowlist and the current kill-switch state, exiting non-zero if nobody is authorized. An empty or all-malformed `OPS_USER_IDS` locks you out of `/halt` **quietly**, which is why it is worth checking before startup.
 
 ### Test Suite
 
-1096 tests as of 2026-08-21. Run with `.venv/Scripts/python.exe -m pytest -q` (~25s). Key test files:
+1220 tests as of 2026-08-22. Run with `.venv/Scripts/python.exe -m pytest -q` (~25s). Key test files:
 - `test_order_status_sweep.py` / `test_order_status_mapping.py` / `test_active_rec_index.py` — step 11: chain-following, the sweep, the trustworthy-fill rule, and the index that cannot ship before its release valve (48 tests)
 - `test_scan_lock.py` — one scan at a time: the shared lock, the per-loop binding trap, and the two slash commands (10 tests)
 - `test_per_model_quota.py` — quota metered per model, and the `analyst_calls` rebuild against a PRE-EXISTING table (8 tests)
