@@ -1,5 +1,11 @@
 .env
 *.db
+# SQLite WAL sidecars. The database runs in WAL mode, so these appear beside it
+# whenever the bot or a scan has the file open; committing one would be
+# committing half a transaction.
+*.db-wal
+*.db-shm
+*.db.bak-*
 schwab_token.json
 __pycache__/
 *.pyc
