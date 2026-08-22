@@ -15,7 +15,7 @@ from config import Config
 from database.models import get_cursor, initialize_db
 from risk import kill_switch
 from database import queries
-from research import shadow_log
+from research import outcomes, shadow_log
 from screener.universe import get_watchlist, get_top_sp500_by_fundamentals, get_universe, partition_watchlist
 from screener.fundamentals import passes_fundamental_filter, fetch_fundamental_info, fetch_eps_data, normalize_dividend_yield
 from screener.technicals import passes_technical_filter, fetch_technical_data
@@ -466,6 +466,11 @@ async def _run_scan_locked(bot: TradingBot, config: Config) -> None:
     except Exception:
         # Reporting and housekeeping must never abort the scan they run inside.
         logger.exception("Terminal-order sweep failed; continuing the scan")
+    # Research marks. Same contract as the sweep: never fatal to the scan.
+    try:
+        await outcomes.mark_due_outcomes(config)
+    except Exception:
+        logger.exception("Shadow outcome marking failed; continuing the scan")
     queries.expire_stale_recommendations(config.db_path)
 
     watchlist_path = str(Path(__file__).parent / "watchlist.txt")
@@ -846,6 +851,14 @@ async def _run_scan_etf_locked(bot: TradingBot, config: Config) -> None:
     except Exception:
         # Reporting and housekeeping must never abort the scan they run inside.
         logger.exception("Terminal-order sweep failed; continuing the ETF scan")
+    # Marked here too, for the same reason the sweep is: a maintenance step
+    # wired into one scan path and not the other is exactly the bug that left
+    # the ETF path never sweeping. Marking is idempotent and universe-agnostic,
+    # so on a day only the ETF scan runs the marks still advance.
+    try:
+        await outcomes.mark_due_outcomes(config)
+    except Exception:
+        logger.exception("Shadow outcome marking failed; continuing the ETF scan")
     queries.expire_stale_recommendations(config.db_path)
 
     etf_watchlist_path = str(Path(__file__).parent / "etf_watchlist.txt")

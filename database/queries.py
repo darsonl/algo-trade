@@ -1037,3 +1037,49 @@ def set_shadow_human_action(db_path: str, recommendation_id: int,
                 WHERE recommendation_id = ?""",
             (action, at, recommendation_id),
         )
+
+
+def pending_shadow_marks(db_path: str, horizon: str,
+                         cutoff_session_date: str) -> list:
+    """Observations whose `horizon` has matured and is not yet recorded.
+
+    The cutoff is passed in rather than computed here so the caller owns the
+    clock, matching every other time-dependent query in this module.
+
+    `reference_price IS NOT NULL` is doing more work than it looks like: only
+    the four post-technical call sites in the scan loops record a price, so this
+    silently means "reached the technical stage". Candidates rejected at the
+    fundamental gate can never be marked -- a bound on what the funnel can
+    answer, not an oversight here.
+    """
+    with get_cursor(db_path) as conn:
+        return conn.execute(
+            """SELECT o.id, o.ticker, o.session_date, o.reference_price
+                 FROM shadow_observations o
+                WHERE o.session_date <= ?
+                  AND o.reference_price IS NOT NULL
+                  AND NOT EXISTS (SELECT 1 FROM shadow_outcomes s
+                                   WHERE s.observation_id = o.id
+                                     AND s.horizon = ?)""",
+            (cutoff_session_date, horizon),
+        ).fetchall()
+
+
+def record_shadow_outcome(db_path: str, observation_id: int, horizon: str,
+                          as_of: str, price, return_pct,
+                          benchmark_price, benchmark_return_pct) -> None:
+    """Write one forward mark. Idempotent per (observation, horizon).
+
+    INSERT OR IGNORE rather than UPSERT: a mark is a statement about a close
+    that has already happened, so the first write is as good as any later one,
+    and re-running a scan must not rewrite history.
+    """
+    with get_cursor(db_path) as conn:
+        conn.execute(
+            """INSERT OR IGNORE INTO shadow_outcomes
+                   (observation_id, horizon, as_of, price, return_pct,
+                    benchmark_price, benchmark_return_pct)
+               VALUES (?,?,?,?,?,?,?)""",
+            (observation_id, horizon, as_of, price, return_pct,
+             benchmark_price, benchmark_return_pct),
+        )
