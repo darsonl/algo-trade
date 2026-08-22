@@ -1229,80 +1229,51 @@ git commit -m "feat: record every scan exit point in the shadow log"
 
 - [ ] **Step 1: Write the failing test**
 
-Create `tests/test_shadow_human_action.py`:
+Create `tests/test_shadow_human_action.py`.
 
-```python
-"""The human's click, and when it happened.
+**PLAN DEFECT, CORRECTED 2026-08-22 — read this before writing the test.** The
+version of this step originally written here called
+`queries.set_shadow_human_action(...)` directly from every test. That function
+ships in **Task 4**, so all three tests passed against untouched production
+code, and would have gone on passing if this entire task were deleted. They
+never imported `discord_bot.bot` at all. This is the third appearance of the
+same trap on this branch (Task 5's ETF test instrumenting `get_universe`, a
+function that path never calls), and the tell is identical every time: **a test
+whose imports never name the module the task changes.**
 
-Approval latency is unrecoverable retrospectively -- historical data cannot
-reveal whether or when someone would have clicked Approve. Recording it forward
-is the only way this quantity ever exists.
-"""
-import sqlite3
-from datetime import datetime, timezone
+The thing under test here is the WIRING, so the test must drive the wiring:
+construct a real `ApproveRejectView` against a real database file and invoke
+`view.approve.callback.callback(...)` / `view.reject.callback.callback(...)`.
+`tests/test_discord_buttons.py` already carries the harness for this — a
+`Config` on a temp-file database, a seeded kill switch, a `MagicMock`
+interaction with `AsyncMock` responses, and a patch set covering `fetch_quote`,
+`collect_broker_snapshot`, `_utcnow` and `_call_place_order`. Reuse its shape
+rather than inventing a second one.
 
-from config import Config
-from database import queries
-from database.models import initialize_db
-from research import shadow_log
+The suite as shipped (see the committed file for the full text) covers:
 
-
-def _config(tmp_path):
-    c = Config()
-    c.db_path = str(tmp_path / "s.db")
-    initialize_db(c.db_path)
-    return c
-
-
-def test_approval_latency_is_derivable_from_the_stored_timestamps(tmp_path):
-    cfg = _config(tmp_path)
-    posted = datetime(2026, 8, 20, 13, 45, tzinfo=timezone.utc)
-    shadow_log.observe(cfg, "AAPL", "stock", "recommended", "recommended",
-                       recommendation_id=7, instant=posted)
-    queries.set_shadow_human_action(cfg.db_path, 7, "approved",
-                                    "2026-08-20T14:15:00Z")
-
-    conn = sqlite3.connect(cfg.db_path)
-    conn.row_factory = sqlite3.Row
-    row = conn.execute("SELECT * FROM shadow_observations").fetchone()
-    t0 = datetime.strptime(row["observed_at"], "%Y-%m-%dT%H:%M:%SZ")
-    t1 = datetime.strptime(row["human_action_at"], "%Y-%m-%dT%H:%M:%SZ")
-    assert (t1 - t0).total_seconds() == 30 * 60
-    assert row["human_action"] == "approved"
-
-
-def test_rejection_is_recorded_as_rejected(tmp_path):
-    cfg = _config(tmp_path)
-    shadow_log.observe(cfg, "XOM", "stock", "recommended", "recommended",
-                       recommendation_id=8)
-    queries.set_shadow_human_action(cfg.db_path, 8, "rejected",
-                                    "2026-08-20T14:15:00Z")
-    conn = sqlite3.connect(cfg.db_path)
-    conn.row_factory = sqlite3.Row
-    row = conn.execute("SELECT * FROM shadow_observations").fetchone()
-    assert row["human_action"] == "rejected"
-
-
-def test_no_click_leaves_the_action_null(tmp_path):
-    """A recommendation nobody touched must be distinguishable from a rejected
-    one -- non-response is data, and lumping it in with rejection would
-    overstate how often the human said no."""
-    cfg = _config(tmp_path)
-    shadow_log.observe(cfg, "MSFT", "stock", "recommended", "recommended",
-                       recommendation_id=9)
-    conn = sqlite3.connect(cfg.db_path)
-    conn.row_factory = sqlite3.Row
-    row = conn.execute("SELECT * FROM shadow_observations").fetchone()
-    assert row["human_action"] is None
-    assert row["human_action_at"] is None
-```
+| Test | What it pins |
+|---|---|
+| latency derivable from the two timestamps | the number this whole task exists to produce |
+| a LIVE approval records the click too | the call sits before the dry-run branch, so arming the bot does not stop the measurement |
+| rejection recorded as `rejected` | the reject handler is wired, not just approve |
+| an unauthorized click records nothing | guard 1 refuses before the claim; a button press is not an approval |
+| a guard refusal records nothing | guard 2 (halted) refuses after the click, still before the claim |
+| no click leaves both columns NULL | non-response stays distinguishable from rejection |
+| a second click does not overwrite the first | only the claiming click is the approval |
+| a failing shadow write does not abort the approval | instrumentation cannot refuse a trade |
+| a failing shadow write does not abort the rejection | same, on the other handler |
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `.venv/Scripts/python.exe -m pytest tests/test_shadow_human_action.py -q`
-Expected: the first two FAIL (`human_action` is `None`), the third passes.
 
-Note: the third passing immediately is expected and correct — it asserts the default state. Keep it; it pins that non-response stays distinguishable from rejection.
+Expected: **4 fail, 5 pass.** The four failures are the four tests that assert a
+recording HAPPENED. The five that pass are the negative-space tests (which
+assert nothing was recorded, and are trivially true before the change) and the
+two never-abort tests (whose patch is never reached yet). Those five only become
+load-bearing after Step 3, so Step 4 must mutation-check them rather than trust
+a green bar.
 
 - [ ] **Step 3: Write minimal implementation**
 
@@ -1332,10 +1303,25 @@ In `ApproveRejectView.reject`, after the rejection is persisted:
 
 **Implementer note:** read the two handlers before editing to confirm the attribute names (`self.rec_id`, `self.config`) and to place the calls on the success paths only — a refused approval must not be recorded as a click that led to a trade. If either call could raise, wrap it in `try/except Exception` with a `logger.exception`, matching the recorder's contract.
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [ ] **Step 4: Run tests to verify they pass, then mutation-check them**
 
-Run: `.venv/Scripts/python.exe -m pytest tests/test_shadow_human_action.py tests/test_discord_buttons.py -q`
+Run: `.venv/Scripts/python.exe -m pytest tests/test_shadow_human_action.py tests/test_discord_buttons.py tests/test_approval_ledger.py -q`
 Expected: all pass.
+
+A green bar is not sufficient evidence here, because five of these nine tests
+were already green before the change. Apply each mutation, run the file, restore,
+and confirm the named tests fail:
+
+| Mutation | Must break |
+|---|---|
+| delete the `try/except` in `_record_human_action` | both never-abort tests |
+| move the approve recording BELOW the dry-run branch | the dry-run latency test (the live one still passes — that asymmetry is the point) |
+| move the approve recording ABOVE `if not decision.allowed` | the guard-refusal test AND the second-click test |
+| swap the `"approved"` / `"rejected"` labels | the three recording tests |
+
+**Commit before mutating.** Restoring with `git checkout discord_bot/bot.py` on
+an UNCOMMITTED implementation discards the implementation, not the mutation —
+which happened on the first attempt at this task and cost a full reapply.
 
 - [ ] **Step 5: Commit**
 
