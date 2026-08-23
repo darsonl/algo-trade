@@ -216,6 +216,18 @@ python main.py
 
   `screen_price` is **total by contract** — it is passed as an ARGUMENT to `_record_shadow`, so it is evaluated *before* that wrapper's `try`, and a raise would turn a genuine rejection into an `error` observation and could fire an ops alert. It refuses bools (`isinstance(True, int)` is True), NaN and infinity (both floats; NaN compares False to everything), strings, and non-positive values. **`previousClose` is deliberately not a fallback** — a different session silently moves the holding-period start. `reference_price_source` records provenance so the fallback is never silent and backfilled rows stay distinguishable.
 
+- **Both legs of a forward mark are TOTAL returns, on ONE basis**: `reference_price` is a raw live quote frozen at the screen, while every close Yahoo serves is on the basis as of **fetch time**. That gap admitted two corporate actions, and the fix for both is the same — reconstruct the factor over the window `(session_date, as_of]` from the `Dividends` and `Stock Splits` columns, rather than inherit it from fetch-time adjustment, so a mark taken late equals one taken promptly.
+
+  **Splits.** Yahoo back-applies them to every close it serves, and **verified: it does so even with `auto_adjust=False`** — that flag toggles only the dividend leg, so "fetch it unadjusted" is not an available fix and `split_factor` must be rebuilt from the column. Measured on live NVDA data across its 2024-06-10 10:1: a holding that gained **+5.86% recorded as −89.41%**.
+
+  **Dividends — the bigger one, because it touched every row rather than the rare ones.** The benchmark's entry is a *past date fetched now*, so it absorbs every SPY distribution since, making the benchmark leg a **total** return; `reference_price` absorbs nothing, making the stock leg a **price** return. The gap fell straight through into excess return. Measured live over a 6m window: **KO 1.52pp, XOM 1.50pp, T 2.16pp understated**. This system screens **on dividend yield**, so the bias was correlated with the variable under test and would not have averaged out.
+
+  **The intraday decision price is kept.** Re-basing corrects for corporate actions *only*; substituting the session close would discard the price a human would actually have transacted at, which is a different metric. The remaining **stock-intraday vs SPY-close** asymmetry is real, systematic across cohorts (so it cancels in a cohort comparison, not an absolute one), and stated in the module docstring — it is no longer described as an "identical window".
+
+  The seam is a **window**, not a `(ticker, as_of)` close: a corporate action is a property of the *span*, and the old stub could not express one at all. `record_shadow_outcome` takes the `Mark` objects **whole** rather than loose floats, so a `return_pct` cannot be stored beside factors that disagree with it. `adjusted_entry_price` / `split_factor` / `dividend_factor` are persisted because a correction that cannot be inspected cannot be audited — the `reference_price_source` argument again; they stay **NULL** on rows marked before corrections existed, since 1.0 would falsely claim a quiet window. An unpriceable dividend (no prior close) yields **None, never 1.0**, and the mark stays pending: a silent under-correction is the `fills_observed` failure in a new place.
+
+  Correctness is pinned by an **oracle** rather than a restatement of the arithmetic — the correction reproduces yfinance's *own* adjusted-close return to 9e-7 pp on live NVDA data, two independent routes to one number.
+
 - **Marking is bounded, because it runs in front of a market-timed scan**: `mark_due_outcomes` is serial with a 10s yfinance timeout per fetch and sits before the universe is built, so `MAX_MARKS_PER_RUN` / `MARKING_TIME_BUDGET_S` plus `ORDER BY`/`LIMIT` cap the delay. Skipped rows stay due, so a bound costs a delay, never a mark. `pending_shadow_marks` requires `reference_price > 0`, not `IS NOT NULL`: zero makes a row eligible while guaranteeing `compute_return` returns None — a fetch per horizon and four permanently unusable marks. That predicate IS the eligibility invariant, so it belongs in the query rather than in whatever wrote the price.
 
 - **Position reconciliation (report-only)**: `run_reconciliation()` in `main.py` compares DB open positions against the Schwab account (RISK-05: positions are recorded on order acknowledgement, not fill). Runs before each scan's sell pass and via `/reconcile`. It NEVER mutates positions — discrepancies (phantom / untracked / mismatched) are posted as ops alerts for human correction. Skipped entirely in dry run (simulated positions have no broker counterpart). Tests that call `run_scan` must set `config.dry_run = True` (or patch `main.get_positions`) so the suite never touches the live Schwab API.
@@ -246,7 +258,7 @@ MAX_POSITION_SIZE_USD=500
 
 **`analyst_calls`**: PRIMARY KEY (date, provider, **model**), count — daily quota per model, matching how Google meters. Legacy rows migrated to `model=''` rather than dropped (those calls were really made) or attributed to a current model (they never consumed its budget)
 
-**`shadow_observations`**: every candidate a scan saw, including rejects — `reference_price` is the screen price from `.info` (see above) and `reference_price_source` its provenance; **`shadow_outcomes`**: forward marks per `(observation_id, horizon)`
+**`shadow_observations`**: every candidate a scan saw, including rejects — `reference_price` is the screen price from `.info` (see above) and `reference_price_source` its provenance; **`shadow_outcomes`**: forward marks per `(observation_id, horizon)`, each carrying the correction that produced it (`adjusted_entry_price`, `split_factor`, `dividend_factor`; NULL on rows predating corrections)
 
 **`orders`**: the durable order ledger — status, broker_order_id, filled_shares/notional, `fills_observed`, `predecessor_order_id`, `reserved_notional_override`, `intended_session_date` (the session the broker will actually run it in — what the daily ceiling buckets on; backfilled for pre-existing rows, since a NULL would be invisible to the ceiling and fail open)
 
@@ -280,8 +292,9 @@ Pre-flight helper: `.venv/Scripts/python.exe scripts/check_ops_ids.py` reports t
 
 ### Test Suite
 
-1220 tests as of 2026-08-22. Run with `.venv/Scripts/python.exe -m pytest -q` (~25s). Key test files:
+1258 tests as of 2026-08-23. Run with `.venv/Scripts/python.exe -m pytest -q` (~25s). Key test files:
 - `test_order_status_sweep.py` / `test_order_status_mapping.py` / `test_active_rec_index.py` — step 11: chain-following, the sweep, the trustworthy-fill rule, and the index that cannot ship before its release valve (48 tests)
+- `test_total_return_marks.py` — the split and dividend corrections: window half-open at the entry end, unpriceable dividends leave the mark pending, and the live-yfinance oracle (38 tests, no network, no mocks)
 - `test_scan_lock.py` — one scan at a time: the shared lock, the per-loop binding trap, and the two slash commands (10 tests)
 - `test_per_model_quota.py` — quota metered per model, and the `analyst_calls` rebuild against a PRE-EXISTING table (8 tests)
 - `test_execution_mode.py` — `EXECUTION_MODE`: the derived `dry_run`, the loud migration, and the sink's both-signals-must-agree guard (21 tests)
