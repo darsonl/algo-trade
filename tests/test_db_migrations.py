@@ -208,3 +208,61 @@ def test_existing_rows_are_backfilled_rather_than_left_null():
     with closing(sqlite3.connect(DB_PATH)) as conn:
         value = conn.execute("SELECT intended_session_date FROM orders").fetchone()[0]
     assert value == "2026-08-17"
+
+
+# The shadow_outcomes table as the shadow log first shipped it, before the mark
+# carried the corporate-action correction that produced it.
+_LEGACY_SHADOW_OUTCOMES = """
+CREATE TABLE shadow_outcomes (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    observation_id       INTEGER NOT NULL,
+    horizon              TEXT NOT NULL,
+    as_of                TEXT NOT NULL,
+    price                REAL,
+    return_pct           REAL,
+    benchmark_price      REAL,
+    benchmark_return_pct REAL,
+    UNIQUE(observation_id, horizon)
+);
+"""
+
+
+def _legacy_db_with_one_mark():
+    conn = sqlite3.connect(DB_PATH)
+    conn.executescript(_LEGACY_SHADOW_OUTCOMES)
+    conn.execute(
+        """INSERT INTO shadow_outcomes (observation_id, horizon, as_of, price,
+                                        return_pct, benchmark_price,
+                                        benchmark_return_pct)
+           VALUES (1, '1w', '2026-08-27', 110.0, 10.0, 505.0, 1.0)"""
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_the_correction_columns_are_added_to_an_existing_shadow_outcomes_table():
+    _legacy_db_with_one_mark()
+    assert "split_factor" not in _columns("shadow_outcomes")
+
+    initialize_db(DB_PATH)
+
+    for column in ("adjusted_entry_price", "split_factor", "dividend_factor"):
+        assert column in _columns("shadow_outcomes")
+
+
+def test_the_upgrade_preserves_existing_marks():
+    """A mark is a statement about a close that already happened. The upgrade
+    must not disturb one, and must not invent a correction for a row recorded
+    before corrections existed — NULL says 'unknown', 1.0 would say 'quiet
+    window', and only one of those is true."""
+    _legacy_db_with_one_mark()
+
+    initialize_db(DB_PATH)
+
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM shadow_outcomes").fetchone()
+    assert row["return_pct"] == 10.0
+    assert row["benchmark_return_pct"] == 1.0
+    assert row["split_factor"] is None
+    assert row["adjusted_entry_price"] is None

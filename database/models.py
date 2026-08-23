@@ -190,9 +190,23 @@ def _create_shadow_tables(conn) -> None:
                return_pct           REAL,
                benchmark_price      REAL,
                benchmark_return_pct REAL,
+               adjusted_entry_price REAL,
+               split_factor         REAL,
+               dividend_factor      REAL,
                UNIQUE(observation_id, horizon)
            )"""
     )
+    # Added after the table shipped, so a database created by the first version
+    # has the mark but not the correction that produced it. Same ALTER idiom as
+    # `reference_price_source` above. Left NULL on existing rows deliberately:
+    # NULL says "unknown", 1.0 would claim the window was quiet, and a mark
+    # recorded before corrections existed cannot support that claim.
+    for column in ("adjusted_entry_price", "split_factor", "dividend_factor"):
+        try:
+            conn.execute(
+                f"ALTER TABLE shadow_outcomes ADD COLUMN {column} REAL")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
     conn.commit()
 
 

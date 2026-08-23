@@ -2,6 +2,7 @@
 import sqlite3
 from datetime import datetime, timezone
 
+import pandas as pd
 import pytest
 
 from config import Config
@@ -29,13 +30,31 @@ def _observe(cfg, ticker, session_date, price):
     return conn.execute("SELECT last_insert_rowid()").fetchone()[0]
 
 
-def _fake_closes(mapping, calls=None):
-    """A `_close_on_or_before` stub reading from a {(ticker, as_of): close} map."""
-    def _close(ticker, as_of):
+def _window(bars):
+    """A yfinance-shaped daily frame from (date, close) pairs, no actions."""
+    index = pd.DatetimeIndex([pd.Timestamp(d, tz="America/New_York")
+                              for d, _ in bars])
+    return pd.DataFrame(
+        {"Close": [c for _, c in bars],
+         "Dividends": [0.0] * len(bars),
+         "Stock Splits": [0.0] * len(bars)},
+        index=index,
+    )
+
+
+def _fake_windows(mapping, calls=None):
+    """A `_fetch_window` stub reading from a {ticker: frame} map.
+
+    The seam is the WINDOW rather than a single close because a split or a
+    dividend is a property of the span between two dates, not of either end --
+    the old (ticker, as_of) stub could not express one at all. See
+    tests/test_total_return_marks.py.
+    """
+    def _fetch(ticker, start, end):
         if calls is not None:
-            calls.append((ticker, as_of))
-        return mapping.get((ticker, as_of))
-    return _close
+            calls.append((ticker, start, end))
+        return mapping.get(ticker, _window([]))
+    return _fetch
 
 
 def _outcome_rows(cfg):
@@ -79,8 +98,10 @@ def test_only_matured_horizons_are_due(tmp_path):
 def test_an_already_marked_horizon_is_not_due_again(tmp_path):
     cfg = _config(tmp_path)
     oid = _observe(cfg, "AAPL", "2026-08-20", 100.0)
-    queries.record_shadow_outcome(cfg.db_path, oid, "1w", "2026-08-27",
-                                  110.0, 10.0, 500.0, 1.0)
+    queries.record_shadow_outcome(
+        cfg.db_path, oid, "1w", "2026-08-27",
+        outcomes.Mark(110.0, 100.0, 1.0, 1.0, 10.0),
+        outcomes.Mark(500.0, 495.0, 1.0, 1.0, 1.0))
     # cutoff 2026-08-21 WOULD match on date; the recorded mark is what excludes it
     assert queries.pending_shadow_marks(cfg.db_path, "1w", "2026-08-21") == []
 
@@ -104,10 +125,14 @@ def test_recording_the_same_horizon_twice_keeps_the_first_write(tmp_path):
     """
     cfg = _config(tmp_path)
     oid = _observe(cfg, "AAPL", "2026-08-20", 100.0)
-    queries.record_shadow_outcome(cfg.db_path, oid, "1w", "2026-08-27",
-                                  110.0, 10.0, 500.0, 1.0)
-    queries.record_shadow_outcome(cfg.db_path, oid, "1w", "2026-08-27",
-                                  111.0, 11.0, 500.0, 1.0)
+    queries.record_shadow_outcome(
+        cfg.db_path, oid, "1w", "2026-08-27",
+        outcomes.Mark(110.0, 100.0, 1.0, 1.0, 10.0),
+        outcomes.Mark(500.0, 495.0, 1.0, 1.0, 1.0))
+    queries.record_shadow_outcome(
+        cfg.db_path, oid, "1w", "2026-08-27",
+        outcomes.Mark(111.0, 100.0, 1.0, 1.0, 11.0),
+        outcomes.Mark(500.0, 495.0, 1.0, 1.0, 1.0))
     conn = sqlite3.connect(cfg.db_path)
     conn.row_factory = sqlite3.Row
     rows = conn.execute("SELECT * FROM shadow_outcomes").fetchall()
@@ -126,10 +151,9 @@ async def test_a_mark_carries_both_the_ticker_and_the_benchmark_over_one_window(
     exit at the horizon date."""
     cfg = _config(tmp_path)
     _observe(cfg, "AAPL", "2026-08-20", 100.0)
-    monkeypatch.setattr(outcomes, "_close_on_or_before", _fake_closes({
-        ("AAPL", "2026-08-27"): 110.0,
-        ("SPY", "2026-08-20"): 500.0,
-        ("SPY", "2026-08-27"): 505.0,
+    monkeypatch.setattr(outcomes, "_fetch_window", _fake_windows({
+        "AAPL": _window([("2026-08-20", 100.0), ("2026-08-27", 110.0)]),
+        "SPY": _window([("2026-08-20", 500.0), ("2026-08-27", 505.0)]),
     }))
 
     n = await outcomes.mark_due_outcomes(
@@ -149,26 +173,25 @@ async def test_a_mark_carries_both_the_ticker_and_the_benchmark_over_one_window(
 @pytest.mark.asyncio
 async def test_the_benchmark_is_fetched_once_per_date_not_once_per_ticker(
         tmp_path, monkeypatch):
-    """Every observation on a session date shares one SPY entry and one SPY
-    exit. Fetching them inside the per-row loop multiplies the network cost of
-    a scan by the size of the universe for no additional information."""
+    """Every observation on a session date shares ONE SPY window -- entry and
+    exit now come from the same fetch. Fetching inside the per-row loop
+    multiplies the network cost of a scan by the size of the universe for no
+    additional information."""
     cfg = _config(tmp_path)
     for ticker in ("AAPL", "MSFT", "XOM"):
         _observe(cfg, ticker, "2026-08-20", 100.0)
     calls = []
-    monkeypatch.setattr(outcomes, "_close_on_or_before", _fake_closes({
-        ("AAPL", "2026-08-27"): 110.0,
-        ("MSFT", "2026-08-27"): 120.0,
-        ("XOM", "2026-08-27"): 90.0,
-        ("SPY", "2026-08-20"): 500.0,
-        ("SPY", "2026-08-27"): 505.0,
+    monkeypatch.setattr(outcomes, "_fetch_window", _fake_windows({
+        "AAPL": _window([("2026-08-20", 100.0), ("2026-08-27", 110.0)]),
+        "MSFT": _window([("2026-08-20", 100.0), ("2026-08-27", 120.0)]),
+        "XOM": _window([("2026-08-20", 100.0), ("2026-08-27", 90.0)]),
+        "SPY": _window([("2026-08-20", 500.0), ("2026-08-27", 505.0)]),
     }, calls=calls))
 
     await outcomes.mark_due_outcomes(
         cfg, instant=datetime(2026, 8, 28, tzinfo=timezone.utc))
 
-    assert calls.count(("SPY", "2026-08-20")) == 1
-    assert calls.count(("SPY", "2026-08-27")) == 1
+    assert len([c for c in calls if c[0] == "SPY"]) == 1
     assert len(_outcome_rows(cfg)) == 3
 
 
@@ -183,10 +206,9 @@ async def test_an_unavailable_price_leaves_the_horizon_pending(tmp_path, monkeyp
     """
     cfg = _config(tmp_path)
     _observe(cfg, "AAPL", "2026-08-20", 100.0)
-    monkeypatch.setattr(outcomes, "_close_on_or_before", _fake_closes({
-        ("SPY", "2026-08-20"): 500.0,
-        ("SPY", "2026-08-27"): 505.0,
-    }))  # AAPL absent -> None
+    monkeypatch.setattr(outcomes, "_fetch_window", _fake_windows({
+        "SPY": _window([("2026-08-20", 500.0), ("2026-08-27", 505.0)]),
+    }))  # AAPL absent -> an empty window -> no exit close
 
     n = await outcomes.mark_due_outcomes(
         cfg, instant=datetime(2026, 8, 28, tzinfo=timezone.utc))
@@ -205,18 +227,17 @@ async def test_one_failing_ticker_does_not_stop_the_others(tmp_path, monkeypatch
     _observe(cfg, "DEAD", "2026-08-20", 100.0)
     _observe(cfg, "AAPL", "2026-08-20", 100.0)
 
-    prices = {
-        ("AAPL", "2026-08-27"): 110.0,
-        ("SPY", "2026-08-20"): 500.0,
-        ("SPY", "2026-08-27"): 505.0,
+    windows = {
+        "AAPL": _window([("2026-08-20", 100.0), ("2026-08-27", 110.0)]),
+        "SPY": _window([("2026-08-20", 500.0), ("2026-08-27", 505.0)]),
     }
 
-    def _close(ticker, as_of):
+    def _fetch(ticker, start, end):
         if ticker == "DEAD":
             raise RuntimeError("delisted")
-        return prices.get((ticker, as_of))
+        return windows[ticker]
 
-    monkeypatch.setattr(outcomes, "_close_on_or_before", _close)
+    monkeypatch.setattr(outcomes, "_fetch_window", _fetch)
 
     n = await outcomes.mark_due_outcomes(
         cfg, instant=datetime(2026, 8, 28, tzinfo=timezone.utc))
@@ -234,7 +255,7 @@ async def test_a_price_fetch_failure_does_not_raise(tmp_path, monkeypatch):
     def _boom(*a, **kw):
         raise RuntimeError("yfinance down")
 
-    monkeypatch.setattr(outcomes, "_close_on_or_before", _boom)
+    monkeypatch.setattr(outcomes, "_fetch_window", _boom)
     n = await outcomes.mark_due_outcomes(
         cfg, instant=datetime(2026, 9, 30, tzinfo=timezone.utc))
     assert n == 0  # nothing marked, nothing raised
@@ -311,8 +332,10 @@ async def test_marking_stops_at_the_cap_and_the_rest_stay_due(tmp_path, monkeypa
     for i in range(6):
         _observe(cfg, f"T{i}", "2026-08-20", 100.0)
     monkeypatch.setattr(outcomes, "MAX_MARKS_PER_RUN", 3)
-    monkeypatch.setattr(outcomes, "_close_on_or_before",
-                        lambda ticker, as_of: 110.0)
+    monkeypatch.setattr(
+        outcomes, "_fetch_window",
+        lambda ticker, start, end: _window(
+            [("2026-08-20", 100.0), ("2026-08-27", 110.0)]))
 
     n = await outcomes.mark_due_outcomes(
         cfg, instant=datetime(2026, 8, 28, tzinfo=timezone.utc))
