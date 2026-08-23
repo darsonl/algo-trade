@@ -123,6 +123,18 @@ python main.py
 
   **Measured 2026-08-21** against the real API through the app's own OpenAI-compat path and parser: `gemini-2.5-flash` **9/9** clean, `gemini-3.1-flash-lite` **9/9** clean, and **`gemma-4-31b-it` 0/3 — it echoes the prompt template (`<BUY|HOLD|SKIP>`) and leaks `<thought>` blocks on every call**. Gemma was the configured fallback for four months and could never have helped; the parse-error fallback added in June 2026 was working around exactly this. Do not put a Gemma model back on this path.
 
+  **The chain order is a COST FILTER, and that is why an unreliable tier stays in it.** Measured across two sessions (2026-08-22 and 2026-08-23), through the app's own client and parser:
+
+  | tier | model | parsed | RPD | provider | billing |
+  |---|---|---|---|---|---|
+  | primary | `gemini-3.1-flash-lite` | 15/15 | 500 | Google | free |
+  | fallback | `gemini-3.7-flash` | **12/18 (67%)** | 20 | Google | free |
+  | fallback2 | `deepseek-v4-flash` | **18/18** | — | DeepSeek | **paid** |
+
+  On parse rate alone the obvious move is to promote deepseek — it is perfect so far AND a different *provider*, so a Google-side outage would stop taking out two tiers at once. **That was proposed on 2026-08-23 and DECIDED AGAINST, deliberately: deepseek costs money.** A free model that parses two times in three, sitting in front of a paid one, absorbs ~67% of fallback traffic for nothing and passes only the residue to the billed tier. The wasted call and ~12s of latency on the other third is the price of that.
+
+  So **do not apply the Gemma precedent mechanically here.** Gemma scored 0/3 and contributed nothing but latency; 3.7-flash contributes two thirds of a tier at zero marginal cost. The rule "a model that cannot parse contributes nothing to the chain" assumes every tier costs the same, and on this chain they do not. Revisit only if the parse rate falls far enough that the latency outweighs the calls saved, or if deepseek stops being the paid tier.
+
   **`gemini-3.7-flash` scored 2/6 HTTP 503 in that probe and it was misread as instability.** The AI Studio dashboard showed the model's **daily quota exhausted** — and the probing itself is what exhausted it. Two things follow. First, **this free tier reports per-model exhaustion as 503, not 429**, at least for this model: `_should_retry` only short-circuits on a `QuotaFailure` detail in the body, so an exhausted model burns all three `@_retry` attempts before the fallback engages. Second, **never diagnose a model from raw error codes without checking the dashboard** — the numbers looked like flakiness and were a spent budget.
 
   `gemini-3.7-flash` is the primary as of 2026-08-21 but is **unverified in that role**: it could not be tested at the time of the switch because its quota was gone. Re-run the probe after a reset (00:00 PT) before trusting it.
