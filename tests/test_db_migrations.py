@@ -266,3 +266,73 @@ def test_the_upgrade_preserves_existing_marks():
     assert row["benchmark_return_pct"] == 1.0
     assert row["split_factor"] is None
     assert row["adjusted_entry_price"] is None
+
+
+# The shadow_observations table before the gate that judged a candidate was
+# recorded alongside the candidate.
+_LEGACY_SHADOW_OBSERVATIONS = """
+CREATE TABLE shadow_observations (
+    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_date           TEXT NOT NULL,
+    observed_at            TEXT NOT NULL,
+    ticker                 TEXT NOT NULL,
+    scan_kind              TEXT NOT NULL,
+    stage_reached          TEXT NOT NULL,
+    outcome                TEXT NOT NULL,
+    reject_reason          TEXT,
+    fundamentals_json      TEXT,
+    technicals_json        TEXT,
+    headlines_json         TEXT,
+    macro_json             TEXT,
+    analyst_provider       TEXT,
+    analyst_model          TEXT,
+    analyst_signal         TEXT,
+    analyst_confidence     TEXT,
+    analyst_prompt_sha256  TEXT,
+    analyst_raw_response   TEXT,
+    cache_hit              INTEGER NOT NULL DEFAULT 0,
+    recommendation_id      INTEGER,
+    reference_price        REAL,
+    reference_price_source TEXT,
+    human_action           TEXT,
+    human_action_at        TEXT
+);
+"""
+
+
+def _legacy_db_with_one_observation():
+    conn = sqlite3.connect(DB_PATH)
+    conn.executescript(_LEGACY_SHADOW_OBSERVATIONS)
+    conn.execute(
+        """INSERT INTO shadow_observations (session_date, observed_at, ticker,
+               scan_kind, stage_reached, outcome, reference_price)
+           VALUES ('2026-08-20', '2026-08-20T13:45:00Z', 'AAPL', 'stock',
+                   'fundamental', 'rejected_fundamental', 100.0)"""
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_gate_config_column_is_added_to_an_existing_observations_table():
+    _legacy_db_with_one_observation()
+    assert "gate_config_json" not in _columns("shadow_observations")
+
+    initialize_db(DB_PATH)
+
+    assert "gate_config_json" in _columns("shadow_observations")
+
+
+def test_the_upgrade_leaves_pre_existing_observations_ungated():
+    """NULL, not '{}'. A row recorded before the gate was captured was judged by
+    thresholds nobody wrote down, and '{}' would assert the opposite -- that it
+    was judged by no thresholds at all."""
+    _legacy_db_with_one_observation()
+
+    initialize_db(DB_PATH)
+
+    with closing(sqlite3.connect(DB_PATH)) as conn:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("SELECT * FROM shadow_observations").fetchone()
+    assert row["ticker"] == "AAPL"
+    assert row["reference_price"] == 100.0
+    assert row["gate_config_json"] is None

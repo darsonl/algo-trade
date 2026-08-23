@@ -66,6 +66,7 @@ class ShadowObservation:
     recommendation_id: int | None = None
     reference_price: float | None = None
     reference_price_source: str | None = None
+    gate_config_json: str | None = None
 
 
 def _dumps(payload) -> str | None:
@@ -99,6 +100,7 @@ def build_observation(
     recommendation_id: int | None = None,
     reference_price: float | None = None,
     reference_price_source: str | None = None,
+    gates: tuple = (),
 ) -> ShadowObservation:
     """Assemble one observation, validating the funnel position.
 
@@ -112,6 +114,18 @@ def build_observation(
         raise ValueError(f"unknown outcome {outcome!r}; expected one of {OUTCOMES}")
 
     analysis = analysis or {}
+    # EVERY gate applied to this candidate, merged -- not just the one that
+    # decided the outcome. A row that reached the analyst was let through by
+    # the fundamental gate, and "did a threshold change alter who reached the
+    # analyst?" is unanswerable if only the last gate is recorded.
+    thresholds: dict = {}
+    for g in gates:
+        thresholds.update(g.thresholds)
+    # An explicit `reject_reason` wins. Not every rejection comes from a gate --
+    # quota exhaustion and an analyst SKIP both name their own reason -- and a
+    # gate that overwrote one would relabel a rejection it did not make.
+    if reject_reason is None:
+        reject_reason = next((g.failed_on for g in gates if g.failed_on), None)
     return ShadowObservation(
         session_date=session_date,
         observed_at=observed_at,
@@ -134,6 +148,7 @@ def build_observation(
         recommendation_id=recommendation_id,
         reference_price=reference_price,
         reference_price_source=reference_price_source,
+        gate_config_json=_dumps(thresholds) if gates else None,
     )
 
 

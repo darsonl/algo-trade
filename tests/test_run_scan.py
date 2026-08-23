@@ -3,6 +3,7 @@ from contextlib import contextmanager, ExitStack
 from unittest.mock import AsyncMock, MagicMock, patch
 from config import Config
 from main import run_scan, run_scan_etf
+from screener.fundamentals import Verdict
 
 
 def _make_bot():
@@ -49,7 +50,12 @@ def _full_patch(
         patch("main.create_analyst_client", return_value=MagicMock()),
         patch("main.fetch_macro_context", return_value={"spy_trend_1m": "Bullish (+1.0%)", "spy_trend_1y": "Bearish (-8.5%)", "vix_level": "18.0 (Low volatility)"}),
         patch("main.fetch_fundamental_info", return_value=fund_info),
-        patch("main.passes_fundamental_filter", return_value=fundamental_pass),
+        # The scan calls the VERDICT function now, not the bool. Swapped IN
+        # PLACE rather than appended: the mock indices below are positional.
+        patch("main.evaluate_fundamentals",
+              return_value=Verdict(fundamental_pass,
+                                   None if fundamental_pass else "pe_above_max",
+                                   {"max_pe_ratio": 35.0})),
         patch("main.fetch_news_headlines", return_value=["headline A"]),
         patch("main.queries.get_cached_analysis", return_value=None),
         patch("main.queries.get_analyst_call_count_today", return_value=0),
@@ -68,6 +74,13 @@ def _full_patch(
         # The active-recommendation guard in front of idx_active_rec_per_ticker.
         # Also appended last, for the same index-stability reason.
         patch("main.queries.has_active_recommendation", return_value=False),
+        # `passes_technical_filter` above stays patched because `should_recommend`
+        # still calls it; the scan ALSO evaluates the verdict for gate provenance.
+        # Appended last, for the same index-stability reason.
+        patch("main.evaluate_technicals",
+              return_value=Verdict(technical_pass,
+                                   None if technical_pass else "rsi_above_max",
+                                   {"max_rsi": 70.0})),
     ]
 
     with ExitStack() as stack:
@@ -231,7 +244,8 @@ async def test_run_scan_excludes_etfs_from_stock_universe():
         patch("main.create_fallback_client", return_value=None),
         patch("main.fetch_macro_context", return_value={"spy_trend_1m": "Bullish (+1.0%)", "spy_trend_1y": "Bearish (-8.5%)", "vix_level": "18.0 (Low volatility)"}),
         patch("main.fetch_fundamental_info", return_value=fund_info),
-        patch("main.passes_fundamental_filter", return_value=True),
+        patch("main.evaluate_fundamentals",
+              return_value=Verdict(True, None, {"max_pe_ratio": 35.0})),
         patch("main.fetch_news_headlines", return_value=["headline A"]),
         patch("main.queries.get_cached_analysis", return_value=None),
         patch("main.queries.get_analyst_call_count_today", return_value=0),
@@ -244,6 +258,8 @@ async def test_run_scan_excludes_etfs_from_stock_universe():
         patch("main.queries.set_discord_message_id"),
         # Appended last: this list is consumed by positional index too.
         patch("main.queries.has_active_recommendation", return_value=False),
+        patch("main.evaluate_technicals",
+              return_value=Verdict(True, None, {"max_rsi": 70.0})),
     ]
 
     with ExitStack() as stack:

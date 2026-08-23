@@ -1,7 +1,7 @@
 import pytest
 import pandas as pd
 from unittest.mock import MagicMock, PropertyMock
-from screener.fundamentals import passes_fundamental_filter, fetch_eps_data, normalize_dividend_yield
+from screener.fundamentals import evaluate_fundamentals, fetch_eps_data, normalize_dividend_yield
 from config import Config
 
 
@@ -24,47 +24,47 @@ def make_info(pe=15.0, div_yield=3.0, earnings_growth=0.10):
 
 
 def test_passes_when_all_criteria_met(cfg):
-    assert passes_fundamental_filter(make_info(), cfg) is True
+    assert evaluate_fundamentals(make_info(), cfg).passed is True
 
 
 def test_fails_when_pe_too_high(cfg):
-    assert passes_fundamental_filter(make_info(pe=30.0), cfg) is False
+    assert evaluate_fundamentals(make_info(pe=30.0), cfg).passed is False
 
 
 def test_fails_when_dividend_yield_too_low(cfg):
     # 0.5 percent — sub-1% values must be read as percent, not as a 50% fraction
-    assert passes_fundamental_filter(make_info(div_yield=0.5), cfg) is False
+    assert evaluate_fundamentals(make_info(div_yield=0.5), cfg).passed is False
 
 
 def test_fails_when_earnings_growth_too_low(cfg):
-    assert passes_fundamental_filter(make_info(earnings_growth=0.02), cfg) is False
+    assert evaluate_fundamentals(make_info(earnings_growth=0.02), cfg).passed is False
 
 
 def test_fails_when_pe_is_none(cfg):
     info = make_info()
     info["trailingPE"] = None
-    assert passes_fundamental_filter(info, cfg) is False
+    assert evaluate_fundamentals(info, cfg).passed is False
 
 
 def test_passes_when_dividend_yield_is_none(cfg):
     # dividendYield=None skips the yield check — non-dividend payers are allowed
     info = make_info()
     info["dividendYield"] = None
-    assert passes_fundamental_filter(info, cfg) is True
+    assert evaluate_fundamentals(info, cfg).passed is True
 
 
 def test_passes_when_earnings_growth_is_none(cfg):
     # earningsGrowth=None skips the growth check — analyst decides instead
     info = make_info()
     info["earningsGrowth"] = None
-    assert passes_fundamental_filter(info, cfg) is True
+    assert evaluate_fundamentals(info, cfg).passed is True
 
 
 def test_passes_at_exact_boundary(cfg):
     # Exactly at limits should pass (2.0 percent == min_dividend_yield 0.02 fraction)
-    assert passes_fundamental_filter(
+    assert evaluate_fundamentals(
         make_info(pe=25.0, div_yield=2.0, earnings_growth=0.05), cfg
-    ) is True
+    ).passed is True
 
 
 # ---------------------------------------------------------------------------
