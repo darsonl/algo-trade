@@ -1014,8 +1014,8 @@ def record_shadow_observation(db_path: str, obs) -> int:
                     headlines_json, macro_json, analyst_provider, analyst_model,
                     analyst_signal, analyst_confidence, analyst_prompt_sha256,
                     analyst_raw_response, cache_hit, recommendation_id,
-                    reference_price, reference_price_source)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    reference_price, reference_price_source, gate_config_json)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (obs.session_date, obs.observed_at, obs.ticker, obs.scan_kind,
              obs.stage_reached, obs.outcome, obs.reject_reason,
              obs.fundamentals_json, obs.technicals_json, obs.headlines_json,
@@ -1023,7 +1023,7 @@ def record_shadow_observation(db_path: str, obs) -> int:
              obs.analyst_signal, obs.analyst_confidence,
              obs.analyst_prompt_sha256, obs.analyst_raw_response,
              obs.cache_hit, obs.recommendation_id, obs.reference_price,
-             obs.reference_price_source),
+             obs.reference_price_source, obs.gate_config_json),
         )
         return cursor.lastrowid
 

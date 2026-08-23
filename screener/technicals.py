@@ -1,6 +1,7 @@
 import yfinance as yf
 import pandas as pd
 from config import Config
+from screener.fundamentals import Verdict
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 _retry = retry(
@@ -65,13 +66,25 @@ def compute_macd(
     return float(macd_line.iloc[-1]), float(signal_line.iloc[-1]), float(histogram.iloc[-1])
 
 
-def passes_technical_filter(ticker_data: dict, config: Config) -> bool:
-    """
-    Return True only if all three technical criteria are met: RSI <= config.max_rsi,
-    price >= ma50, and volume >= avg_volume * config.min_volume_ratio.
+def evaluate_technicals(ticker_data: dict, config: Config) -> Verdict:
+    """The technical gate, with its reasoning exposed. See `Verdict`.
 
-    Expects keys: 'rsi', 'price', 'ma50', 'volume', 'avg_volume'. Returns False if any value is None.
+    Short-circuits like the fundamental gate, so the FIRST failing criterion is
+    the one recorded.
+
+    NOTE the asymmetry: `price >= ma50` has no configurable threshold, so
+    `thresholds` cannot describe it. That rule can still change -- in the code
+    rather than in config -- which is one reason `failed_on` is recorded
+    independently of the threshold set rather than derived from it.
     """
+    thresholds = {
+        "max_rsi": config.max_rsi,
+        "min_volume_ratio": config.min_volume_ratio,
+    }
+
+    def _fail(criterion):
+        return Verdict(False, criterion, thresholds)
+
     rsi = ticker_data.get("rsi")
     price = ticker_data.get("price")
     ma50 = ticker_data.get("ma50")
@@ -79,16 +92,24 @@ def passes_technical_filter(ticker_data: dict, config: Config) -> bool:
     avg_volume = ticker_data.get("avg_volume")
 
     if any(v is None for v in (rsi, price, ma50, volume, avg_volume)):
-        return False
-
+        return _fail("data_missing")
     if rsi > config.max_rsi:
-        return False
+        return _fail("rsi_above_max")
     if price < ma50:
-        return False
+        return _fail("price_below_ma50")
     if volume < avg_volume * config.min_volume_ratio:
-        return False
+        return _fail("volume_below_min_ratio")
+    return Verdict(True, None, thresholds)
 
-    return True
+
+def passes_technical_filter(ticker_data: dict, config: Config) -> bool:
+    """
+    Return True only if all three technical criteria are met: RSI <= config.max_rsi,
+    price >= ma50, and volume >= avg_volume * config.min_volume_ratio.
+
+    Expects keys: 'rsi', 'price', 'ma50', 'volume', 'avg_volume'. Returns False if any value is None.
+    """
+    return evaluate_technicals(ticker_data, config).passed
 
 
 @_retry

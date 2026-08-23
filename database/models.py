@@ -162,6 +162,7 @@ def _create_shadow_tables(conn) -> None:
                recommendation_id     INTEGER,
                reference_price       REAL,
                reference_price_source TEXT,
+               gate_config_json      TEXT,
                human_action          TEXT,
                human_action_at       TEXT
            )"""
@@ -173,6 +174,17 @@ def _create_shadow_tables(conn) -> None:
     try:
         conn.execute(
             "ALTER TABLE shadow_observations ADD COLUMN reference_price_source TEXT"
+        )
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    # Added later still: the thresholds a candidate was actually judged against.
+    # Config lives in `.env` and never reached the database, so a threshold
+    # moved mid-sample silently redefined what `rejected_fundamental` denotes.
+    # Left NULL on existing rows rather than '{}' -- those rows WERE gated, by
+    # settings nobody recorded, and '{}' would assert they were gated by none.
+    try:
+        conn.execute(
+            "ALTER TABLE shadow_observations ADD COLUMN gate_config_json TEXT"
         )
     except sqlite3.OperationalError:
         pass  # Column already exists

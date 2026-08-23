@@ -1,5 +1,6 @@
 import logging
 import math
+from typing import NamedTuple
 
 import pandas as pd
 import yfinance as yf
@@ -28,34 +29,56 @@ def normalize_dividend_yield(raw: float | None) -> float | None:
     return raw / 100
 
 
-def passes_fundamental_filter(info: dict, config: Config) -> bool:
-    """
-    Return True only if all available fundamental criteria are met.
+class Verdict(NamedTuple):
+    """One gate's decision, the criterion that produced it, and its settings.
 
-    Expects keys: 'trailingPE', 'dividendYield', 'earningsGrowth'
-    (matching yfinance Ticker.info keys).
-    ETFs are handled by the separate ETF scan pipeline and should not reach this filter.
+    The thresholds travel WITH the decision rather than being looked up later,
+    because config lives in `.env` and never reaches the database -- a
+    threshold moved mid-sample would otherwise redefine a cohort silently.
 
-    Missing-data policy:
-    - trailingPE: required — reject if absent (valuation is non-negotiable).
-    - dividendYield: optional — skip yield check if absent; non-dividend payers allowed.
-    - earningsGrowth: optional — skip growth check if absent; let the analyst judge.
+    `failed_on` is not redundant with `thresholds`: recomputing which criterion
+    failed from the stored inputs only reproduces it while the gate's LOGIC is
+    unchanged, not merely its parameters.
     """
+    passed: bool
+    failed_on: str | None
+    thresholds: dict
+
+
+def evaluate_fundamentals(info: dict, config: Config) -> Verdict:
+    """The fundamental gate, with its reasoning exposed.
+
+    Short-circuits, so a candidate failing several criteria is recorded against
+    the FIRST -- reporting a later one would misattribute the rejection, and
+    reporting all of them would imply the gate evaluated all of them.
+
+    Missing-data policy is unchanged:
+    - trailingPE: required -- reject if absent (valuation is non-negotiable).
+    - dividendYield: optional -- skip if absent; non-dividend payers allowed.
+    - earningsGrowth: optional -- skip if absent; let the analyst judge.
+    """
+    thresholds = {
+        "max_pe_ratio": config.max_pe_ratio,
+        "min_dividend_yield": config.min_dividend_yield,
+        "min_earnings_growth": config.min_earnings_growth,
+    }
+
+    def _fail(criterion):
+        return Verdict(False, criterion, thresholds)
+
     pe = info.get("trailingPE")
     div_yield = normalize_dividend_yield(info.get("dividendYield"))
     earnings_growth = info.get("earningsGrowth")
 
     if pe is None:
-        return False
-
+        return _fail("pe_missing")
     if pe > config.max_pe_ratio:
-        return False
+        return _fail("pe_above_max")
     if div_yield is not None and div_yield < config.min_dividend_yield:
-        return False
+        return _fail("yield_below_min")
     if earnings_growth is not None and earnings_growth < config.min_earnings_growth:
-        return False
-
-    return True
+        return _fail("growth_below_min")
+    return Verdict(True, None, thresholds)
 
 
 @_retry

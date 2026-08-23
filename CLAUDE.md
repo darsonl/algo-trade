@@ -228,6 +228,22 @@ python main.py
 
   Correctness is pinned by an **oracle** rather than a restatement of the arithmetic — the correction reproduces yfinance's *own* adjusted-close return to 9e-7 pp on live NVDA data, two independent routes to one number.
 
+- **A cohort is only a cohort if its members were judged by the same rule**: `evaluate_fundamentals` / `evaluate_technicals` return a `Verdict(passed, failed_on, thresholds)` instead of a bool, and every observation records `gate_config_json` plus the specific `reject_reason`.
+
+  Two different things were missing, and neither is recoverable after the fact. **Which thresholds applied** — config lives in `.env` and never reached the database, so a threshold moved mid-sample silently redefines what `rejected_fundamental` denotes. **Which criterion failed** — `reject_reason` existed and was NULL on every row.
+
+  They are **not redundant with each other**. Recomputing the reason from the stored inputs only reproduces it while the gate's *logic* is unchanged, not merely its parameters — and `price >= ma50` has no configurable threshold at all, so `thresholds` cannot describe that rule even in principle.
+
+  **`gate_config_json` accumulates EVERY gate applied to the candidate, not just the deciding one.** A row that reached the analyst was *let through* by the fundamental gate, and "did a threshold change alter who reached the analyst?" is unanswerable if only the last gate is stored. `stage_reached` already says which gates ran, so nothing is ambiguous. Recording it on rejects only would make gate provenance correlate with outcome — the same selection effect the screen-price rule removes from `reference_price`.
+
+  **An explicit `reject_reason` wins over a gate's.** Quota exhaustion and an analyst SKIP both name their own reason, and a gate that overwrote one would relabel a rejection it did not make. On `rejected_signal` the technical verdict is recorded with `failed_on` cleared for exactly this reason: the analyst refused, not the gate.
+
+  Pre-existing rows keep `gate_config_json` **NULL**, never `'{}'` — those rows *were* gated, by settings nobody wrote down, and `'{}'` would assert they were gated by nothing.
+
+  **What this does NOT buy: re-running history.** The full `.info` and indicator sets are already stored, so "would this have passed threshold set X" was always recomputable. What no record can undo is the pipeline branch — a candidate rejected at the fundamental gate never got an analyst call, so re-grading it later still yields no signal.
+
+  `passes_fundamental_filter` was **deleted** once the scan stopped calling it; a bool wrapper alive only through its test references is a function with no production caller. `passes_technical_filter` survives because `should_recommend` calls it, and delegates to `evaluate_technicals(...).passed` so the rules exist once.
+
 - **Marking is bounded, because it runs in front of a market-timed scan**: `mark_due_outcomes` is serial with a 10s yfinance timeout per fetch and sits before the universe is built, so `MAX_MARKS_PER_RUN` / `MARKING_TIME_BUDGET_S` plus `ORDER BY`/`LIMIT` cap the delay. Skipped rows stay due, so a bound costs a delay, never a mark. `pending_shadow_marks` requires `reference_price > 0`, not `IS NOT NULL`: zero makes a row eligible while guaranteeing `compute_return` returns None — a fetch per horizon and four permanently unusable marks. That predicate IS the eligibility invariant, so it belongs in the query rather than in whatever wrote the price.
 
 - **Position reconciliation (report-only)**: `run_reconciliation()` in `main.py` compares DB open positions against the Schwab account (RISK-05: positions are recorded on order acknowledgement, not fill). Runs before each scan's sell pass and via `/reconcile`. It NEVER mutates positions — discrepancies (phantom / untracked / mismatched) are posted as ops alerts for human correction. Skipped entirely in dry run (simulated positions have no broker counterpart). Tests that call `run_scan` must set `config.dry_run = True` (or patch `main.get_positions`) so the suite never touches the live Schwab API.
@@ -258,7 +274,7 @@ MAX_POSITION_SIZE_USD=500
 
 **`analyst_calls`**: PRIMARY KEY (date, provider, **model**), count — daily quota per model, matching how Google meters. Legacy rows migrated to `model=''` rather than dropped (those calls were really made) or attributed to a current model (they never consumed its budget)
 
-**`shadow_observations`**: every candidate a scan saw, including rejects — `reference_price` is the screen price from `.info` (see above) and `reference_price_source` its provenance; **`shadow_outcomes`**: forward marks per `(observation_id, horizon)`, each carrying the correction that produced it (`adjusted_entry_price`, `split_factor`, `dividend_factor`; NULL on rows predating corrections)
+**`shadow_observations`**: every candidate a scan saw, including rejects — `reference_price` is the screen price from `.info` (see above), `reference_price_source` its provenance, and `gate_config_json` the thresholds of every gate applied (NULL on rows predating it) with `reject_reason` naming the specific criterion that failed; **`shadow_outcomes`**: forward marks per `(observation_id, horizon)`, each carrying the correction that produced it (`adjusted_entry_price`, `split_factor`, `dividend_factor`; NULL on rows predating corrections)
 
 **`orders`**: the durable order ledger — status, broker_order_id, filled_shares/notional, `fills_observed`, `predecessor_order_id`, `reserved_notional_override`, `intended_session_date` (the session the broker will actually run it in — what the daily ceiling buckets on; backfilled for pre-existing rows, since a NULL would be invisible to the ceiling and fail open)
 
@@ -292,8 +308,9 @@ Pre-flight helper: `.venv/Scripts/python.exe scripts/check_ops_ids.py` reports t
 
 ### Test Suite
 
-1258 tests as of 2026-08-23. Run with `.venv/Scripts/python.exe -m pytest -q` (~25s). Key test files:
+1282 tests as of 2026-08-23. Run with `.venv/Scripts/python.exe -m pytest -q` (~25s). Key test files:
 - `test_order_status_sweep.py` / `test_order_status_mapping.py` / `test_active_rec_index.py` — step 11: chain-following, the sweep, the trustworthy-fill rule, and the index that cannot ship before its release valve (48 tests)
+- `test_gate_provenance.py` — the gate that judged a candidate and what it was set to: first-failing-criterion, every-gate-not-just-the-decider, and an explicit reason surviving a gate's (23 tests, no mocks)
 - `test_total_return_marks.py` — the split and dividend corrections: window half-open at the entry end, unpriceable dividends leave the mark pending, and the live-yfinance oracle (38 tests, no network, no mocks)
 - `test_scan_lock.py` — one scan at a time: the shared lock, the per-loop binding trap, and the two slash commands (10 tests)
 - `test_per_model_quota.py` — quota metered per model, and the `analyst_calls` rebuild against a PRE-EXISTING table (8 tests)
