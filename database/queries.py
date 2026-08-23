@@ -1014,15 +1014,16 @@ def record_shadow_observation(db_path: str, obs) -> int:
                     headlines_json, macro_json, analyst_provider, analyst_model,
                     analyst_signal, analyst_confidence, analyst_prompt_sha256,
                     analyst_raw_response, cache_hit, recommendation_id,
-                    reference_price)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    reference_price, reference_price_source)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (obs.session_date, obs.observed_at, obs.ticker, obs.scan_kind,
              obs.stage_reached, obs.outcome, obs.reject_reason,
              obs.fundamentals_json, obs.technicals_json, obs.headlines_json,
              obs.macro_json, obs.analyst_provider, obs.analyst_model,
              obs.analyst_signal, obs.analyst_confidence,
              obs.analyst_prompt_sha256, obs.analyst_raw_response,
-             obs.cache_hit, obs.recommendation_id, obs.reference_price),
+             obs.cache_hit, obs.recommendation_id, obs.reference_price,
+             obs.reference_price_source),
         )
         return cursor.lastrowid
 
@@ -1040,28 +1041,37 @@ def set_shadow_human_action(db_path: str, recommendation_id: int,
 
 
 def pending_shadow_marks(db_path: str, horizon: str,
-                         cutoff_session_date: str) -> list:
+                         cutoff_session_date: str, limit: int | None = None) -> list:
     """Observations whose `horizon` has matured and is not yet recorded.
 
     The cutoff is passed in rather than computed here so the caller owns the
     clock, matching every other time-dependent query in this module.
 
-    `reference_price IS NOT NULL` is doing more work than it looks like: only
-    the four post-technical call sites in the scan loops record a price, so this
-    silently means "reached the technical stage". Candidates rejected at the
-    fundamental gate can never be marked -- a bound on what the funnel can
-    answer, not an oversight here.
+    `reference_price > 0` rather than `IS NOT NULL`: a zero or negative entry
+    price makes an observation ELIGIBLE while guaranteeing `compute_return`
+    returns None, so it would spend a fetch per horizon and leave four
+    permanently unusable marks. The predicate is the eligibility invariant, so
+    it belongs here rather than only in whatever wrote the price. (SQL
+    comparison with NULL is NULL, so this still excludes unpriced rows.)
+
+    ORDER BY + LIMIT exist because the caller runs BEFORE the universe is built
+    on a market-timed scan. Ordering is oldest-first so a backlog drains in a
+    deterministic, fair order rather than whatever the planner returns, and the
+    limit lets the caller bound a catch-up run. Rows not returned stay due, so
+    truncation costs a delay, never a mark.
     """
     with get_cursor(db_path) as conn:
         return conn.execute(
             """SELECT o.id, o.ticker, o.session_date, o.reference_price
                  FROM shadow_observations o
                 WHERE o.session_date <= ?
-                  AND o.reference_price IS NOT NULL
+                  AND o.reference_price > 0
                   AND NOT EXISTS (SELECT 1 FROM shadow_outcomes s
                                    WHERE s.observation_id = o.id
-                                     AND s.horizon = ?)""",
-            (cutoff_session_date, horizon),
+                                     AND s.horizon = ?)
+                ORDER BY o.session_date, o.id
+                LIMIT ?""",
+            (cutoff_session_date, horizon, -1 if limit is None else limit),
         ).fetchall()
 
 

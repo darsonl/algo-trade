@@ -246,3 +246,78 @@ async def test_a_broken_database_does_not_raise(tmp_path):
     cfg = _config(tmp_path)
     cfg.db_path = str(tmp_path / "nonexistent" / "s.db")
     assert await outcomes.mark_due_outcomes(cfg) == 0
+
+
+# --- eligibility invariant: a price must be usable, not merely present ---
+
+def test_a_zero_reference_price_is_never_eligible(tmp_path):
+    """Zero satisfies IS NOT NULL but guarantees compute_return returns None.
+
+    Eligible-but-unusable is the worst of both: it spends a fetch per horizon
+    and leaves four permanently unusable marks. The predicate is the
+    eligibility invariant, so it is enforced here rather than trusting whatever
+    wrote the price.
+    """
+    cfg = _config(tmp_path)
+    _observe(cfg, "AAPL", "2026-08-20", 0.0)
+    assert queries.pending_shadow_marks(cfg.db_path, "1w", "2026-08-21") == []
+
+
+def test_a_negative_reference_price_is_never_eligible(tmp_path):
+    cfg = _config(tmp_path)
+    _observe(cfg, "AAPL", "2026-08-20", -5.0)
+    assert queries.pending_shadow_marks(cfg.db_path, "1w", "2026-08-21") == []
+
+
+# --- the marking job is bounded, because it runs in front of the scan ---
+
+def test_pending_marks_are_ordered_oldest_first(tmp_path):
+    """A backlog must drain in a deterministic, fair order rather than whatever
+    the query planner happens to return.
+
+    The tickers within one session date are deliberately inserted in REVERSE
+    alphabetical order. `idx_shadow_obs_session` is on (session_date, ticker),
+    so an index scan alone yields AAA before ZZZ -- which means an earlier
+    version of this test passed with the ORDER BY deleted, confirming SQLite's
+    index rather than the clause it claimed to pin. Ties must break on id
+    (insertion), so ZZZ comes first and only the explicit ORDER BY can produce
+    that.
+    """
+    cfg = _config(tmp_path)
+    _observe(cfg, "NEW", "2026-08-19", 100.0)
+    _observe(cfg, "OLD", "2026-08-17", 100.0)
+    _observe(cfg, "ZZZ", "2026-08-18", 100.0)
+    _observe(cfg, "AAA", "2026-08-18", 100.0)
+    rows = queries.pending_shadow_marks(cfg.db_path, "1w", "2026-08-21")
+    assert [r["ticker"] for r in rows] == ["OLD", "ZZZ", "AAA", "NEW"]
+
+
+def test_pending_marks_respect_a_limit(tmp_path):
+    cfg = _config(tmp_path)
+    for i in range(5):
+        _observe(cfg, f"T{i}", "2026-08-20", 100.0)
+    assert len(queries.pending_shadow_marks(
+        cfg.db_path, "1w", "2026-08-21", limit=2)) == 2
+    assert len(queries.pending_shadow_marks(
+        cfg.db_path, "1w", "2026-08-21")) == 5
+
+
+@pytest.mark.asyncio
+async def test_marking_stops_at_the_cap_and_the_rest_stay_due(tmp_path, monkeypatch):
+    """This job sits in FRONT of a market-timed scan. Bounding it trades a
+    delayed mark for a scan that starts on time -- and nothing is lost, because
+    an unmarked observation is still due next run."""
+    cfg = _config(tmp_path)
+    for i in range(6):
+        _observe(cfg, f"T{i}", "2026-08-20", 100.0)
+    monkeypatch.setattr(outcomes, "MAX_MARKS_PER_RUN", 3)
+    monkeypatch.setattr(outcomes, "_close_on_or_before",
+                        lambda ticker, as_of: 110.0)
+
+    n = await outcomes.mark_due_outcomes(
+        cfg, instant=datetime(2026, 8, 28, tzinfo=timezone.utc))
+
+    assert n == 3
+    assert len(_outcome_rows(cfg)) == 3
+    # the remaining three are still due
+    assert len(queries.pending_shadow_marks(cfg.db_path, "1w", "2026-08-21")) == 3

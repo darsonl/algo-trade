@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 
 import yfinance as yf
@@ -23,6 +24,14 @@ logger = logging.getLogger(__name__)
 HORIZONS = {"1w": 7, "1m": 30, "3m": 90, "6m": 180}
 
 BENCHMARK = "SPY"
+
+# Marking runs at the FRONT of a market-timed scan, before the universe is
+# built, and every fetch is serial with a 10s yfinance timeout. Left unbounded,
+# a backlog -- or simply a large universe across four horizons -- can push the
+# scan past the moment it was scheduled for. These bound the delay instead.
+# Nothing is lost: an observation not marked this scan is still due next scan.
+MAX_MARKS_PER_RUN = 200
+MARKING_TIME_BUDGET_S = 120.0
 
 
 def compute_return(entry, exit_) -> float | None:
@@ -94,6 +103,10 @@ async def mark_due_outcomes(config, instant=None) -> int:
     per observation, so one delisted ticker cannot stop every other mark -- the
     same rule the terminal-order sweep follows.
 
+    BOUNDED: at most MAX_MARKS_PER_RUN marks and MARKING_TIME_BUDGET_S seconds.
+    This job sits in front of a market-timed scan, so an unbounded backlog would
+    delay the scan itself. Anything skipped is still due on the next run.
+
     A price that could not be read is NOT recorded. `pending_shadow_marks`
     excludes any observation that already has a row for the horizon, so writing
     a NULL mark would convert one transient yfinance outage into permanently
@@ -105,14 +118,28 @@ async def mark_due_outcomes(config, instant=None) -> int:
     now = instant or datetime.now(timezone.utc)
     cache: dict = {}
     marked = 0
+    started = time.monotonic()
     for horizon, days in HORIZONS.items():
+        if marked >= MAX_MARKS_PER_RUN or (
+                time.monotonic() - started) >= MARKING_TIME_BUDGET_S:
+            logger.info(
+                "Marking budget reached (%d marks, %.0fs); the rest stay due",
+                marked, time.monotonic() - started)
+            break
         cutoff = (now - timedelta(days=days)).strftime("%Y-%m-%d")
         try:
-            due = queries.pending_shadow_marks(config.db_path, horizon, cutoff)
+            due = queries.pending_shadow_marks(
+                config.db_path, horizon, cutoff,
+                limit=MAX_MARKS_PER_RUN - marked)
         except Exception:
             logger.exception("Could not list pending %s marks; continuing", horizon)
             continue
         for row in due:
+            if (time.monotonic() - started) >= MARKING_TIME_BUDGET_S:
+                logger.info(
+                    "Marking time budget reached after %d marks; the rest stay due",
+                    marked)
+                break
             as_of = (datetime.strptime(row["session_date"], "%Y-%m-%d")
                      + timedelta(days=days)).strftime("%Y-%m-%d")
             try:

@@ -65,6 +65,7 @@ class ShadowObservation:
     cache_hit: int = 0
     recommendation_id: int | None = None
     reference_price: float | None = None
+    reference_price_source: str | None = None
 
 
 def _dumps(payload) -> str | None:
@@ -97,6 +98,7 @@ def build_observation(
     cache_hit: bool = False,
     recommendation_id: int | None = None,
     reference_price: float | None = None,
+    reference_price_source: str | None = None,
 ) -> ShadowObservation:
     """Assemble one observation, validating the funnel position.
 
@@ -131,6 +133,7 @@ def build_observation(
         cache_hit=1 if cache_hit else 0,
         recommendation_id=recommendation_id,
         reference_price=reference_price,
+        reference_price_source=reference_price_source,
     )
 
 
