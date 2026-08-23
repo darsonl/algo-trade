@@ -1076,9 +1076,16 @@ def pending_shadow_marks(db_path: str, horizon: str,
 
 
 def record_shadow_outcome(db_path: str, observation_id: int, horizon: str,
-                          as_of: str, price, return_pct,
-                          benchmark_price, benchmark_return_pct) -> None:
+                          as_of: str, mark, benchmark) -> None:
     """Write one forward mark. Idempotent per (observation, horizon).
+
+    Takes the `research.outcomes.Mark` objects whole rather than loose floats,
+    so a `return_pct` cannot be stored beside factors that disagree with it --
+    two numbers on different bases is the defect this column set exists to
+    close, and passing them separately would leave the door open.
+
+    `benchmark` may be None: a SPY outage costs the benchmark columns, not the
+    stock's mark, which is a real observation either way.
 
     INSERT OR IGNORE rather than UPSERT: a mark is a statement about a close
     that has already happened, so the first write is as good as any later one,
@@ -1088,8 +1095,11 @@ def record_shadow_outcome(db_path: str, observation_id: int, horizon: str,
         conn.execute(
             """INSERT OR IGNORE INTO shadow_outcomes
                    (observation_id, horizon, as_of, price, return_pct,
-                    benchmark_price, benchmark_return_pct)
-               VALUES (?,?,?,?,?,?,?)""",
-            (observation_id, horizon, as_of, price, return_pct,
-             benchmark_price, benchmark_return_pct),
+                    benchmark_price, benchmark_return_pct,
+                    adjusted_entry_price, split_factor, dividend_factor)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (observation_id, horizon, as_of, mark.exit_close, mark.return_pct,
+             benchmark.exit_close if benchmark else None,
+             benchmark.return_pct if benchmark else None,
+             mark.adjusted_entry_price, mark.split_factor, mark.dividend_factor),
         )

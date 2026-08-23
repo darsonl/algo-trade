@@ -1,8 +1,42 @@
 """Forward price marks for shadow observations.
 
-Every observation is marked against SPY over the identical window, so each row
+Every observation is marked against SPY over the same window, so each row
 carries its own market-relative result and no later analysis has to re-derive
 one. Absolute return alone would mostly measure the market.
+
+BOTH LEGS ARE TOTAL RETURNS, ON ONE BASIS. That sentence is the whole design,
+and it was false until this module was rewritten:
+
+  `reference_price` is a raw live quote frozen at the moment of the screen.
+  Every close Yahoo serves is on the basis as of FETCH TIME. So the two ends of
+  the stock's return sat on different bases, and two corporate actions walked
+  through the gap.
+
+  SPLITS. Yahoo back-applies them to every close it serves -- verified to do so
+  even with `auto_adjust=False`, so "fetch it unadjusted" is not an available
+  fix. A 10:1 split inside a window turned a +10% holding into -89%.
+
+  DIVIDENDS, the larger of the two. The benchmark's entry is a PAST date
+  fetched NOW, so it absorbs every SPY distribution since -- making the
+  benchmark leg a TOTAL return. `reference_price` absorbs nothing, making the
+  stock leg a PRICE return. Every row was therefore biased against the stock by
+  roughly its own yield less SPY's. This system screens ON dividend yield, so
+  the bias was correlated with the variable under test and would not average
+  out. Measured 2026-08-23: a one-year-old close came back 1.10% below the
+  traded close for SPY and 2.75% below for KO.
+
+Both factors are now reconstructed over the window (session_date, as_of] from
+the `Dividends` and `Stock Splits` columns, rather than inherited from
+fetch-time adjustment, so a mark taken late equals a mark taken promptly. They
+are stored beside the result: a correction that cannot be inspected cannot be
+audited, the same argument as `reference_price_source`.
+
+STILL NOT IDENTICAL, and deliberately so: the stock enters at its intraday
+screen price while SPY enters at that session's close. Re-basing corrects for
+corporate actions ONLY -- substituting the session close would discard the
+price a human would actually have transacted at, which is a different metric.
+The gap is systematic across every cohort, so it cancels in a cohort
+comparison; it does not cancel in an absolute one.
 
 See docs/superpowers/specs/2026-08-21-strategy-validation-design.md.
 """
@@ -12,6 +46,7 @@ import asyncio
 import logging
 import time
 from datetime import datetime, timedelta, timezone
+from typing import NamedTuple
 
 import yfinance as yf
 
@@ -46,53 +81,180 @@ def compute_return(entry, exit_) -> float | None:
     return (exit_ - entry) / entry * 100.0
 
 
-def _close_on_or_before(ticker: str, as_of: str) -> float | None:
-    """Last close at or before `as_of` (YYYY-MM-DD), or None.
+def _in_window(hist, after: str, through: str):
+    """Rows with `after` < date <= `through`. Half-open at the entry end.
 
-    KNOWN HAZARD, UNRESOLVED -- read before trusting `return_pct`. yfinance
-    returns BACK-ADJUSTED closes, so a split between the observation and the
-    mark rewrites this number retroactively. The ticker's entry price is
-    `reference_price`, captured live and unadjusted, so the two ends of the
-    return sit on different bases: a 4:1 split inside the window would read as
-    a ~75% loss that never happened.
-
-    The benchmark leg does not have this problem -- both its ends come from
-    this function, so an adjustment cancels.
-
-    Not fixed here because the fix is a choice about what the metric MEANS, not
-    an implementation detail. Using the session close as the entry would make
-    both ends consistent but would discard the intraday decision price, which
-    is the price a human would actually have transacted at. That is a spec
-    decision. Splits are rare enough that flagging beats guessing, and the
-    marks carry `as_of` and `price` so any affected row can be recomputed.
+    An action ON the session date is already reflected in the price we screened
+    at, so including it would correct for something that never happened.
     """
-    end = datetime.strptime(as_of, "%Y-%m-%d") + timedelta(days=1)
-    start = end - timedelta(days=10)  # enough to clear a long weekend
-    hist = yf.Ticker(ticker).history(start=start.date(), end=end.date())
-    if hist.empty:
+    dates = hist.index.strftime("%Y-%m-%d")
+    return hist[(dates > after) & (dates <= through)]
+
+
+def split_factor(hist, after: str, through: str) -> float:
+    """Cumulative split ratio over (after, through], or 1.0 when there is none.
+
+    Yahoo back-applies splits to every close it serves -- VERIFIED to do so even
+    with auto_adjust=False, so "fetch unadjusted" is not an available fix. The
+    entry price predates them, so it must be divided by this to reach the same
+    basis as the exit close.
+    """
+    factor = 1.0
+    for value in _in_window(hist, after, through)["Stock Splits"]:
+        if value:
+            factor *= float(value)
+    return factor
+
+
+def dividend_factor(hist, after: str, through: str) -> float | None:
+    """Cumulative dividend adjustment over (after, through], or None.
+
+    Yahoo's own convention: each ex-date contributes (1 - D / prior close), and
+    they compound. Applying it to the entry basis makes the STOCK leg a total
+    return -- which is what the benchmark leg already is, because `bench_entry`
+    is a past date fetched now and so absorbs every dividend since. Leaving
+    only the stock leg on a price basis biases every row by the stock's yield
+    less SPY's, and this system screens ON dividend yield.
+
+    Computed over the window rather than read off fetch-time adjustment, so a
+    mark taken late equals a mark taken promptly.
+
+    None -- never 1.0 -- when a dividend has no prior close to be priced
+    against. A skipped dividend yields a factor that looks clean and silently
+    under-corrects; the caller leaves the mark pending instead.
+    """
+    dates = hist.index.strftime("%Y-%m-%d")
+    factor = 1.0
+    for position, (date, amount) in enumerate(zip(dates, hist["Dividends"])):
+        if not amount or not (after < date <= through):
+            continue
+        if position == 0:
+            return None
+        prior_close = float(hist["Close"].iloc[position - 1])
+        if prior_close <= 0:
+            return None
+        factor *= 1.0 - float(amount) / prior_close
+    return factor
+
+
+def adjusted_entry(entry_price, split: float, dividend) -> float | None:
+    """`entry_price` moved onto the basis the exit close is quoted on.
+
+    The intraday decision price is KEPT -- it is the price a human would
+    actually have transacted at, and re-basing corrects only for the corporate
+    actions, never for the drift between the decision and that day's close.
+    Substituting the session close would be a different metric.
+
+    None whenever the window cannot be corrected, so `compute_return` yields
+    None and the caller leaves the mark pending. Guarding the zero split factor
+    here keeps a division-by-zero out of a job that runs inside a scan.
+    """
+    if not entry_price or entry_price <= 0 or dividend is None or not split:
         return None
-    return float(hist["Close"].iloc[-1])
+    return entry_price / split * dividend
 
 
-async def _close_cached(cache: dict, ticker: str, as_of: str) -> float | None:
-    """`_close_on_or_before` memoised for the duration of ONE marking run.
+def close_on_or_before(hist, as_of: str) -> float | None:
+    """Last close at or before `as_of` within an already-fetched window.
 
-    Every observation sharing a session date also shares its benchmark entry
-    and exit closes, so fetching them inside the per-row loop multiplies a
-    scan's network cost by the size of the universe for no extra information.
+    Horizons are CALENDAR days, so a mark date falls on a weekend or holiday
+    often; it resolves backwards to a real bar. It never resolves FORWARD --
+    the window is fetched with a tail past `as_of`, and taking the last row
+    outright would mark against a price the horizon has not reached.
+    """
+    if hist is None or len(hist) == 0:
+        return None
+    upto = hist[hist.index.strftime("%Y-%m-%d") <= as_of]
+    if len(upto) == 0:
+        return None
+    return float(upto["Close"].iloc[-1])
 
-    Per-run rather than module-level on purpose: a close for a past date is
-    immutable, but "the last close on or before today" is not, and a cache that
-    outlived the run would freeze an intraday value into every later mark.
+
+class Mark(NamedTuple):
+    """One leg of one forward mark, with the correction that produced it.
+
+    The factors are stored alongside the result, not thrown away: a mark whose
+    correction cannot be inspected cannot be audited or recomputed, which is
+    the same argument as `reference_price_source`.
+    """
+    exit_close: float
+    adjusted_entry_price: float
+    split_factor: float
+    dividend_factor: float
+    return_pct: float
+
+
+def mark_from_window(hist, session_date: str, as_of: str,
+                     entry_price) -> Mark | None:
+    """Mark `entry_price` against `as_of` within one fetched window, or None.
+
+    Serves BOTH legs. The stock leg passes its intraday `reference_price`; the
+    benchmark leg passes its own `session_date` close. That is the whole fix:
+    the two legs were previously computed by different routes, one landing on a
+    total return and the other on a price return.
+
+    None means "not markable from this window" and the caller leaves the
+    horizon pending. Every partial failure funnels here rather than into a
+    half-corrected number.
+    """
+    exit_close = close_on_or_before(hist, as_of)
+    if exit_close is None:
+        return None
+    split = split_factor(hist, session_date, as_of)
+    dividend = dividend_factor(hist, session_date, as_of)
+    entry = adjusted_entry(entry_price, split, dividend)
+    if entry is None:
+        return None
+    return_pct = compute_return(entry, exit_close)
+    if return_pct is None:
+        return None
+    return Mark(exit_close, entry, split, dividend, return_pct)
+
+
+# The window starts this far before the session date so the entry close always
+# has a real bar behind it -- long weekends, and the prior close a dividend on
+# the session date's own successor must be priced against.
+_WINDOW_LEAD_DAYS = 10
+
+
+def _fetch_window(ticker: str, start: str, end: str):
+    """Daily bars, dividends and splits for ONE ticker over [start, end).
+
+    `auto_adjust=False` so `Close` carries the dividend the `Dividends` column
+    reports, rather than one already netted out of it. It does NOT make the
+    series unadjusted for splits -- Yahoo back-applies those to every close it
+    serves either way, which is why the split factor has to be reconstructed
+    from the `Stock Splits` column rather than avoided.
+    """
+    return yf.Ticker(ticker).history(
+        start=start, end=end, auto_adjust=False, actions=True)
+
+
+async def _window_cached(cache: dict, ticker: str,
+                         session_date: str, as_of: str):
+    """`_fetch_window` memoised for the duration of ONE marking run.
+
+    Keyed on the whole window, so every observation sharing a session date and
+    horizon shares one benchmark fetch -- otherwise a scan pays for SPY once
+    per candidate.
+
+    Per-run rather than module-level on purpose: bars for past dates are
+    immutable, but the tail of the window is not, and a cache that outlived the
+    run would freeze an intraday bar into every later mark.
 
     A raising fetch is deliberately NOT cached -- the caller treats it as a
     per-observation failure and the next observation deserves a fresh attempt.
     """
-    key = (ticker, as_of)
+    key = (ticker, session_date, as_of)
     if key not in cache:
+        start = (datetime.strptime(session_date, "%Y-%m-%d")
+                 - timedelta(days=_WINDOW_LEAD_DAYS)).strftime("%Y-%m-%d")
+        end = (datetime.strptime(as_of, "%Y-%m-%d")
+               + timedelta(days=1)).strftime("%Y-%m-%d")
         # Resolved as a module global at call time so tests can monkeypatch it.
-        cache[key] = await asyncio.to_thread(_close_on_or_before, ticker, as_of)
+        cache[key] = await asyncio.to_thread(_fetch_window, ticker, start, end)
     return cache[key]
+
 
 
 async def mark_due_outcomes(config, instant=None) -> int:
@@ -143,20 +305,26 @@ async def mark_due_outcomes(config, instant=None) -> int:
             as_of = (datetime.strptime(row["session_date"], "%Y-%m-%d")
                      + timedelta(days=days)).strftime("%Y-%m-%d")
             try:
-                price = await _close_cached(cache, row["ticker"], as_of)
-                if price is None:
+                hist = await _window_cached(
+                    cache, row["ticker"], row["session_date"], as_of)
+                mark = mark_from_window(
+                    hist, row["session_date"], as_of, row["reference_price"])
+                if mark is None:
                     logger.warning(
-                        "No close for %s at %s; leaving the %s mark pending",
-                        row["ticker"], as_of, horizon)
+                        "No usable %s window for %s at %s; leaving the mark "
+                        "pending", horizon, row["ticker"], as_of)
                     continue
-                bench = await _close_cached(cache, BENCHMARK, as_of)
-                bench_entry = await _close_cached(
-                    cache, BENCHMARK, row["session_date"])
+                # The benchmark runs through the SAME function, on the same
+                # window convention -- that identity IS the fix. Computing the
+                # two legs by different routes is what left one a total return
+                # and the other a price return.
+                bench_hist = await _window_cached(
+                    cache, BENCHMARK, row["session_date"], as_of)
+                bench = mark_from_window(
+                    bench_hist, row["session_date"], as_of,
+                    close_on_or_before(bench_hist, row["session_date"]))
                 queries.record_shadow_outcome(
-                    config.db_path, row["id"], horizon, as_of, price,
-                    compute_return(row["reference_price"], price),
-                    bench, compute_return(bench_entry, bench),
-                )
+                    config.db_path, row["id"], horizon, as_of, mark, bench)
                 marked += 1
             except Exception:
                 logger.exception(
