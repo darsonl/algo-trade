@@ -2,7 +2,7 @@
 
 ## What This Is
 
-An automated stock and ETF screener that uses Claude AI to generate BUY and SELL recommendations, posts them to Discord with Approve/Reject buttons, and executes trades via the Schwab brokerage API. The bot runs daily scans for stocks and a separate `/scan_etf` path for ETFs, monitors open positions with live P&L and portfolio stats, and enforces human-in-the-loop approval for every order. A full sell pipeline (RSI+MACD two-gate exit + Claude SELL analysis) closes the trading loop. Claude signals are enriched with sector, macro (SPY MAs, VIX, DXY), and 52-week range context, and include a confidence badge.
+An automated stock and ETF screener that uses Claude AI to generate BUY and SELL recommendations, posts them to Discord with Approve/Reject buttons, and executes trades via the Schwab brokerage API. The bot runs daily scans for stocks and a separate `/scan_etf` path for ETFs, monitors open positions with live P&L and portfolio stats, and enforces human-in-the-loop approval for every order. A full sell pipeline (RSI+MACD two-gate exit + Claude SELL analysis) closes the trading loop. Claude signals are enriched with sector, macro (SPY 1-month and 1-year trend, VIX), and 52-week range context, and include a confidence badge.
 
 ## Core Value
 
