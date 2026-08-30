@@ -5,7 +5,14 @@
 # committing half a transaction.
 *.db-wal
 *.db-shm
-*.db.bak-*
+# Database backups. `*.db` alone does NOT cover these -- the suffix comes after
+# the extension -- and `*.db.bak-*` alone missed `*.db.backup-*`, which is how
+# algo_trade.db.backup-2026-08-21 came to be committed. Both spellings, and the
+# WAL sidecars a copied database brings with it.
+*.db.bak*
+*.db.backup*
+*.db.bak-*-wal
+*.db.bak-*-shm
 schwab_token.json
 __pycache__/
 *.pyc
