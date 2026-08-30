@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 from datetime import datetime, timedelta, timezone
 from typing import NamedTuple
@@ -78,6 +79,8 @@ def compute_return(entry, exit_) -> float | None:
     """
     if not entry or exit_ is None:
         return None
+    if not math.isfinite(entry) or not math.isfinite(exit_):
+        return None
     return (exit_ - entry) / entry * 100.0
 
 
@@ -101,8 +104,11 @@ def split_factor(hist, after: str, through: str) -> float:
     """
     factor = 1.0
     for value in _in_window(hist, after, through)["Stock Splits"]:
-        if value:
-            factor *= float(value)
+        # `if value:` alone is TRUE for NaN, which multiplied the factor to NaN
+        # and took the whole mark with it -- and NaN reaches SQLite as NULL.
+        ratio = float(value)
+        if math.isfinite(ratio) and ratio:
+            factor *= ratio
     return factor
 
 
@@ -126,14 +132,17 @@ def dividend_factor(hist, after: str, through: str) -> float | None:
     dates = hist.index.strftime("%Y-%m-%d")
     factor = 1.0
     for position, (date, amount) in enumerate(zip(dates, hist["Dividends"])):
-        if not amount or not (after < date <= through):
+        amount = float(amount)
+        if not math.isfinite(amount) or not amount:
+            continue
+        if not (after < date <= through):
             continue
         if position == 0:
             return None
         prior_close = float(hist["Close"].iloc[position - 1])
-        if prior_close <= 0:
+        if not math.isfinite(prior_close) or prior_close <= 0:
             return None
-        factor *= 1.0 - float(amount) / prior_close
+        factor *= 1.0 - amount / prior_close
     return factor
 
 
@@ -151,6 +160,8 @@ def adjusted_entry(entry_price, split: float, dividend) -> float | None:
     """
     if not entry_price or entry_price <= 0 or dividend is None or not split:
         return None
+    if not all(math.isfinite(v) for v in (entry_price, split, dividend)):
+        return None
     return entry_price / split * dividend
 
 
@@ -165,9 +176,11 @@ def close_on_or_before(hist, as_of: str) -> float | None:
     if hist is None or len(hist) == 0:
         return None
     upto = hist[hist.index.strftime("%Y-%m-%d") <= as_of]
-    if len(upto) == 0:
-        return None
-    return float(upto["Close"].iloc[-1])
+    for value in reversed(upto["Close"].tolist()):
+        close = float(value)
+        if math.isfinite(close):
+            return close
+    return None
 
 
 class Mark(NamedTuple):
