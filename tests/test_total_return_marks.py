@@ -499,3 +499,76 @@ async def test_an_uncorrectable_window_leaves_the_horizon_pending(
     assert n == 0
     assert _rows(cfg) == []
     assert len(queries.pending_shadow_marks(cfg.db_path, "1w", "2026-08-21")) == 1
+
+
+# --- non-finite bars: SQLite has no NaN, it has NULL ---
+# Found in production on the very first real marking run. yfinance emitted a
+# 2026-08-28 bar with Close=NaN (a placeholder for a session with no data yet).
+# NaN survived `is None` checks all the way into the INSERT, where SQLite
+# silently stored it as NULL -- and because the ROW then existed,
+# `pending_shadow_marks` excluded it forever. 50 observations were one command
+# away from being permanently unmarkable.
+
+def test_a_nan_close_resolves_back_to_the_last_real_bar():
+    """The docstring already promised "a real bar". A NaN row is a session with
+    no data, which is the same thing as a weekend for this purpose."""
+    hist = _frame([
+        ("2026-08-27", 110.0, 0.0, 0.0),
+        ("2026-08-28", float("nan"), 0.0, 0.0),
+    ])
+    assert outcomes.close_on_or_before(hist, "2026-08-29") == pytest.approx(110.0)
+
+
+def test_a_window_of_only_nan_closes_has_no_price():
+    """None, not NaN. NaN reaches SQLite as NULL and books an unusable mark that
+    can never be retried -- the `fills_observed` rule in a new place."""
+    hist = _frame([
+        ("2026-08-27", float("nan"), 0.0, 0.0),
+        ("2026-08-28", float("nan"), 0.0, 0.0),
+    ])
+    assert outcomes.close_on_or_before(hist, "2026-08-29") is None
+
+
+def test_an_infinite_close_is_refused_like_a_nan():
+    hist = _frame([("2026-08-28", float("inf"), 0.0, 0.0)])
+    assert outcomes.close_on_or_before(hist, "2026-08-29") is None
+
+
+def test_a_window_with_no_finite_close_is_not_a_mark():
+    hist = _frame([("2026-08-28", float("nan"), 0.0, 0.0)])
+    assert outcomes.mark_from_window(
+        hist, "2026-08-22", "2026-08-29", 100.0) is None
+
+
+def test_a_nan_split_value_does_not_poison_the_factor():
+    """`if value:` is True for NaN, so a NaN in the Stock Splits column
+    multiplied the factor to NaN and took the whole mark with it."""
+    hist = _frame([
+        ("2026-08-22", 100.0, 0.0, 0.0),
+        ("2026-08-24", 102.0, 0.0, float("nan")),
+        ("2026-08-27", 110.0, 0.0, 0.0),
+    ])
+    assert outcomes.split_factor(hist, "2026-08-22", "2026-08-27") == 1.0
+
+
+def test_a_nan_dividend_does_not_poison_the_factor():
+    hist = _frame([
+        ("2026-08-22", 100.0, 0.0, 0.0),
+        ("2026-08-24", 100.0, float("nan"), 0.0),
+        ("2026-08-27", 110.0, 0.0, 0.0),
+    ])
+    assert outcomes.dividend_factor(hist, "2026-08-22", "2026-08-27") == 1.0
+
+
+def test_the_production_regression_a_trailing_nan_bar_still_marks():
+    """The exact shape that shipped: real bars, then a trailing NaN placeholder
+    for a session yfinance has no data for yet."""
+    hist = _frame([
+        ("2026-08-21", 1596.08, 0.0, 0.0),
+        ("2026-08-27", 1484.95, 0.0, 0.0),
+        ("2026-08-28", float("nan"), 0.0, 0.0),
+    ])
+    mark = outcomes.mark_from_window(hist, "2026-08-22", "2026-08-29", 1596.08)
+    assert mark is not None
+    assert mark.exit_close == pytest.approx(1484.95)
+    assert mark.return_pct == pytest.approx(-6.9627, abs=1e-3)
