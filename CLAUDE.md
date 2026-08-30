@@ -266,6 +266,14 @@ python main.py
 
   **It defaults to doing the work**, unlike `backfill_screen_price.py` which defaults to preview and demands `--apply`. The backfill *rewrites* existing rows; marking only ever appends, is idempotent, and is what the scheduler already does unattended. `--dry-run` reports what is due without fetching or writing.
 
+- **`cp` is not a backup of a WAL database, and `scripts/backup_db.py` exists because of it.** `get_connection` sets `journal_mode=WAL`, so a committed transaction lives in the `-wal` sidecar until something checkpoints it — copying the `.db` alone can omit committed rows and produce a snapshot that opens cleanly, passes an integrity check, and is quietly missing data. Every ad-hoc backup taken by hand in this project before that script used `cp`. `sqlite3.Connection.backup()` reads through the WAL, is transactionally consistent, and never modifies the source.
+
+  **Rotation is part of the tool, not an option.** Seven ad-hoc `.bak` files accumulated in three days and one slipped past `.gitignore` into a commit — `*.db` does not match `algo_trade.db.backup-*` because the suffix comes *after* the extension. The ignore rules now cover `*.db.bak*`, `*.db.backup*` and `backups/`.
+
+  Three defects surfaced only by **running it against the real database**, none by fixtures: two runs in the same second silently **overwrote** each other (`sqlite3.connect(dest)` opens an existing path rather than refusing); the copy inherited WAL mode and grew `-wal`/`-shm` siblings that rotation's `*.bak` glob would orphan forever; and the collision suffix `-01` **sorted before** the plain name (`-` is 0x2D, `.` is 0x2E), so rotation — which orders by name — would have deleted the *newer* backup first. The separator is now `_` (0x5F), which sorts after. Backups never clobber, carry no sidecars, and `--keep` refuses a negative value rather than guessing between "unlimited" and "retain nothing".
+
+  What is actually at risk is the **shadow log**: `.info` is a snapshot with no history, so a lost observation cannot be re-fetched at any price — unlike positions or orders, which the broker can still describe.
+
 - **Marking is bounded, because it runs in front of a market-timed scan**: `mark_due_outcomes` is serial with a 10s yfinance timeout per fetch and sits before the universe is built, so `MAX_MARKS_PER_RUN` / `MARKING_TIME_BUDGET_S` plus `ORDER BY`/`LIMIT` cap the delay. Skipped rows stay due, so a bound costs a delay, never a mark. `pending_shadow_marks` requires `reference_price > 0`, not `IS NOT NULL`: zero makes a row eligible while guaranteeing `compute_return` returns None — a fetch per horizon and four permanently unusable marks. That predicate IS the eligibility invariant, so it belongs in the query rather than in whatever wrote the price.
 
 - **Position reconciliation (report-only)**: `run_reconciliation()` in `main.py` compares DB open positions against the Schwab account (RISK-05: positions are recorded on order acknowledgement, not fill). Runs before each scan's sell pass and via `/reconcile`. It NEVER mutates positions — discrepancies (phantom / untracked / mismatched) are posted as ops alerts for human correction. Skipped entirely in dry run (simulated positions have no broker counterpart). Tests that call `run_scan` must set `config.dry_run = True` (or patch `main.get_positions`) so the suite never touches the live Schwab API.
@@ -324,6 +332,8 @@ Analyst-model helper: `.venv/Scripts/python.exe scripts/probe_analyst_models.py`
 
 Screen-price backfill: `.venv/Scripts/python.exe scripts/backfill_screen_price.py` recovers `reference_price` for shadow rows recorded before the screen-price policy, from the `.info` dict each row already stores. Preview by default, `--apply` writes, idempotent. A script rather than an `initialize_db` migration on purpose — parsing research JSON per row is exactly the work that fails on malformed data, and an operator who cannot start the bot cannot `/halt` it either.
 
+Backups: `.venv/Scripts/python.exe scripts/backup_db.py` (`--keep N`, writes to `backups/`). Use it before anything destructive; `cp` is not safe on a WAL database.
+
 Forward marks: `.venv/Scripts/python.exe scripts/mark_outcomes.py` (`--dry-run` to look, `--max`/`--budget` to drain a backlog). Takes matured marks without running the bot.
 
 Funnel report: `.venv/Scripts/python.exe scripts/shadow_report.py` — read-only, every statement a SELECT, safe against the live database while the bot runs.
@@ -332,7 +342,7 @@ Pre-flight helper: `.venv/Scripts/python.exe scripts/check_ops_ids.py` reports t
 
 ### Test Suite
 
-1299 tests as of 2026-08-30. Run with `.venv/Scripts/python.exe -m pytest -q` (~25s). Key test files:
+1320 tests as of 2026-08-30. Run with `.venv/Scripts/python.exe -m pytest -q` (~25s). Key test files:
 - `test_order_status_sweep.py` / `test_order_status_mapping.py` / `test_active_rec_index.py` — step 11: chain-following, the sweep, the trustworthy-fill rule, and the index that cannot ship before its release valve (48 tests)
 - `test_gate_provenance.py` — the gate that judged a candidate and what it was set to: first-failing-criterion, every-gate-not-just-the-decider, and an explicit reason surviving a gate's (23 tests, no mocks)
 - `test_total_return_marks.py` — the split and dividend corrections: window half-open at the entry end, unpriceable dividends leave the mark pending, and the live-yfinance oracle (38 tests, no network, no mocks)
