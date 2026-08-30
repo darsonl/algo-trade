@@ -10,6 +10,9 @@
 # algo_trade.db.backup-2026-08-21 came to be committed. Both spellings, and the
 # WAL sidecars a copied database brings with it.
 *.db.bak*
+# Where scripts/backup_db.py writes. Rotated, so it stays small, but it is
+# still a pile of databases and none of it belongs in the repo.
+backups/
 *.db.backup*
 *.db.bak-*-wal
 *.db.bak-*-shm
