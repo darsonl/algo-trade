@@ -1127,7 +1127,12 @@ def main() -> None:
             "%s", scheduler_summary("ETF scan", config.etf_scan_times, config.scan_timezone)
         )
 
-    bot.run(config.discord_token)
+    # log_handler=None stops discord.py adding a StreamHandler to the 'discord'
+    # logger. It does not set propagate=False when it does, so every discord
+    # record was emitted twice on the console: once there, once by the root
+    # StreamHandler above. The file handler is on root and never doubled, which
+    # is why logs/algo_trade.log looked right while the terminal did not.
+    bot.run(config.discord_token, log_handler=None)
 
 
 if __name__ == "__main__":
