@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Date>2026-09-12T00:00:00</Date>
+    <Author>RYZEN5-3070TI\Darson</Author>
+    <Description>Algo Trade screener bot. Starts main.py at logon so the 09:45 ET scan can fire. APScheduler has no catch-up: if this process is not alive at 09:45 ET (21:45 Taipei), that session date is lost from the shadow log permanently. Safe as configured: EXECUTION_MODE=dry_run, kill switch HALTED, ALLOWED_DISCORD_USER_IDS empty. Runs via cmd with stdout/stderr redirected to logs\stdout.log: a Windows console has QuickEdit Mode on by default, and a stray text selection suspends every write to it. The first thread to log then blocks forever holding the logging lock, which wedges the APScheduler executor before it can start a scan.</Description>
+    <URI>\AlgoTrade</URI>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>RYZEN5-3070TI\Darson</UserId>
+      <Delay>PT1M</Delay>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>RYZEN5-3070TI\Darson</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>true</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
+    <Priority>7</Priority>
+    <RestartOnFailure>
+      <Interval>PT5M</Interval>
+      <Count>3</Count>
+    </RestartOnFailure>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>C:\Windows\System32\cmd.exe</Command>
+      <Arguments>/c .venv\Scripts\python.exe main.py &gt;&gt; logs\stdout.log 2&gt;&amp;1</Arguments>
+      <WorkingDirectory>C:\Users\Darson\Projects\algo trade</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>

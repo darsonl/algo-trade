@@ -2,7 +2,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import logging.handlers
 import sqlite3
+import sys
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -81,6 +83,55 @@ def should_recommend(signal: str, tech_data: dict, config: Config) -> bool:
     if signal != "BUY":
         return False
     return passes_technical_filter(tech_data, config)
+
+
+def _is_terminal(stream) -> bool:
+    """True only for a stream that is an interactive terminal.
+
+    Fails closed. `pythonw.exe` leaves sys.stderr as None, and a detached or
+    closed stream can raise from isatty(); either way the answer is "no console",
+    because dropping the console handler costs nothing while a StreamHandler
+    built on a dead stream raises on the first record and takes the log with it.
+    """
+    try:
+        return bool(stream is not None and stream.isatty())
+    except Exception:
+        return False
+
+
+def build_log_handlers(log_dir: Path, stream=None) -> list[logging.Handler]:
+    """The handlers root should carry: always the file, the console only if there is one.
+
+    The rotating file handler is the log of record. The StreamHandler is added
+    ONLY when `stream` is a terminal, i.e. when a human is watching.
+
+    Under the Task Scheduler deployment stderr is redirected to logs/stdout.log,
+    where a console handler would write a second, UNROTATED copy of every record
+    the file handler already holds. It is also a hazard rather than a nicety: a
+    Windows console has QuickEdit Mode on by default, a stray selection suspends
+    every write to it, and the first thread to log then blocks forever holding
+    the logging lock -- which on 2026-09-12 wedged the APScheduler executor and
+    silently cost a scan.
+
+    `stream` is compared against sys.stderr by the caller, not sys.stdout,
+    because logging.StreamHandler() defaults to stderr.
+    """
+    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+
+    file_handler = logging.handlers.RotatingFileHandler(
+        Path(log_dir) / "algo_trade.log",
+        maxBytes=5 * 1024 * 1024,
+        backupCount=3,
+        encoding="utf-8",
+    )
+    file_handler.setFormatter(fmt)
+    handlers: list[logging.Handler] = [file_handler]
+
+    if _is_terminal(stream):
+        stream_handler = logging.StreamHandler(stream)
+        stream_handler.setFormatter(fmt)
+        handlers.append(stream_handler)
+    return handlers
 
 
 def scheduler_summary(label: str, times: list[str], timezone: str | None) -> str:
@@ -1046,27 +1097,13 @@ def main() -> None:
     config = Config()
     config.validate()
 
-    import logging.handlers
     log_dir = Path(__file__).parent / "logs"
     log_dir.mkdir(exist_ok=True)
 
     _log_level = getattr(logging, config.log_level.upper(), logging.INFO)
-    _fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-
-    _file_handler = logging.handlers.RotatingFileHandler(
-        log_dir / "algo_trade.log",
-        maxBytes=5 * 1024 * 1024,
-        backupCount=3,
-        encoding="utf-8",
-    )
-    _file_handler.setFormatter(_fmt)
-
-    _stream_handler = logging.StreamHandler()
-    _stream_handler.setFormatter(_fmt)
-
     logging.root.setLevel(_log_level)
-    logging.root.addHandler(_file_handler)
-    logging.root.addHandler(_stream_handler)
+    for _handler in build_log_handlers(log_dir, stream=sys.stderr):
+        logging.root.addHandler(_handler)
 
     initialize_db(config.db_path)
 
@@ -1127,7 +1164,12 @@ def main() -> None:
             "%s", scheduler_summary("ETF scan", config.etf_scan_times, config.scan_timezone)
         )
 
-    bot.run(config.discord_token)
+    # log_handler=None stops discord.py adding a StreamHandler to the 'discord'
+    # logger. It does not set propagate=False when it does, so every discord
+    # record was emitted twice on the console: once there, once by the root
+    # StreamHandler above. The file handler is on root and never doubled, which
+    # is why logs/algo_trade.log looked right while the terminal did not.
+    bot.run(config.discord_token, log_handler=None)
 
 
 if __name__ == "__main__":
