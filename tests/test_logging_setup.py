@@ -86,3 +86,107 @@ def test_discord_py_still_duplicates_records_without_the_kwarg():
     finally:
         discord_logger.handlers[:] = had
 
+
+# ─── Which handlers root carries ─────────────────────────────────────────────
+
+
+class _FakeStream:
+    """A stream whose isatty() answer is fixed, or explodes."""
+
+    def __init__(self, tty, raises=False):
+        self._tty = tty
+        self._raises = raises
+
+    def isatty(self):
+        if self._raises:
+            raise ValueError("stream is closed")
+        return self._tty
+
+
+def _kinds(handlers):
+    """Handler classes, most-derived name first, for readable assertions."""
+    return sorted(type(h).__name__ for h in handlers)
+
+
+def _close(handlers):
+    for h in handlers:
+        h.close()
+
+
+def test_a_terminal_gets_both_the_file_and_the_console_handler(tmp_path):
+    """Interactive runs are unchanged: you still watch the bot in the terminal."""
+    import main
+
+    handlers = main.build_log_handlers(tmp_path, stream=_FakeStream(tty=True))
+    try:
+        assert _kinds(handlers) == ["RotatingFileHandler", "StreamHandler"]
+    finally:
+        _close(handlers)
+
+
+def test_a_redirected_stream_gets_only_the_file_handler(tmp_path):
+    """The Task Scheduler deployment redirects stderr to logs/stdout.log.
+
+    A StreamHandler there writes a second, unrotated copy of every record the
+    RotatingFileHandler already has, and keeps a console alive as a hazard --
+    Windows QuickEdit lets a stray selection suspend writes, block the logging
+    lock and wedge the scheduler. Drop the handler; the file log loses nothing.
+    """
+    import main
+
+    handlers = main.build_log_handlers(tmp_path, stream=_FakeStream(tty=False))
+    try:
+        assert _kinds(handlers) == ["RotatingFileHandler"]
+    finally:
+        _close(handlers)
+
+
+def test_an_absent_stream_gets_only_the_file_handler(tmp_path):
+    """pythonw.exe leaves sys.stderr as None; constructing a StreamHandler on it
+    would raise inside logging on the first record, taking the whole log with it."""
+    import main
+
+    handlers = main.build_log_handlers(tmp_path, stream=None)
+    try:
+        assert _kinds(handlers) == ["RotatingFileHandler"]
+    finally:
+        _close(handlers)
+
+
+def test_a_stream_whose_isatty_raises_gets_only_the_file_handler(tmp_path):
+    """Fails closed. A closed or detached stream must not abort startup, and the
+    file log is the one that has to survive."""
+    import main
+
+    handlers = main.build_log_handlers(tmp_path, stream=_FakeStream(tty=False, raises=True))
+    try:
+        assert _kinds(handlers) == ["RotatingFileHandler"]
+    finally:
+        _close(handlers)
+
+
+def test_the_file_handler_rotates_and_lands_in_the_given_directory(tmp_path):
+    """Rotation is what bounds the log; pin it so a refactor cannot drop it."""
+    import main
+
+    handlers = main.build_log_handlers(tmp_path, stream=None)
+    try:
+        fh = handlers[0]
+        assert fh.baseFilename == str(tmp_path / "algo_trade.log")
+        assert fh.maxBytes == 5 * 1024 * 1024
+        assert fh.backupCount == 3
+    finally:
+        _close(handlers)
+
+
+def test_every_handler_shares_one_format(tmp_path):
+    """Two handlers formatting differently is how the duplicate console lines
+    were legible as two different loggers in the first place."""
+    import main
+
+    handlers = main.build_log_handlers(tmp_path, stream=_FakeStream(tty=True))
+    try:
+        formats = {h.formatter._fmt for h in handlers}
+        assert len(formats) == 1, formats
+    finally:
+        _close(handlers)
