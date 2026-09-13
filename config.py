@@ -132,8 +132,10 @@ class Config:
     analyst_fallback2_api_key: str = _env_str("ANALYST_FALLBACK2_API_KEY")
     analyst_fallback2_model: str = _env_str("ANALYST_FALLBACK2_MODEL")
 
-    min_dividend_yield: float = _env_float("MIN_DIVIDEND_YIELD", "0.02")
-    max_pe_ratio: float = _env_float("MAX_PE_RATIO", "35.0")
+    # Off by default (2026-09-13). With a floor, a token payer was rejected while
+    # a non-payer skipped the check and passed. Set one only for an income strategy.
+    min_dividend_yield: float = _env_float("MIN_DIVIDEND_YIELD", "0.0")
+    max_forward_pe: float = _env_float("MAX_FORWARD_PE", "35.0")
     min_earnings_growth: float = _env_float("MIN_EARNINGS_GROWTH", "0.05")
     max_rsi: float = _env_float("MAX_RSI", "70.0")
     sell_rsi_threshold: float = _env_float("SELL_RSI_THRESHOLD", "70.0")
@@ -209,9 +211,25 @@ class Config:
         # then refuses to start on that typo rather than running silently.
         self.dry_run = self.execution_mode != "live"
 
+    def _validate_renamed_thresholds(self):
+        """Refuse to start on MAX_PE_RATIO, which became MAX_FORWARD_PE.
+
+        The gate now reads forward P/E. A ceiling chosen for trailing P/E is not
+        automatically right for forward, so carrying it across silently would
+        change what the gate lets through without anyone deciding to.
+        """
+        if "MAX_PE_RATIO" in os.environ:
+            raise ValueError(
+                "MAX_PE_RATIO has been replaced by MAX_FORWARD_PE: the fundamental "
+                "gate now values stocks on forward P/E, not trailing. "
+                f"Your current value was MAX_PE_RATIO={os.environ['MAX_PE_RATIO']}; "
+                "rename it in .env after checking it still suits forward P/E."
+            )
+
     def validate(self):
         """Call this at startup (in main.py) to fail fast if credentials are missing."""
         self._validate_execution_mode()
+        self._validate_renamed_thresholds()
         if not self.schwab_app_key:
             raise ValueError("SCHWAB_APP_KEY is required in .env")
         if not self.schwab_app_secret:

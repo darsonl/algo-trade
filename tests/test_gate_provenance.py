@@ -27,7 +27,7 @@ from screener.technicals import evaluate_technicals
 
 def _config(**over):
     c = Config()
-    c.max_pe_ratio = 25.0
+    c.max_forward_pe = 25.0
     # a FRACTION -- `.info` reports dividendYield in percentage points and
     # `normalize_dividend_yield` divides by 100 before the comparison
     c.min_dividend_yield = 0.02
@@ -39,7 +39,7 @@ def _config(**over):
     return c
 
 
-_PASSING = {"trailingPE": 15.0, "dividendYield": 3.0, "earningsGrowth": 0.10}
+_PASSING = {"forwardPE": 15.0, "dividendYield": 3.0, "earningsGrowth": 0.10}
 
 
 # --- the fundamental gate ---
@@ -53,14 +53,14 @@ def test_a_passing_candidate_names_no_failing_criterion():
 def test_a_missing_pe_is_reported_as_its_own_criterion():
     """Absent is not the same rejection as too-high, and the funnel exists to
     tell those apart: one is a data gap, the other is a judgement."""
-    v = evaluate_fundamentals({**_PASSING, "trailingPE": None}, _config())
+    v = evaluate_fundamentals({**_PASSING, "forwardPE": None}, _config())
     assert v.passed is False
-    assert v.failed_on == "pe_missing"
+    assert v.failed_on == "forward_pe_missing"
 
 
 def test_a_pe_above_the_maximum_is_named():
-    v = evaluate_fundamentals({**_PASSING, "trailingPE": 99.0}, _config())
-    assert v.failed_on == "pe_above_max"
+    v = evaluate_fundamentals({**_PASSING, "forwardPE": 99.0}, _config())
+    assert v.failed_on == "forward_pe_above_max"
 
 
 def test_a_yield_below_the_minimum_is_named():
@@ -79,16 +79,16 @@ def test_the_first_failing_criterion_wins():
     rejection, and reporting all of them would imply the gate evaluated all of
     them -- it did not."""
     v = evaluate_fundamentals(
-        {"trailingPE": 99.0, "dividendYield": 0.1, "earningsGrowth": -0.9},
+        {"forwardPE": 99.0, "dividendYield": 0.1, "earningsGrowth": -0.9},
         _config())
-    assert v.failed_on == "pe_above_max"
+    assert v.failed_on == "forward_pe_above_max"
 
 
 def test_the_thresholds_actually_applied_are_carried():
     """The whole point. Config never reached the database, so a threshold moved
     mid-sample silently redefined the cohort."""
-    v = evaluate_fundamentals(_PASSING, _config(max_pe_ratio=12.0))
-    assert v.thresholds["max_pe_ratio"] == 12.0
+    v = evaluate_fundamentals(_PASSING, _config(max_forward_pe=12.0))
+    assert v.thresholds["max_forward_pe"] == 12.0
     assert v.thresholds["min_dividend_yield"] == 0.02
     assert v.thresholds["min_earnings_growth"] == 0.05
 
@@ -102,7 +102,7 @@ def test_thresholds_are_carried_on_a_pass_as_well_as_a_reject():
 
 def test_an_absent_optional_field_does_not_reject():
     """Missing-data policy is unchanged: yield and growth are optional."""
-    v = evaluate_fundamentals({"trailingPE": 15.0}, _config())
+    v = evaluate_fundamentals({"forwardPE": 15.0}, _config())
     assert v.passed is True
     assert v.failed_on is None
 
@@ -189,15 +189,15 @@ def _row(cfg):
 
 def test_a_rejected_observation_records_the_gate_and_the_criterion(tmp_path):
     cfg = _db(tmp_path)
-    verdict = evaluate_fundamentals({**_PASSING, "trailingPE": 99.0}, _config())
+    verdict = evaluate_fundamentals({**_PASSING, "forwardPE": 99.0}, _config())
 
     shadow_log.observe(cfg, "AAPL", "stock", "fundamental",
                        "rejected_fundamental", gates=(verdict,))
 
     row = _row(cfg)
-    assert row["reject_reason"] == "pe_above_max"
+    assert row["reject_reason"] == "forward_pe_above_max"
     import json
-    assert json.loads(row["gate_config_json"])["max_pe_ratio"] == 25.0
+    assert json.loads(row["gate_config_json"])["max_forward_pe"] == 25.0
 
 
 def test_a_passing_observation_still_records_the_gate(tmp_path):
@@ -237,7 +237,7 @@ def test_an_explicit_reject_reason_is_not_overwritten_by_the_gate(tmp_path):
     # unconditional overwrite killed nothing.
     shadow_log.observe(cfg, "AAPL", "stock", "analyst", "rejected_signal",
                        reject_reason="analyst_skip",
-                       gates=(Verdict(False, "pe_above_max", {"max_pe_ratio": 25.0}),))
+                       gates=(Verdict(False, "forward_pe_above_max", {"max_forward_pe": 25.0}),))
 
     assert _row(cfg)["reject_reason"] == "analyst_skip"
 
@@ -257,6 +257,6 @@ def test_every_gate_applied_is_recorded_not_only_the_deciding_one(tmp_path):
     row = _row(cfg)
     import json
     gate = json.loads(row["gate_config_json"])
-    assert gate["max_pe_ratio"] == 25.0, "the gate it PASSED must be recorded too"
+    assert gate["max_forward_pe"] == 25.0, "the gate it PASSED must be recorded too"
     assert gate["max_rsi"] == 70.0
     assert row["reject_reason"] == "rsi_above_max"
