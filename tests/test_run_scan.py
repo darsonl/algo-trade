@@ -332,3 +332,66 @@ async def test_run_scan_passes_on_attempt_that_increments_quota():
         with patch("main.queries.increment_analyst_call_count") as mock_inc:
             on_attempt("gemini", "gemini-3.1-flash-lite")
         mock_inc.assert_called_once_with(":memory:", "gemini", "gemini-3.1-flash-lite")
+
+
+# ─── Non-trading days are skipped ────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_run_scan_skips_a_non_trading_session():
+    """A Sunday scan screens stale Friday prices, spends ~50 analyst calls, and
+    writes shadow observations stamped to a date on which no session exists.
+
+    The junk rows are the expensive part: this project's research value rests on
+    cohorts being comparable, and a weekend cohort is priced off a stale quote
+    while a weekday one is priced live.
+    """
+    bot = _make_bot()
+    config = _make_config()
+    with _full_patch() as mocks:
+        with patch("main.is_trading_session", return_value=False):
+            await run_scan(bot, config)
+    mocks["analyze_ticker"].assert_not_called()
+    mocks["create_recommendation"].assert_not_called()
+    bot.send_recommendation.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_scan_etf_skips_a_non_trading_session():
+    """The ETF path fires 15 minutes before the stock path and needs the same guard."""
+    bot = _make_bot()
+    config = _make_config()
+    with _full_patch() as mocks:
+        with patch("main.is_trading_session", return_value=False):
+            await run_scan_etf(bot, config)
+    mocks["analyze_ticker"].assert_not_called()
+    bot.send_recommendation.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_trading_session_still_scans():
+    """The guard must not be a blanket off-switch."""
+    bot = _make_bot()
+    config = _make_config()
+    with _full_patch():
+        with patch("main.is_trading_session", return_value=True):
+            await run_scan(bot, config)
+    bot.send_recommendation.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_the_scan_runs_when_the_calendar_check_itself_fails():
+    """Fails OPEN, unlike most guards in this codebase, and deliberately so.
+
+    This guard protects DATA QUALITY, not capital -- a scan places no orders,
+    approval is a separate human step. So the asymmetry runs the other way from
+    the kill switch: a junk weekend row is identifiable by session_date and can
+    be deleted, while a trading day lost to a flaky calendar lookup is gone for
+    good. When we cannot tell, scan.
+    """
+    bot = _make_bot()
+    config = _make_config()
+    with _full_patch():
+        with patch("main.is_trading_session", side_effect=RuntimeError("calendar unavailable")):
+            await run_scan(bot, config)
+    bot.send_recommendation.assert_awaited_once()

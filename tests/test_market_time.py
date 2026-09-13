@@ -9,6 +9,7 @@ from datetime import date, datetime, timezone
 import pytest
 
 from market_time import (
+    is_trading_session,
     intended_session_date,
     market_session_bounds_utc,
     market_session_date,
@@ -185,3 +186,62 @@ def test_calendar_is_rebuilt_when_an_instant_falls_beyond_it():
         assert intended_session_date(instant) == date(2026, 8, 17)
     finally:
         market_time._calendar = original
+
+
+# ─── Is this instant on a trading session? ───────────────────────────────────
+#
+# Every date below was verified against the live XNYS calendar before being
+# written into a test, not assumed from a holiday list.
+
+
+def test_an_ordinary_weekday_is_a_session():
+    assert is_trading_session(datetime(2026, 9, 14, 13, 45, tzinfo=timezone.utc)) is True
+
+
+def test_saturday_and_sunday_are_not_sessions():
+    assert is_trading_session(datetime(2026, 9, 12, 13, 45, tzinfo=timezone.utc)) is False
+    assert is_trading_session(datetime(2026, 9, 13, 13, 45, tzinfo=timezone.utc)) is False
+
+
+def test_good_friday_is_not_a_session():
+    """The case a `day_of_week='mon-fri'` trigger gets wrong.
+
+    Good Friday is a market holiday but NOT a federal one, so no weekday rule
+    and no bank-holiday list catches it. This repo already learned that once,
+    for intended_session_date; the scan guard needs the same real calendar.
+    """
+    assert is_trading_session(datetime(2026, 4, 3, 13, 45, tzinfo=timezone.utc)) is False
+
+
+def test_thanksgiving_and_independence_day_observed_are_not_sessions():
+    """Both fall on weekdays, so both defeat a weekday rule."""
+    assert is_trading_session(datetime(2026, 11, 26, 13, 45, tzinfo=timezone.utc)) is False
+    assert is_trading_session(datetime(2026, 7, 3, 13, 45, tzinfo=timezone.utc)) is False
+
+
+def test_the_thanksgiving_half_day_IS_a_session():
+    """An early close is still a session and must still be scanned.
+
+    2026-11-27 closes at 13:00 ET. A guard that treated "unusual" as "closed"
+    would silently drop a real trading day from the sample, which is the more
+    expensive mistake: a junk weekend row is identifiable and deletable, a
+    missing session date is gone.
+    """
+    assert is_trading_session(datetime(2026, 11, 27, 13, 45, tzinfo=timezone.utc)) is True
+
+
+def test_the_session_is_judged_on_the_EASTERN_date_not_the_utc_one():
+    """21:00 ET Sunday is 01:00 UTC Monday.
+
+    Anything comparing UTC calendar days would call this a Monday and scan. It
+    is the same bug class as the Taipei/UTC day-bucketing this module exists to
+    prevent -- see market_session_date.
+    """
+    instant = datetime(2026, 9, 14, 1, 0, tzinfo=timezone.utc)  # Sun 21:00 ET
+    assert market_session_date(instant) == date(2026, 9, 13)
+    assert is_trading_session(instant) is False
+
+
+def test_trading_session_defaults_to_now_without_raising():
+    assert isinstance(is_trading_session(), bool)
+

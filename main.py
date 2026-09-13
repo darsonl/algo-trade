@@ -13,6 +13,8 @@ from apscheduler.triggers.cron import CronTrigger
 
 import yfinance as yf
 
+from market_time import is_trading_session, market_session_date
+
 from config import Config
 from database.models import get_cursor, initialize_db
 from risk import kill_switch
@@ -486,6 +488,24 @@ async def _drain_ops_outbox(bot: TradingBot) -> None:
         logger.error("Ops-alert outbox drain failed: %s", exc)
 
 
+def scan_allowed_now(instant=None) -> bool:
+    """False only when we can POSITIVELY establish this is not a trading session.
+
+    Fails OPEN, unlike almost every other guard in this codebase, and the
+    asymmetry is the point. The kill switch and the preflight table protect
+    CAPITAL, so an unknown there must refuse. This one protects DATA QUALITY --
+    a scan places no orders, approval is a separate human step -- so the costs
+    run the other way: a junk weekend row is identifiable by `session_date` and
+    can be deleted, while a trading day lost to a flaky calendar lookup is gone
+    for good. When we cannot tell, scan.
+    """
+    try:
+        return is_trading_session(instant)
+    except Exception:
+        logger.exception("Trading-calendar check failed; scanning anyway")
+        return True
+
+
 async def run_scan(bot: TradingBot, config: Config) -> None:
     """Run the full screening pipeline, one scan at a time.
 
@@ -495,6 +515,11 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
     passed. ONE lock covers both scan paths: a symbol can appear in the stock
     universe and in the ETF universe.
     """
+    if not scan_allowed_now():
+        logger.info(
+            "Scan skipped: %s is not an NYSE trading session", market_session_date()
+        )
+        return
     lock = scan_lock()
     if lock.locked():
         logger.warning("Scan skipped: another scan is already running")
@@ -905,6 +930,11 @@ async def run_scan_etf(bot: TradingBot, config: Config) -> None:
     passed. ONE lock covers both scan paths: a symbol can appear in the stock
     universe and in the ETF universe.
     """
+    if not scan_allowed_now():
+        logger.info(
+            "ETF scan skipped: %s is not an NYSE trading session", market_session_date()
+        )
+        return
     lock = scan_lock()
     if lock.locked():
         logger.warning("ETF scan skipped: another scan is already running")
