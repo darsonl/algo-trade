@@ -28,18 +28,13 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from datetime import datetime, time, timezone
-from zoneinfo import ZoneInfo
+from datetime import datetime, timezone
 
 from database.order_accounting import (
     BLOCKING_ORDER_STATUSES,
     UNRESOLVED_ORDER_STATUSES,
     remaining_buy_reservation,
 )
-
-MARKET_TZ = ZoneInfo("America/New_York")
-REGULAR_OPEN = time(9, 30)
-REGULAR_CLOSE = time(16, 0)
 
 
 @dataclass(frozen=True)
@@ -146,8 +141,23 @@ def check_authorization(request: TradeRequest, config) -> Decision | None:
 
 
 def _in_regular_hours(now: datetime) -> bool:
-    et = now.astimezone(MARKET_TZ)
-    return REGULAR_OPEN <= et.time() < REGULAR_CLOSE
+    """Whether guard 4 must enforce quote freshness at `now`.
+
+    Asks the exchange calendar -- a session day, between that session's real
+    open and close -- rather than comparing the clock to 09:30-16:00, which
+    enforced freshness on weekends, holidays and after a half-day close. The
+    calendar is deterministic local data, so this stays free of network, DB and
+    clock; `now` is still passed in.
+
+    Fails CLOSED: if the calendar cannot answer, freshness is enforced. A
+    refused stale quote is a retry; an order priced off one is not.
+    """
+    import market_time
+
+    try:
+        return market_time.in_regular_session(now)
+    except Exception:
+        return True
 
 
 def buy_limit_price(ask: float, buffer_pct: float) -> float:

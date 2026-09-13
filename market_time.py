@@ -158,6 +158,28 @@ def is_trading_session(instant: datetime | None = None) -> bool:
     return bool(_nyse_calendar(minute).is_session(pd.Timestamp(session)))
 
 
+def in_regular_session(instant: datetime | None = None) -> bool:
+    """True when `instant` is inside a real NYSE session: open <= instant < close.
+
+    Guard 4 enforces quote freshness only here. It used `09:30 <= ET time <
+    16:00`, a clock rule, which called Saturday morning, Good Friday and the
+    afternoon of a 13:00 half-day "regular hours" and refused the last close --
+    the only quote that exists at those times. The session's own open and close
+    come from the calendar for the reasons `session_close_utc` records.
+
+    Open inclusive, close exclusive: at 16:00:00 the session is over, matching
+    `intended_session_date`'s "close strictly after".
+    """
+    import pandas as pd
+
+    minute = pd.Timestamp(as_utc(instant))
+    session = pd.Timestamp(market_session_date(instant))
+    calendar = _nyse_calendar(minute)
+    if not calendar.is_session(session):
+        return False
+    return calendar.session_open(session) <= minute < calendar.session_close(session)
+
+
 def session_close_utc(instant: datetime | None = None) -> datetime | None:
     """When the session on `instant`'s Eastern date closes, in UTC. None if not a session.
 

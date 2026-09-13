@@ -25,22 +25,13 @@ class QuoteUnavailable(RuntimeError):
     """No usable quote could be established for the symbol."""
 
 
-class StaleQuote(QuoteUnavailable):
-    """A quote arrived but is too old to price against.
-
-    Subclasses QuoteUnavailable so a caller can catch one type and mean "I have
-    no price I trust". A stale quote is more dangerous than a missing one: it
-    looks usable.
-    """
-
-
 # Quote is DEFINED in risk.preflight and re-exported here. The guard table is
 # the thing that must not depend on a broker client, so the type it evaluates
 # lives with it and the direction is one-way: quotes -> preflight, never back.
 # Re-exported rather than moved outright so `from schwab_client.quotes import
 # Quote` keeps working for every existing caller.
 __all__ = [
-    "Quote", "QuoteUnavailable", "StaleQuote", "TICK",
+    "Quote", "QuoteUnavailable", "TICK",
     "parse_quote", "marketable_sell_limit", "fetch_quote",
 ]
 
@@ -140,11 +131,19 @@ def marketable_sell_limit(bid: float, buffer_pct: float, tick: float = TICK) -> 
     return price
 
 
-def fetch_quote(symbol: str, config, client=None, now: datetime | None = None) -> Quote:
-    """Fetch, validate, and freshness-check a quote. Raises QuoteUnavailable.
+def fetch_quote(symbol: str, config, client=None) -> Quote:
+    """Fetch and validate a quote. Raises QuoteUnavailable.
 
     Transport is validated BEFORE the body is parsed, so an HTTP error body
     cannot reach the parser and masquerade as data.
+
+    Freshness is NOT judged here; guard 4 owns it. This used to raise StaleQuote
+    on a 30-second rule at any hour, while guard 4 -- the rule's documented
+    owner -- deliberately accepts the last close outside the regular session.
+    The stricter check ran first, so guard 4 only ever saw None and every
+    pre-open approval was refused "no usable quote". The quote carries its
+    real `quote_time`, so nothing is lost by returning an old one: the decision
+    is made one step later, by the guard that knows what time it is.
     """
     # Every way of NOT getting a quote is a QuoteUnavailable. Approve catches
     # only that type and hands it to guard 4; anything else escaped the handler
@@ -165,12 +164,4 @@ def fetch_quote(symbol: str, config, client=None, now: datetime | None = None) -
         raise
     except Exception as exc:
         raise QuoteUnavailable(f"{symbol}: {exc}") from exc
-    quote = parse_quote(symbol, payload)
-
-    max_age = getattr(config, "quote_max_age_s", 30)
-    age = quote.age_seconds(now)
-    if age > max_age:
-        raise StaleQuote(
-            f"{symbol}: quote is {age:.0f}s old (limit {max_age}s) — refusing to price off it"
-        )
-    return quote
+    return parse_quote(symbol, payload)

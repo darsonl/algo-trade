@@ -20,7 +20,6 @@ import pytest
 from schwab_client.quotes import (
     Quote,
     QuoteUnavailable,
-    StaleQuote,
     fetch_quote,
     marketable_sell_limit,
     parse_quote,
@@ -207,28 +206,32 @@ def test_fetch_validates_transport_before_parsing():
     client.get_quote.return_value = _response(_payload(), status_ok=False)
 
     with pytest.raises(RuntimeError, match="401"):
-        fetch_quote("AAPL", _config(), client=client, now=NOW)
+        fetch_quote("AAPL", _config(), client=client)
 
 
 def test_fetch_returns_a_parsed_quote():
     client = MagicMock()
     client.get_quote.return_value = _response(_payload())
 
-    q = fetch_quote("AAPL", _config(), client=client, now=NOW)
+    q = fetch_quote("AAPL", _config(), client=client)
 
     assert q.bid == 170.10
 
 
-def test_fetch_rejects_a_stale_quote():
-    """A quote old enough to be wrong is worse than no quote: it looks usable."""
-    old = int((NOW - timedelta(seconds=120)).timestamp() * 1000)
+def test_fetch_leaves_staleness_to_guard_4():
+    """An old quote is RETURNED, with its real quote_time, not refused here.
+
+    This raised StaleQuote on a 30-second rule at any hour -- so before the open
+    guard 4 received None and refused "no usable quote", although guard 4 itself
+    accepts the last close outside regular hours by design. Two checks on one
+    rule disagreed, and the stricter one ran first. Guard 4 owns it now; it
+    still refuses a stale quote during the session.
+    """
+    old = NOW - timedelta(hours=2)
     client = MagicMock()
-    client.get_quote.return_value = _response(_payload(quote_time=old))
+    client.get_quote.return_value = _response(
+        _payload(quote_time=int(old.timestamp() * 1000)))
 
-    with pytest.raises(StaleQuote):
-        fetch_quote("AAPL", _config(max_age=30), client=client, now=NOW)
+    q = fetch_quote("AAPL", _config(max_age=30), client=client)
 
-
-def test_stale_quote_is_a_quote_unavailable():
-    """Callers should be able to catch one type for 'no usable quote'."""
-    assert issubclass(StaleQuote, QuoteUnavailable)
+    assert q.quote_time == old
