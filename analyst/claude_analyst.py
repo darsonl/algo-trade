@@ -2,6 +2,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import time
+from urllib.parse import urlparse
 import anthropic
 import openai
 from config import Config
@@ -85,7 +86,9 @@ _DEFAULT_MODELS: dict[str, str] = {
     # a *-flash primary caps the entire day at ~20 analyst calls.
     "gemini": "gemini-3.1-flash-lite",
     "github": "gpt-4o-mini",
-    "deepseek": "deepseek-chat",
+    # deepseek-chat was a legacy alias slated for retirement 2026-07-24; the
+    # API's /models listed only deepseek-flash and deepseek-v4-pro on 2026-09-13.
+    "deepseek": "deepseek-flash",
 }
 
 
@@ -353,8 +356,30 @@ def _call_api(client, model: str, prompt: str) -> str:
         model=model,
         max_tokens=256,
         messages=[{"role": "user", "content": prompt}],
+        **openai_request_extras(client),
     )
     return response.choices[0].message.content
+
+
+def openai_request_extras(client) -> dict:
+    """Provider-specific body fields for an OpenAI-compatible chat call.
+
+    DeepSeek-V4.1-Flash (2026-09-10) THINKS BY DEFAULT, and its reasoning spends
+    the whole 256-token budget before any answer: finish_reason='length',
+    content ''. That reads as a parse error, not an API error, so nothing named
+    the cause. The retired `deepseek-v4-flash` id routes to the same model, so
+    the paid tier broke with no config change. Measured through the probe:
+    7/18 parsed thinking on, 18/18 off (59-94 completion tokens).
+
+    Keyed on the client's HOST rather than a provider argument: the host is what
+    decides where the request goes, and `thinking` is a DeepSeek extension no
+    other endpoint is promised to ignore. Shared with the probe script so it
+    measures the request the app actually sends.
+    """
+    host = urlparse(str(getattr(client, "base_url", "") or "")).hostname
+    if host == urlparse(_OPENAI_BASE_URLS["deepseek"]).hostname:
+        return {"extra_body": {"thinking": {"type": "disabled"}}}
+    return {}
 
 
 def _note_attempt(on_attempt, provider: str, model: str) -> None:

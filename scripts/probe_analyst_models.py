@@ -53,6 +53,7 @@ from analyst.claude_analyst import (  # noqa: E402
     _DEFAULT_MODELS,
     _OPENAI_BASE_URLS,
     build_prompt,
+    openai_request_extras,
     parse_claude_response,
 )
 from config import Config  # noqa: E402
@@ -169,10 +170,14 @@ def probe(client, model: str, repeat: int, delay: float,
             attempted += 1
             prompt = build_prompt(ticker=ticker, info=info, headlines=headlines)
             try:
+                # Same budget and body fields as _call_api: a looser 400-token
+                # cap, or a missing thinking switch, measures a request the app
+                # never sends -- deepseek-flash parses 7/18 without the switch.
                 resp = client.chat.completions.create(
                     model=model,
                     messages=[{"role": "user", "content": prompt}],
-                    max_tokens=400,
+                    max_tokens=256,
+                    **openai_request_extras(client),
                 )
                 text = resp.choices[0].message.content or ""
             except Exception as exc:

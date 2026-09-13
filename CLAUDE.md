@@ -136,7 +136,9 @@ python main.py
   |---|---|---|---|---|---|
   | primary | `gemini-3.1-flash-lite` | 15/15 | 500 | Google | free |
   | fallback | `gemini-3.7-flash` | **12/18 (67%)** | 20 | Google | free |
-  | fallback2 | `deepseek-v4-flash` | **18/18** | — | DeepSeek | **paid** |
+  | fallback2 | `deepseek-flash` (V4.1 Flash) | **18/18** | — | DeepSeek | **paid** |
+
+  **DeepSeek retired V4 Flash on 2026-09-10 and silently broke this tier.** The old id `deepseek-v4-flash` is *routed* to V4.1 Flash, which **thinks by default**: the reasoning spends the whole 256-token budget, the reply comes back `''` with `finish_reason='length'`, and that surfaces as a parse error rather than anything naming the cause. Measured 2026-09-13: **7/18** thinking on, **18/18** off. `openai_request_extras()` sends `thinking: disabled` to the DeepSeek host only, and the probe shares it, so the probe measures the request the app sends. A provider can change the model behind an id you never edited — re-probe the paid tier after any release note.
 
   On parse rate alone the obvious move is to promote deepseek — it is perfect so far AND a different *provider*, so a Google-side outage would stop taking out two tiers at once. **That was proposed on 2026-08-23 and DECIDED AGAINST, deliberately: deepseek costs money.** A free model that parses two times in three, sitting in front of a paid one, absorbs ~67% of fallback traffic for nothing and passes only the residue to the billed tier. The wasted call and ~12s of latency on the other third is the price of that.
 
