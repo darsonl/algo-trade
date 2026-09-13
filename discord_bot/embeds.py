@@ -214,3 +214,26 @@ def build_stats_embed(stats: dict) -> discord.Embed:
         inline=True,
     )
     return embed
+
+
+_TREND_STYLE = {
+    "calm": ("🟢", discord.Color.green()),
+    "watch": ("🟡", discord.Color.gold()),
+    "warning": ("🔴", discord.Color.red()),
+    "unknown": ("⚪", discord.Color.light_grey()),
+}
+
+
+def build_market_trend_embed(readings) -> discord.Embed:
+    """Build the /market_trend embed: one field per gauge, colored by the worst status."""
+    from screener.market_trend import worst_status
+
+    embed = discord.Embed(title="Market Trend", color=_TREND_STYLE[worst_status(readings)][1])
+    embed.description = "🟢 calm · 🟡 watch · 🔴 warning · ⚪ unavailable"
+    for r in readings:
+        value = f"**{r.value}**\n{r.detail}"
+        if r.as_of is not None:
+            value += f"\n_as of {r.as_of.isoformat()}_"
+        embed.add_field(name=f"{_TREND_STYLE[r.status][0]} {r.name}", value=value[:1024], inline=False)
+    embed.set_footer(text="Yields and fed funds target: FRED (about 1 business day behind) · Indices: Yahoo Finance")
+    return embed
