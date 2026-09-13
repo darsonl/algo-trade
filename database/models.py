@@ -163,6 +163,7 @@ def _create_shadow_tables(conn) -> None:
                reference_price       REAL,
                reference_price_source TEXT,
                gate_config_json      TEXT,
+               technical_verdict     TEXT,
                human_action          TEXT,
                human_action_at       TEXT
            )"""
@@ -185,6 +186,16 @@ def _create_shadow_tables(conn) -> None:
     try:
         conn.execute(
             "ALTER TABLE shadow_observations ADD COLUMN gate_config_json TEXT"
+        )
+    except sqlite3.OperationalError:
+        pass  # Column already exists
+    # The technical gate's verdict on every stock row that reached it, whoever
+    # rejected the row -- the counterfactual of a pipeline without the analyst.
+    # NULL on existing rows, never re-derived from technicals_json: that would
+    # apply today's gate logic to a row judged before it.
+    try:
+        conn.execute(
+            "ALTER TABLE shadow_observations ADD COLUMN technical_verdict TEXT"
         )
     except sqlite3.OperationalError:
         pass  # Column already exists

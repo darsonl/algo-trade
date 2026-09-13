@@ -73,8 +73,9 @@ python main.py
                             + S&P 500 from Wikipedia (top 10 by EPS+ROE, 24h cached)
           → for each ticker (skip if recommended today or has open position):
               1. yfinance fundamentals → fundamental filter (P/E, yield, growth)
-              2. yfinance news headlines (5 max) → Claude API → BUY/HOLD/SKIP signal
-              3. yfinance technicals → technical filter (RSI, MA50, volume)
+              2. yfinance news headlines (5 max) + technicals fetched/evaluated
+                 → analyst API → BUY/HOLD/SKIP signal
+              3. technical filter decides (RSI, MA50, volume); verdict recorded either way
               4. Write recommendation to DB, post Discord embed with Approve/Reject buttons
           → sell pass (after buy pass): iterate open positions
               → check_exit_signals (RSI > threshold AND MACD bearish)
@@ -118,7 +119,8 @@ python main.py
 
 ### Key Design Decisions
 
-- **Two-stage filtering**: Fundamental filter runs before calling Claude (cheap check first), technical filter runs after Claude approves (avoids technical fetch on skipped tickers).
+- **Two-stage filtering**: Fundamental filter runs before calling the analyst (cheap check first). Technicals are **fetched and evaluated before** the analyst too, but the technical gate still **decides after** it — both must pass, so the order cannot change who is recommended. The fetch is free and the call is metered, so a ticker whose history cannot be read no longer spends quota on its way to `error`. (Until 2026-09-13 this note said technicals were skipped for analyst-rejected tickers; the code had fetched them for every analysed ticker all along.)
+- **`technical_verdict` is the analyst's counterfactual, and it is NOT `reject_reason`**: every stock row that reached the technical gate — `rejected_signal`, `rejected_technical`, `recommended` and `skipped_quota_exhausted` — stores `'passed'` or the failing criterion, **whoever rejected the row**. It answers "what would a pipeline without the analyst have posted?", which `reject_reason` cannot: on a `rejected_signal` the analyst refused, and the scan clears the gate's `failed_on` so the rejection is not misattributed. Quota-exhausted rows carry it so that *having* a verdict does not correlate with how a row exited. **NULL means the gate never ran** (fundamental rejects, ETFs — which have no technical gate — and rows predating the column); old rows are **not** backfilled from `technicals_json`, which would judge them by today's gate logic. `scripts/shadow_report.py` prints the count as *would post without the analyst*, with the **busiest session** beside the total, because the cost of dropping the analyst is alert fatigue and that is a per-day property.
 - **Dry-run by default, through ONE variable**: `EXECUTION_MODE` (`dry_run` | `live` | `simulated`) replaced `DRY_RUN` + `PAPER_TRADING`. `paper_trading` was read in exactly one place — a startup warning — and gated **nothing**, while *reading* like a safety layer; Schwab's Trader API has no paper endpoint at all. `dry_run` survives as a **derived, assignable** field (`__post_init__` sets it to `execution_mode != "live"`) rather than a read-only property, because 55 test sites set it to stay off live Schwab and a property would silently strip that protection from any site that was missed.
 
   **The migration is loud**: `validate()` raises if `DRY_RUN` or `PAPER_TRADING` appear in `os.environ` at all, naming the mode the old settings map to. Silently deriving the new value would reintroduce exactly the unopted-into safety this removes. An unrecognised mode fails startup rather than being guessed at, and anything that is not exactly `live` derives `dry_run=True`, so a typo fails closed twice over.
@@ -331,7 +333,7 @@ MAX_POSITION_SIZE_USD=500
 
 **`analyst_calls`**: PRIMARY KEY (date, provider, **model**), count — daily quota per model, matching how Google meters. Legacy rows migrated to `model=''` rather than dropped (those calls were really made) or attributed to a current model (they never consumed its budget)
 
-**`shadow_observations`**: every candidate a scan saw, including rejects — `reference_price` is the screen price from `.info` (see above), `reference_price_source` its provenance, and `gate_config_json` the thresholds of every gate applied (NULL on rows predating it) with `reject_reason` naming the specific criterion that failed; **`shadow_outcomes`**: forward marks per `(observation_id, horizon)`, each carrying the correction that produced it (`adjusted_entry_price`, `split_factor`, `dividend_factor`; NULL on rows predating corrections)
+**`shadow_observations`**: every candidate a scan saw, including rejects — `reference_price` is the screen price from `.info` (see above), `reference_price_source` its provenance, and `gate_config_json` the thresholds of every gate applied (NULL on rows predating it) with `reject_reason` naming the specific criterion that failed, and `technical_verdict` the technical gate's `'passed'`/criterion on every stock row that reached it regardless of who rejected it (NULL where the gate never ran); **`shadow_outcomes`**: forward marks per `(observation_id, horizon)`, each carrying the correction that produced it (`adjusted_entry_price`, `split_factor`, `dividend_factor`; NULL on rows predating corrections)
 
 **`orders`**: the durable order ledger — status, broker_order_id, filled_shares/notional, `fills_observed`, `predecessor_order_id`, `reserved_notional_override`, `intended_session_date` (the session the broker will actually run it in — what the daily ceiling buckets on; backfilled for pre-existing rows, since a NULL would be invisible to the ceiling and fail open)
 
@@ -370,7 +372,8 @@ Pre-flight helper: `.venv/Scripts/python.exe scripts/check_ops_ids.py` reports t
 
 ### Test Suite
 
-1460 tests as of 2026-09-13. Run with `.venv/Scripts/python.exe -m pytest -q` (~50s). Key test files:
+1477 tests as of 2026-09-13. Run with `.venv/Scripts/python.exe -m pytest -q` (~50s). Key test files:
+- `test_technical_verdict.py` — the analyst counterfactual: verdict recorded at every stock exit past the fundamental gate, never leaking into `reject_reason`, NULL for ETFs and old rows, and technicals fetched before any quota is spent (12 tests)
 - `test_dual_class_dedupe.py` — one ticker per company: most-traded class kept, freed slot refilled, CIK-less tickers never merged, pre-dedupe caches rebuilt, fail-open without CIKs (14 tests)
 - `test_forward_pe_gate.py` — forward P/E gate: non-positive and unusable values rejected, inclusive ceiling, trailing no longer decides, `MAX_PE_RATIO` fails startup, dividend floor off by default, embed/prompt fields (23 tests)
 - `test_market_trend.py` — `/market_trend`: threshold edges, curve shape naming, un-inversion memory, the real-FRED emergency-cut oracle, per-indicator failure isolation, defer-before-fetch (63 tests, no network)
