@@ -67,6 +67,7 @@ class ShadowObservation:
     reference_price: float | None = None
     reference_price_source: str | None = None
     gate_config_json: str | None = None
+    technical_verdict: str | None = None
 
 
 def _dumps(payload) -> str | None:
@@ -101,12 +102,20 @@ def build_observation(
     reference_price: float | None = None,
     reference_price_source: str | None = None,
     gates: tuple = (),
+    technical_verdict=None,
 ) -> ShadowObservation:
     """Assemble one observation, validating the funnel position.
 
     `stage` and `outcome` are checked against the enums because a typo would
     silently create a bucket no report reads, and the error would surface as a
     quietly missing row rather than a failure.
+
+    `technical_verdict` is the technical gate's `Verdict`, stored as 'passed'
+    or its failing criterion REGARDLESS of who rejected the row. It is the
+    counterfactual "would a pipeline without the analyst have posted this?",
+    which `reject_reason` cannot carry: on a `rejected_signal` the analyst
+    refused, and the caller clears the gate's `failed_on` so the rejection is
+    not misattributed. It never feeds `reject_reason` for the same reason.
     """
     if stage not in STAGES:
         raise ValueError(f"unknown stage {stage!r}; expected one of {STAGES}")
@@ -149,6 +158,9 @@ def build_observation(
         reference_price=reference_price,
         reference_price_source=reference_price_source,
         gate_config_json=_dumps(thresholds) if gates else None,
+        technical_verdict=(None if technical_verdict is None
+                           else "passed" if technical_verdict.passed
+                           else technical_verdict.failed_on),
     )
 
 

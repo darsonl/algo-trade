@@ -47,6 +47,59 @@ def test_unknown_outcomes_are_still_counted():
         "from_the_future": 1}
 
 
+# --- the analyst counterfactual ---
+
+def _judged(outcome, verdict, session="2026-09-14"):
+    return {"outcome": outcome, "technical_verdict": verdict, "session_date": session}
+
+
+def test_would_post_counts_every_technical_pass_whoever_decided():
+    rows = [
+        _judged("recommended", "passed"),
+        _judged("rejected_signal", "passed"),
+        _judged("rejected_signal", "passed"),
+        _judged("skipped_quota_exhausted", "passed"),
+        _judged("rejected_signal", "rsi_above_max"),
+        _judged("rejected_technical", "price_below_ma50"),
+    ]
+    c = report.analyst_counterfactual(rows)
+    assert c["judged"] == 6
+    assert c["would_post"] == 4
+    assert c["posted"] == 1
+    assert c["stopped_by_analyst"] == 2
+    assert c["quota_skipped"] == 1
+
+
+def test_the_busiest_session_is_reported_not_only_the_total():
+    """Alert fatigue is a per-day property. 20 posts over 10 sessions is fine;
+    20 in one session is the operator approving on autopilot."""
+    rows = ([_judged("rejected_signal", "passed", "2026-09-14")] * 3
+            + [_judged("rejected_signal", "passed", "2026-09-15")])
+    c = report.analyst_counterfactual(rows)
+    assert c["sessions"] == 2
+    assert c["max_per_session"] == 3
+
+
+def test_rows_without_a_verdict_are_not_counted_as_judged():
+    """NULL means the gate never ran -- a fundamental reject, an ETF, or a row
+    from before the column existed. Counting it would inflate the denominator."""
+    rows = [{"outcome": "rejected_fundamental", "technical_verdict": None,
+             "session_date": "2026-09-14"},
+            {"outcome": "rejected_signal", "session_date": "2026-08-22"}]
+    assert report.analyst_counterfactual(rows) is None
+
+
+def test_the_counterfactual_section_is_rendered_when_there_is_data():
+    text = "\n".join(report.render_report(
+        [_judged("rejected_signal", "passed")], []))
+    assert "would post without the analyst" in text
+
+
+def test_no_counterfactual_section_before_any_verdict_exists():
+    text = "\n".join(report.render_report([{"outcome": "recommended"}], []))
+    assert "without the analyst" not in text
+
+
 # --- the queries, against a real database ---
 
 def _db(tmp_path):

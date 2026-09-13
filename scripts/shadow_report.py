@@ -38,6 +38,35 @@ def build_funnel(rows) -> dict:
     return dict(Counter(r["outcome"] for r in rows))
 
 
+def analyst_counterfactual(rows) -> dict | None:
+    """What a pipeline WITHOUT the analyst would have posted.
+
+    That is every stock candidate the technical gate passed, whatever the
+    analyst then said -- `technical_verdict` records the gate independently of
+    who rejected the row. None when no row carries a verdict (older rows, or a
+    database the bot has not migrated yet), so the report omits the section
+    rather than printing zeros that read as "the analyst stopped nothing".
+
+    `max_per_session` is reported beside the total because the cost of removing
+    the analyst is alert fatigue, which is a per-day property.
+    """
+    judged = [r for r in rows
+              if "technical_verdict" in r.keys() and r["technical_verdict"]]
+    if not judged:
+        return None
+    passed = [r for r in judged if r["technical_verdict"] == "passed"]
+    per_session = Counter(r["session_date"] for r in passed)
+    return {
+        "judged": len(judged),
+        "would_post": len(passed),
+        "posted": sum(r["outcome"] == "recommended" for r in passed),
+        "stopped_by_analyst": sum(r["outcome"] == "rejected_signal" for r in passed),
+        "quota_skipped": sum(r["outcome"] == "skipped_quota_exhausted" for r in passed),
+        "sessions": len({r["session_date"] for r in judged}),
+        "max_per_session": max(per_session.values(), default=0),
+    }
+
+
 def load_observations(db_path: str, since: str = EPOCH) -> list:
     with _connect(db_path) as conn:
         return conn.execute(
@@ -109,6 +138,19 @@ def render_report(rows, marks, since: str = EPOCH) -> list[str]:
 
     for outcome, n in sorted(funnel.items(), key=lambda kv: (-kv[1], kv[0])):
         out.append(f"  {outcome:34} {n:5}  ({n / total:5.1%})")
+
+    cf = analyst_counterfactual(rows)
+    if cf:
+        out += [
+            "",
+            f"analyst counterfactual ({cf['judged']} stock candidates the technical"
+            f" gate judged, {cf['sessions']} sessions):",
+            f"  would post without the analyst    {cf['would_post']:5}"
+            f"  (busiest session: {cf['max_per_session']})",
+            f"    posted                           {cf['posted']:5}",
+            f"    stopped by the analyst           {cf['stopped_by_analyst']:5}",
+            f"    quota-skipped                    {cf['quota_skipped']:5}",
+        ]
 
     if marks:
         # Horizon order comes from HORIZONS rather than SQL, because sorting

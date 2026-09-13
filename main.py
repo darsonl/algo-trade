@@ -750,19 +750,32 @@ async def _run_scan_locked(bot: TradingBot, config: Config) -> None:
                     on_attempt=on_attempt,
                 )
 
+            # Technicals BEFORE the analyst, though the gate still decides after
+            # it. The fetch is free and the call is metered, so a ticker whose
+            # history cannot be read no longer spends quota on its way to
+            # `error`; and every exit below -- quota-exhausted included -- can
+            # record the gate's verdict, which is the counterfactual of a
+            # pipeline without the analyst. Who gets recommended is unchanged:
+            # both conditions must hold, in either order.
+            tech_data = await asyncio.to_thread(fetch_technical_data, yf_ticker)
+            technical_gate = evaluate_technicals(tech_data, config)
+
             analysis = await analyze_with_cache(config, ticker, headlines, _analyze_buy)
             if analysis is None:
                 _screen_price, _screen_src = screen_price(info)
+                # Quota refused this row, not the gate: settings recorded,
+                # criterion cleared, verdict kept in its own column.
                 _record_shadow(config, ticker, "stock", "analyst",
                                "skipped_quota_exhausted", fundamentals=info,
+                               technicals=tech_data,
                                headlines=headlines, macro=macro_context,
                                reference_price=_screen_price,
                                reference_price_source=_screen_src,
-                               gates=(fundamental_gate,))
+                               gates=(fundamental_gate,
+                                      technical_gate._replace(failed_on=None)),
+                               technical_verdict=technical_gate)
                 continue  # all providers quota-exhausted
 
-            tech_data = await asyncio.to_thread(fetch_technical_data, yf_ticker)
-            technical_gate = evaluate_technicals(tech_data, config)
             if not should_recommend(analysis["signal"], tech_data, config):
                 # Two different refusals share one bool; the funnel needs them
                 # apart, so re-check rather than change should_recommend's
@@ -783,7 +796,8 @@ async def _run_scan_locked(bot: TradingBot, config: Config) -> None:
                                analysis=analysis,
                                reference_price=_screen_price,
                                reference_price_source=_screen_src,
-                               gates=_gates)
+                               gates=_gates,
+                               technical_verdict=technical_gate)
                 continue
 
             div_yield = normalize_dividend_yield(info.get("dividendYield"))
@@ -825,7 +839,8 @@ async def _run_scan_locked(bot: TradingBot, config: Config) -> None:
                            analysis=analysis, recommendation_id=rec_id,
                            reference_price=_screen_price,
                            reference_price_source=_screen_src,
-                           gates=(fundamental_gate, technical_gate))
+                           gates=(fundamental_gate, technical_gate),
+                           technical_verdict=technical_gate)
 
         except Exception as exc:
             logger.error("Error processing %s: %s", ticker, exc)
