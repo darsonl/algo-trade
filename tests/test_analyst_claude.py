@@ -1142,6 +1142,38 @@ def test_call_api_openai_branch_extracts_message_content():
     assert client.captured["messages"] == [{"role": "user", "content": "the prompt"}]
 
 
+def test_call_api_disables_thinking_on_deepseek():
+    """DeepSeek-V4.1-Flash (2026-09-10) thinks by default, and the reasoning spends
+    the whole 256-token budget: finish_reason='length', content ''. Measured through
+    the probe: 7/18 parsed with thinking on, 18/18 with it off. The retired
+    `deepseek-v4-flash` name routes to the same model, so this broke the paid tier
+    without any config change."""
+    client = _StubOpenAIClient("SIGNAL: SKIP\nREASONING: stubbed deepseek.")
+    client.base_url = "https://api.deepseek.com/"
+
+    _call_api(client, "deepseek-flash", "the prompt")
+
+    assert client.captured["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
+@pytest.mark.parametrize("base_url", [
+    None,  # openai default endpoint / stub without the attribute
+    "https://generativelanguage.googleapis.com/v1beta/openai/",
+    "https://models.inference.ai.azure.com",
+    "https://evil.example/api.deepseek.com/",  # host, not substring
+])
+def test_call_api_sends_no_thinking_switch_elsewhere(base_url):
+    """`thinking` is a DeepSeek extension; other OpenAI-compatible endpoints are
+    not promised to ignore an unknown body field, so it goes to DeepSeek only."""
+    client = _StubOpenAIClient("SIGNAL: SKIP\nREASONING: stub.")
+    if base_url is not None:
+        client.base_url = base_url
+
+    _call_api(client, "some-model", "the prompt")
+
+    assert "extra_body" not in client.captured
+
+
 def test_call_api_anthropic_branch_extracts_content_text():
     """_call_api routes a client exposing .messages through messages.create and
     returns content[0].text (the anthropic response shape)."""
