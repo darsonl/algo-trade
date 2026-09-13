@@ -55,10 +55,15 @@ test exercised the function, and `main.py` swallowed the exception into a log wa
 ```
 python main.py
   → Config.validate() (fast-fail if Schwab/Discord/Anthropic keys missing)
+  → session_window_status(): EXIT here (before Discord) if today is not an NYSE
+    session, or if today's close has already passed. The task restarts it daily.
   → DB init (SQLite, creates tables if absent)
   → Discord bot + APScheduler start
-  → Daily cron at SCAN_HOUR:SCAN_MINUTE (default 9:00 AM)
+  → one-shot shutdown job registered at session_close_utc() — 16:00 ET, or 13:00
+    on a half-day. The bot runs for one session and then exits.
+  → Daily cron at each SCAN_TIMES entry (SCAN_HOUR/MINUTE only as fallback)
       → run_scan():
+          → scan_allowed_now(): skip if not a trading session (fails OPEN)
           → drain the ops-alert outbox, re-alert on stuck approvals
           → sweep_terminal_recommendations(): ask the broker what each open
             order became; retire the recommendation when it is terminal, follow
@@ -167,6 +172,16 @@ python main.py
   This is the one place the project takes a real exchange calendar (`exchange-calendars`, XNYS), which `market_time.py` otherwise avoids on purpose. It is load-bearing, not convenience: **Good Friday** is a market holiday but not a federal one, so a weekday rule buckets the Thursday night before it into a Friday that never trades; and the **half-day after Thanksgiving closes 13:00 ET**, so a hardcoded 16:00 calls 14:00 "still open" and files it into a session that already ended. `tests/test_market_time.py` pins both, and both were verified to kill a naive implementation before being trusted.
 
   The calendar is memoised but rebuilds when an instant passes its end (it only spans ~1 year ahead), because a process alive longer would otherwise raise `MinuteOutOfBounds` from inside the order path. Only the *upper* bound rebuilds — an instant before the calendar starts is bad data in a ledger created this month, and should raise.
+- **Scans skip non-trading days, and the bot only runs during a session**: `market_time.is_trading_session()` asks the real XNYS calendar, judged on the **Eastern** date — 21:00 ET Sunday is 01:00 UTC Monday, so anything comparing UTC days calls that a Monday. A `day_of_week='mon-fri'` trigger would be simpler and wrong: **Good Friday** is a market holiday but not a federal one, and Thanksgiving and July 4th observed all fall on weekdays; the Friday after Thanksgiving is the converse — it closes 13:00 but **is** a session and must still scan. Without the guard a Sunday scan screens stale Friday prices, spends ~50 analyst calls, and writes shadow observations stamped to a date with no session. That last part is the expensive one: a weekend cohort is priced off a stale quote while a weekday one is priced live, so the bias correlates with the calendar.
+
+  **`scan_allowed_now()` fails OPEN, inverting this codebase's usual rule, deliberately.** The kill switch and the preflight table protect *capital*, so an unknown there must refuse. This guard protects *data quality*, and a scan places no orders. A junk weekend row is identifiable by `session_date` and deletable; a trading day lost to a flaky calendar lookup is gone.
+
+  `session_window_status()` returns `run` / `not_a_session` / `already_closed`; the latter two exit **before Discord is touched**. `already_closed` is what makes the task's repeating trigger safe. `session_close_utc()` is read from the calendar because **16:00 ET is not a constant** (two half-days close 13:00) and **not constant in UTC** either (20:00 UTC summer, 21:00 winter). The shutdown job deliberately does **not** call `.result()`, unlike the scan jobs beside it: both run on the scheduler thread, but waiting on the coroutine that tears down the loop you are waiting through is how you deadlock.
+
+  **`tests/conftest.py` exists because of this guard.** It made ~36 unrelated scan tests depend on the wall clock — they all went red the moment it landed, on a Sunday. One autouse fixture pins the calendar suite-wide, the same principle as threading an `instant` through every time-dependent query: the clock is not a test input. Tests that *are* about the guard override it locally and win.
+- **The bot logs to a console ONLY when one is being watched**: `build_log_handlers()` adds a `StreamHandler` only if the stream is a terminal, and it tests **`sys.stderr`** — `logging.StreamHandler()` defaults to stderr, so gating on `sys.stdout` is a no-op that reads correctly. `bot.run(..., log_handler=None)` separately stops discord.py attaching its own handler to the `discord` logger (it never sets `propagate=False`, so every `discord.*` record printed twice).
+
+  This is not cosmetic. A Windows console has **QuickEdit Mode on by default** and a stray text selection suspends every write to it; the first thread to log then blocks forever **holding the `logging` module lock**, and every other thread queues behind it — including the APScheduler executor, which logs `Running job` before invoking its target. On 2026-09-12 that wedged the scheduler and silently cost a scan: process alive, all logging stopped, job never submitted. See `docs/superpowers/HANDOFF-2026-09-13.md` §2.
 - **ETF bypass**: ETFs are partitioned out of the stock scan by `partition_watchlist()` using `yfinance quoteType`. They run through `run_scan_etf()` which skips `passes_fundamental_filter` entirely and uses `build_etf_prompt` (no earnings/P/E context).
 - **sell_blocked flag**: After a rejected sell, `sell_blocked=True` prevents re-triggering the sell signal for the same position on the same day. Auto-resets when RSI drops back below threshold.
 - **One scan at a time, across BOTH scan paths — one lock, not one each**: `risk/scan_lock.py`. A symbol can appear in the stock universe *and* in the ETF universe, so two concurrent scans can reach the same ticker; `ticker_recommended_today` is a read followed by a much later write with network awaits in between, the classic check-then-act race. `idx_active_rec_per_ticker` is the durable backstop but it only turns that race into an `IntegrityError`, and an aborted scan is not a good outcome either.
@@ -342,7 +357,9 @@ Pre-flight helper: `.venv/Scripts/python.exe scripts/check_ops_ids.py` reports t
 
 ### Test Suite
 
-1320 tests as of 2026-08-30. Run with `.venv/Scripts/python.exe -m pytest -q` (~25s). Key test files:
+1352 tests as of 2026-09-13. Run with `.venv/Scripts/python.exe -m pytest -q` (~50s). Key test files:
+- `tests/conftest.py` — the ONE autouse fixture: pins the exchange calendar so the scan suite does not pass Mon–Fri and fail at weekends
+- `test_session_window.py` / `test_logging_setup.py` — the session lifecycle (start before the open, exit at the bell, never come up on a non-session) and the console-handler gating that a wedged scheduler paid for (15 tests)
 - `test_order_status_sweep.py` / `test_order_status_mapping.py` / `test_active_rec_index.py` — step 11: chain-following, the sweep, the trustworthy-fill rule, and the index that cannot ship before its release valve (48 tests)
 - `test_gate_provenance.py` — the gate that judged a candidate and what it was set to: first-failing-criterion, every-gate-not-just-the-decider, and an explicit reason surviving a gate's (23 tests, no mocks)
 - `test_total_return_marks.py` — the split and dividend corrections: window half-open at the entry end, unpriceable dividends leave the mark pending, and the live-yfinance oracle (38 tests, no network, no mocks)
