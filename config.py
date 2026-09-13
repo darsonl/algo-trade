@@ -33,8 +33,10 @@ def _parse_etf_scan_times() -> list[str]:
 # imported, so monkeypatch.setenv in tests (and any runtime env change) had no
 # effect without an importlib.reload — that bit us twice; don't reintroduce it.
 
-def _env_str(name: str, default: str = ""):
-    return field(default_factory=lambda: os.getenv(name, default))
+def _env_str(name: str, default: str = "", *, secret: bool = False):
+    # secret=True keeps the value out of repr(). pytest prints the repr of any
+    # object in a failing assertion, which would put real credentials on screen.
+    return field(default_factory=lambda: os.getenv(name, default), repr=not secret)
 
 
 def _env_int(name: str, default: str):
@@ -58,10 +60,10 @@ _EXECUTION_MODES = frozenset({"dry_run", "live", "simulated"})
 
 @dataclass
 class Config:
-    schwab_app_key: str = _env_str("SCHWAB_APP_KEY")
-    schwab_app_secret: str = _env_str("SCHWAB_APP_SECRET")
+    schwab_app_key: str = _env_str("SCHWAB_APP_KEY", secret=True)
+    schwab_app_secret: str = _env_str("SCHWAB_APP_SECRET", secret=True)
     schwab_callback_url: str = _env_str("SCHWAB_CALLBACK_URL", "https://127.0.0.1")
-    schwab_account_hash: str = _env_str("SCHWAB_ACCOUNT_HASH")
+    schwab_account_hash: str = _env_str("SCHWAB_ACCOUNT_HASH", secret=True)
     # The single env surface that decides what happens to an order.
     #   dry_run    buttons log; nothing is sent            (default)
     #   live       real orders against the real account    (opt-in)
@@ -74,7 +76,7 @@ class Config:
     # strip that protection from any site that was missed.
     dry_run: bool = True
 
-    discord_token: str = _env_str("DISCORD_TOKEN")
+    discord_token: str = _env_str("DISCORD_TOKEN", secret=True)
     discord_channel_id: int = _env_int("DISCORD_CHANNEL_ID", "0")
     # Comma-separated Discord user IDs permitted to run /halt and /resume.
     # Empty means nobody, on purpose: the opposite default would hand the kill
@@ -120,16 +122,16 @@ class Config:
     # rejects a legitimate trade; a missed one under-reserves, which does not.
     resolve_lookback_min: int = _env_int("RESOLVE_LOOKBACK_MIN", "30")
 
-    anthropic_api_key: str = _env_str("ANTHROPIC_API_KEY")
+    anthropic_api_key: str = _env_str("ANTHROPIC_API_KEY", secret=True)
 
     analyst_provider: str = _env_str("ANALYST_PROVIDER", "claude")
-    analyst_api_key: str = _env_str("ANALYST_API_KEY")
+    analyst_api_key: str = _env_str("ANALYST_API_KEY", secret=True)
     analyst_model: str = _env_str("ANALYST_MODEL")
     analyst_fallback_provider: str = _env_str("ANALYST_FALLBACK_PROVIDER")
-    analyst_fallback_api_key: str = _env_str("ANALYST_FALLBACK_API_KEY")
+    analyst_fallback_api_key: str = _env_str("ANALYST_FALLBACK_API_KEY", secret=True)
     analyst_fallback_model: str = _env_str("ANALYST_FALLBACK_MODEL")
     analyst_fallback2_provider: str = _env_str("ANALYST_FALLBACK2_PROVIDER")
-    analyst_fallback2_api_key: str = _env_str("ANALYST_FALLBACK2_API_KEY")
+    analyst_fallback2_api_key: str = _env_str("ANALYST_FALLBACK2_API_KEY", secret=True)
     analyst_fallback2_model: str = _env_str("ANALYST_FALLBACK2_MODEL")
 
     # Off by default (2026-09-13). With a floor, a token payer was rejected while
@@ -164,7 +166,7 @@ class Config:
     top_sp500_count: int = _env_int("TOP_SP500_COUNT", "50")
     analyst_call_delay_s: float = _env_float("ANALYST_CALL_DELAY_S", "4.0")
 
-    alpha_vantage_api_key: str = _env_str("ALPHA_VANTAGE_API_KEY")
+    alpha_vantage_api_key: str = _env_str("ALPHA_VANTAGE_API_KEY", secret=True)
 
     db_path: str = _env_str("DB_PATH", _DEFAULT_DB_PATH)
     log_level: str = _env_str("LOG_LEVEL", "INFO")
