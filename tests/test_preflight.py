@@ -187,6 +187,55 @@ def test_stale_quote_is_accepted_outside_regular_hours():
     assert decision.allowed
 
 
+# "Regular hours" is a SESSION question, not a clock question. The rule was
+# `09:30 <= ET time < 16:00`, which calls a Saturday morning, Good Friday and the
+# afternoon of a 13:00 half-day "regular hours" -- and rejects the last close,
+# the only quote that exists then. Dates checked against the real XNYS calendar.
+
+def _stale_at(now):
+    return _evaluate(_buy(expires_at=now + timedelta(hours=1)),
+                     quote=_quote(age_s=7200, now=now), now=now)
+
+
+def test_stale_quote_is_accepted_pre_open():
+    assert _stale_at(datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc)).allowed  # 08:00 ET Mon
+
+
+def test_stale_quote_is_accepted_on_a_weekend_morning():
+    assert _stale_at(datetime(2026, 8, 22, 15, 0, tzinfo=timezone.utc)).allowed  # 11:00 ET Sat
+
+
+def test_stale_quote_is_accepted_on_a_weekday_holiday():
+    """Good Friday: a market holiday, not a federal one -- a weekday rule misses it."""
+    assert _stale_at(datetime(2026, 4, 3, 15, 0, tzinfo=timezone.utc)).allowed  # 11:00 ET
+
+
+def test_stale_quote_is_accepted_after_a_half_day_close():
+    """The day after Thanksgiving closes 13:00 ET; 14:00 is after hours."""
+    assert _stale_at(datetime(2026, 11, 27, 19, 0, tzinfo=timezone.utc)).allowed  # 14:00 ET
+
+
+def test_stale_quote_is_still_rejected_before_a_half_day_close():
+    decision = _stale_at(datetime(2026, 11, 27, 17, 0, tzinfo=timezone.utc))  # 12:00 ET
+    assert decision.reason_code == "quote_unavailable"
+
+
+def test_the_open_is_inclusive_and_the_close_exclusive():
+    at_open = _stale_at(datetime(2026, 8, 17, 13, 30, tzinfo=timezone.utc))   # 09:30 ET
+    at_close = _stale_at(datetime(2026, 8, 17, 20, 0, tzinfo=timezone.utc))   # 16:00 ET
+    assert at_open.reason_code == "quote_unavailable"
+    assert at_close.allowed
+
+
+def test_an_unreadable_calendar_enforces_freshness():
+    """Fail closed. If the calendar cannot say whether the market is open,
+    assume it is: refusing a stale quote is recoverable, trading on one is not."""
+    from unittest.mock import patch
+    with patch("market_time.in_regular_session", side_effect=RuntimeError("calendar")):
+        decision = _stale_at(datetime(2026, 8, 22, 15, 0, tzinfo=timezone.utc))
+    assert decision.reason_code == "quote_unavailable"
+
+
 # --- guard 5: broker_unavailable, and its ordering ---
 
 def test_failed_position_read_is_rejected_not_treated_as_empty():

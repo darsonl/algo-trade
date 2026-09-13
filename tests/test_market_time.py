@@ -288,3 +288,23 @@ def test_a_non_session_has_no_close():
 def test_the_close_is_timezone_aware_utc():
     close = session_close_utc(datetime(2026, 9, 14, 13, 45, tzinfo=timezone.utc))
     assert close.tzinfo is not None and close.utcoffset().total_seconds() == 0
+
+
+# --- in_regular_session: the session's own open and close, not a clock rule ---
+
+from market_time import in_regular_session  # noqa: E402
+
+
+@pytest.mark.parametrize("instant, expected", [
+    (datetime(2026, 8, 17, 15, 0, tzinfo=timezone.utc), True),    # 11:00 ET Mon
+    (datetime(2026, 8, 17, 12, 0, tzinfo=timezone.utc), False),   # 08:00 ET, pre-open
+    (datetime(2026, 8, 17, 13, 30, tzinfo=timezone.utc), True),   # 09:30 ET, open is inclusive
+    (datetime(2026, 8, 17, 20, 0, tzinfo=timezone.utc), False),   # 16:00 ET, close is exclusive
+    (datetime(2026, 8, 22, 15, 0, tzinfo=timezone.utc), False),   # 11:00 ET Saturday
+    (datetime(2026, 4, 3, 15, 0, tzinfo=timezone.utc), False),    # 11:00 ET Good Friday
+    (datetime(2026, 11, 27, 17, 0, tzinfo=timezone.utc), True),   # 12:00 ET half-day
+    (datetime(2026, 11, 27, 19, 0, tzinfo=timezone.utc), False),  # 14:00 ET, after the 13:00 close
+    (datetime(2026, 12, 15, 15, 0, tzinfo=timezone.utc), True),   # 10:00 ET in winter (EST)
+])
+def test_in_regular_session(instant, expected):
+    assert in_regular_session(instant) is expected
