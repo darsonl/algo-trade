@@ -13,6 +13,15 @@ from apscheduler.triggers.cron import CronTrigger
 
 import yfinance as yf
 
+from apscheduler.triggers.date import DateTrigger
+
+from market_time import (
+    as_utc,
+    is_trading_session,
+    market_session_date,
+    session_close_utc,
+)
+
 from config import Config
 from database.models import get_cursor, initialize_db
 from risk import kill_switch
@@ -486,6 +495,63 @@ async def _drain_ops_outbox(bot: TradingBot) -> None:
         logger.error("Ops-alert outbox drain failed: %s", exc)
 
 
+def session_window_status(instant=None) -> str:
+    """"run" | "not_a_session" | "already_closed" -- should a process be up now?
+
+    Decided from the exchange calendar's own close, so half-days are handled:
+    the Friday after Thanksgiving and Christmas Eve close at 13:00 ET, and a
+    hardcoded 16:00 would keep the bot up three hours past the bell.
+
+    "run" includes PRE-OPEN. That is deliberate and is why the task starts at
+    08:00 ET: `risk/preflight.py` guard 4 relaxes quote staleness outside
+    regular hours precisely because pre-open is when approvals are expected.
+
+    `already_closed` is what makes the task's repeating trigger safe. The
+    trigger repeats through the session so a bot that dies is back within
+    minutes; without this state, a repetition firing after the bell would start
+    a process that sat idle until the next day.
+    """
+    close = session_close_utc(instant)
+    if close is None:
+        return "not_a_session"
+    if as_utc(instant) >= close:
+        return "already_closed"
+    return "run"
+
+
+def schedule_session_shutdown(scheduler, shutdown_fn, close_utc) -> None:
+    """Register the one-shot job that ends the process at the closing bell.
+
+    A DateTrigger rather than a cron entry, because the close is not a fixed
+    time of day -- see session_close_utc. The bot exits daily and is started
+    again by the task, so only today's close is ever needed.
+    """
+    scheduler.add_job(
+        shutdown_fn,
+        trigger=DateTrigger(run_date=close_utc),
+        id="session_shutdown",
+        replace_existing=True,
+    )
+
+
+def scan_allowed_now(instant=None) -> bool:
+    """False only when we can POSITIVELY establish this is not a trading session.
+
+    Fails OPEN, unlike almost every other guard in this codebase, and the
+    asymmetry is the point. The kill switch and the preflight table protect
+    CAPITAL, so an unknown there must refuse. This one protects DATA QUALITY --
+    a scan places no orders, approval is a separate human step -- so the costs
+    run the other way: a junk weekend row is identifiable by `session_date` and
+    can be deleted, while a trading day lost to a flaky calendar lookup is gone
+    for good. When we cannot tell, scan.
+    """
+    try:
+        return is_trading_session(instant)
+    except Exception:
+        logger.exception("Trading-calendar check failed; scanning anyway")
+        return True
+
+
 async def run_scan(bot: TradingBot, config: Config) -> None:
     """Run the full screening pipeline, one scan at a time.
 
@@ -495,6 +561,11 @@ async def run_scan(bot: TradingBot, config: Config) -> None:
     passed. ONE lock covers both scan paths: a symbol can appear in the stock
     universe and in the ETF universe.
     """
+    if not scan_allowed_now():
+        logger.info(
+            "Scan skipped: %s is not an NYSE trading session", market_session_date()
+        )
+        return
     lock = scan_lock()
     if lock.locked():
         logger.warning("Scan skipped: another scan is already running")
@@ -905,6 +976,11 @@ async def run_scan_etf(bot: TradingBot, config: Config) -> None:
     passed. ONE lock covers both scan paths: a symbol can appear in the stock
     universe and in the ETF universe.
     """
+    if not scan_allowed_now():
+        logger.info(
+            "ETF scan skipped: %s is not an NYSE trading session", market_session_date()
+        )
+        return
     lock = scan_lock()
     if lock.locked():
         logger.warning("ETF scan skipped: another scan is already running")
@@ -1105,6 +1181,17 @@ def main() -> None:
     for _handler in build_log_handlers(log_dir, stream=sys.stderr):
         logging.root.addHandler(_handler)
 
+    # Decided BEFORE Discord is touched: a process that should not be up must
+    # not open a gateway connection it will only have to tear down, and must
+    # not leave anything behind to be orphaned.
+    _status = session_window_status()
+    if _status == "not_a_session":
+        logger.info("%s is not an NYSE trading session — not starting.", market_session_date())
+        return
+    if _status == "already_closed":
+        logger.info("Session %s has already closed — not starting.", market_session_date())
+        return
+
     initialize_db(config.db_path)
 
     # Seeds only a database that has never been written; a persisted halt wins
@@ -1156,7 +1243,24 @@ def main() -> None:
             times=config.etf_scan_times,
             job_id_prefix="etf_scan",
         )
+        _close = session_close_utc()
+        if _close is not None:
+            def _shutdown_at_the_bell():
+                logger.info("Session closed — shutting down until the next one.")
+                # Deliberately NOT .result(): this runs on the scheduler thread,
+                # and waiting on the coroutine that stops the loop invites a
+                # deadlock. The scan jobs wait because they need the outcome;
+                # this one only needs the request delivered.
+                asyncio.run_coroutine_threadsafe(bot.close(), bot.loop)
+
+            schedule_session_shutdown(scheduler, _shutdown_at_the_bell, _close)
+
         scheduler.start()
+        if _close is not None:
+            logger.info(
+                "Shutting down at the close: %s",
+                _close.astimezone().strftime("%Y-%m-%d %H:%M %Z"),
+            )
         logger.info(
             "%s", scheduler_summary("Stock scan", config.scan_times, config.scan_timezone)
         )

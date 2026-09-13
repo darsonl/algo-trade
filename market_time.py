@@ -129,3 +129,54 @@ def intended_session_date(instant: datetime | None = None) -> date:
 
     minute = pd.Timestamp(as_utc(instant))
     return _nyse_calendar(minute).minute_to_session(minute, direction="next").date()
+
+
+def is_trading_session(instant: datetime | None = None) -> bool:
+    """True when `instant` falls on a day the NYSE actually trades.
+
+    Judged on the **Eastern calendar date** (`market_session_date`), not the UTC
+    one: 21:00 ET Sunday is 01:00 UTC Monday, and anything comparing UTC days
+    would call that a Monday. Same bug class as the Taipei day-bucketing this
+    module exists to prevent.
+
+    It needs the real exchange calendar for the same reason `intended_session_date`
+    does, and the reason is not weekends -- a `day_of_week='mon-fri'` cron trigger
+    gets those right. It is the **weekday** non-sessions: Good Friday is a market
+    holiday but not a federal one, and Thanksgiving and July 4th observed all fall
+    on weekdays. A weekday rule scans on every one of them.
+
+    An **early close is still a session** and returns True. The Friday after
+    Thanksgiving closes at 13:00 ET and is a real trading day; dropping it would
+    cost a session date permanently, which is worse than the junk row this guard
+    exists to prevent -- a weekend row is identifiable by `session_date` and can
+    be deleted, a missing session cannot be recovered.
+    """
+    import pandas as pd
+
+    minute = pd.Timestamp(as_utc(instant))
+    session = market_session_date(instant)
+    return bool(_nyse_calendar(minute).is_session(pd.Timestamp(session)))
+
+
+def session_close_utc(instant: datetime | None = None) -> datetime | None:
+    """When the session on `instant`'s Eastern date closes, in UTC. None if not a session.
+
+    Read from the exchange calendar rather than assumed, for the reason this
+    module already records for `intended_session_date`: **16:00 ET is not a
+    constant**. The Friday after Thanksgiving and Christmas Eve close at 13:00,
+    so a hardcoded close leaves anything driven by it running three hours past
+    the bell.
+
+    It is returned in UTC, not ET, because the caller schedules on it. 16:00 ET
+    is 20:00 UTC in summer and 21:00 UTC in winter -- pinning the UTC instant
+    instead would be an hour early every winter, which is the same DST trap the
+    scan times fell into before SCAN_TIMEZONE was set.
+    """
+    import pandas as pd
+
+    minute = pd.Timestamp(as_utc(instant))
+    session = market_session_date(instant)
+    calendar = _nyse_calendar(minute)
+    if not calendar.is_session(pd.Timestamp(session)):
+        return None
+    return calendar.session_close(pd.Timestamp(session)).to_pydatetime()
