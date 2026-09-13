@@ -132,7 +132,7 @@ async def test_run_scan_cache_hit_skips_analyze_ticker(mock_eps):
                         with patch("main.queries.get_open_positions", return_value=[]):
                             with patch("main.yf.Ticker"):
                                 with patch("main.fetch_fundamental_info", return_value={"trailingPE": 20.0, "dividendYield": 0.03, "earningsGrowth": 0.1}):
-                                    with patch("main.evaluate_fundamentals", return_value=Verdict(True, None, {"max_pe_ratio": 35.0})):
+                                    with patch("main.evaluate_fundamentals", return_value=Verdict(True, None, {"max_forward_pe": 35.0})):
                                         with patch("main.fetch_news_headlines", return_value=["headline A"]):
                                             with patch("main.queries.get_cached_analysis", return_value=cached):
                                                 with patch("main.analyze_ticker") as mock_analyze:
@@ -172,7 +172,7 @@ async def test_run_scan_cache_miss_calls_analyze_ticker_and_caches(mock_eps):
                             with patch("main.queries.get_open_positions", return_value=[]):
                                 with patch("main.yf.Ticker"):
                                     with patch("main.fetch_fundamental_info", return_value={"trailingPE": 20.0, "dividendYield": 0.03, "earningsGrowth": 0.1}):
-                                        with patch("main.evaluate_fundamentals", return_value=Verdict(True, None, {"max_pe_ratio": 35.0})):
+                                        with patch("main.evaluate_fundamentals", return_value=Verdict(True, None, {"max_forward_pe": 35.0})):
                                             with patch("main.fetch_news_headlines", return_value=["headline B"]):
                                                 with patch("main.queries.get_cached_analysis", return_value=None):
                                                     with patch("main.queries.get_analyst_call_count_today", return_value=0):
@@ -237,7 +237,7 @@ async def test_run_scan_skips_analyze_ticker_when_all_providers_exhausted():
                             with patch("main.queries.get_open_positions", return_value=[]):
                                 with patch("main.yf.Ticker"):
                                     with patch("main.fetch_fundamental_info", return_value={"trailingPE": 20.0, "dividendYield": 0.03, "earningsGrowth": 0.1}):
-                                        with patch("main.evaluate_fundamentals", return_value=Verdict(True, None, {"max_pe_ratio": 35.0})):
+                                        with patch("main.evaluate_fundamentals", return_value=Verdict(True, None, {"max_forward_pe": 35.0})):
                                             with patch("main.fetch_news_headlines", return_value=["headline B"]):
                                                 with patch("main.queries.get_cached_analysis", return_value=None):
                                                     # All three providers return the daily limit — guard fires.
@@ -423,7 +423,7 @@ async def test_run_scan_passes_confidence_to_recommendation():
                             with patch("main.queries.get_open_positions", return_value=[]):
                                 with patch("main.yf.Ticker"):
                                     with patch("main.fetch_fundamental_info", return_value={"trailingPE": 20.0, "dividendYield": 0.03, "earningsGrowth": 0.1}):
-                                        with patch("main.evaluate_fundamentals", return_value=Verdict(True, None, {"max_pe_ratio": 35.0})):
+                                        with patch("main.evaluate_fundamentals", return_value=Verdict(True, None, {"max_forward_pe": 35.0})):
                                             with patch("main.fetch_news_headlines", return_value=["headline A"]):
                                                 with patch("main.queries.get_cached_analysis", return_value=None):
                                                     with patch("main.queries.get_analyst_call_count_today", return_value=0):
@@ -479,7 +479,7 @@ async def test_run_scan_passes_none_confidence_when_missing():
                             with patch("main.queries.get_open_positions", return_value=[]):
                                 with patch("main.yf.Ticker"):
                                     with patch("main.fetch_fundamental_info", return_value={"trailingPE": 25.0, "dividendYield": 0.01, "earningsGrowth": 0.05}):
-                                        with patch("main.evaluate_fundamentals", return_value=Verdict(True, None, {"max_pe_ratio": 35.0})):
+                                        with patch("main.evaluate_fundamentals", return_value=Verdict(True, None, {"max_forward_pe": 35.0})):
                                             with patch("main.fetch_news_headlines", return_value=["headline X"]):
                                                 with patch("main.queries.get_cached_analysis", return_value=None):
                                                     with patch("main.queries.get_analyst_call_count_today", return_value=0):

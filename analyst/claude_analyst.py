@@ -181,7 +181,11 @@ def build_prompt(
     )
 
     # Build fundamentals block with optional P/E direction and EPS trend (D-04, D-05, D-06)
-    fundamentals_lines = [f"- Trailing P/E: {pe}"]
+    fundamentals_lines = [
+        f"- Trailing P/E: {pe}",
+        f"- Forward P/E: {info.get('forwardPE', 'N/A')}",
+        f"- PEG: {info.get('pegRatio', 'N/A')}",
+    ]
     if fundamental_trend is not None:
         pe_direction = fundamental_trend.get("pe_direction", "N/A")
         fundamentals_lines.append(f"- P/E Direction: {pe_direction}")

@@ -46,7 +46,7 @@ async def main():
             reasoning="[LIVE TEST] Strong fundamentals, positive momentum, oversold RSI.",
             price=175.50,
             dividend_yield=0.006,
-            pe_ratio=24.5,
+            forward_pe=24.5,
         )
 
         # Import the view directly so buttons render

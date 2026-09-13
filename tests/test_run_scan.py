@@ -31,9 +31,10 @@ def _full_patch(
     analysis=None,
     technical_pass=True,
     rec_id=1,
+    fund_info=None,
 ):
     analysis = analysis or {"signal": "BUY", "reasoning": "Strong.", "provider_used": "gemini"}
-    fund_info = {"trailingPE": 20.0, "dividendYield": 0.03, "earningsGrowth": 0.10}
+    fund_info = fund_info or {"forwardPE": 20.0, "dividendYield": 0.03, "earningsGrowth": 0.10}
     tech_data = {
         "price": 150.0, "rsi": 55.0, "ma50": 140.0,
         "volume": 1_200_000, "avg_volume": 1_000_000,
@@ -54,8 +55,8 @@ def _full_patch(
         # PLACE rather than appended: the mock indices below are positional.
         patch("main.evaluate_fundamentals",
               return_value=Verdict(fundamental_pass,
-                                   None if fundamental_pass else "pe_above_max",
-                                   {"max_pe_ratio": 35.0})),
+                                   None if fundamental_pass else "forward_pe_above_max",
+                                   {"max_forward_pe": 35.0})),
         patch("main.fetch_news_headlines", return_value=["headline A"]),
         patch("main.queries.get_cached_analysis", return_value=None),
         patch("main.queries.get_analyst_call_count_today", return_value=0),
@@ -104,6 +105,33 @@ async def test_run_scan_happy_path_posts_recommendation():
         await run_scan(bot, config)
     bot.send_recommendation.assert_awaited_once()
     bot.send_ops_alert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_scan_shows_forward_pe_and_peg_but_stores_trailing_pe():
+    """The embed shows what the gate judged; the pe_ratio COLUMN keeps meaning
+    trailing P/E, so rows written before the gate change stay correctly labelled."""
+    bot = _make_bot()
+    info = {"trailingPE": 61.37, "forwardPE": 15.35, "pegRatio": 0.48,
+            "dividendYield": 0.35, "earningsGrowth": 1.49}
+    with _full_patch(fund_info=info) as mocks:
+        await run_scan(bot, _make_config())
+    sent = bot.send_recommendation.call_args.kwargs
+    assert sent["forward_pe"] == 15.35
+    assert sent["peg_ratio"] == 0.48
+    assert "pe_ratio" not in sent
+    assert mocks["create_recommendation"].call_args.kwargs["pe_ratio"] == 61.37
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("peg", [float("nan"), "Infinity", None])
+async def test_run_scan_sends_no_peg_rather_than_an_unusable_one(peg):
+    # "Infinity" would raise inside the embed's f"{:.2f}" and NaN would print "nan".
+    bot = _make_bot()
+    info = {"forwardPE": 15.0, "pegRatio": peg, "dividendYield": 3.0, "earningsGrowth": 0.1}
+    with _full_patch(fund_info=info):
+        await run_scan(bot, _make_config())
+    assert bot.send_recommendation.call_args.kwargs["peg_ratio"] is None
 
 
 @pytest.mark.asyncio
@@ -245,7 +273,7 @@ async def test_run_scan_excludes_etfs_from_stock_universe():
         patch("main.fetch_macro_context", return_value={"spy_trend_1m": "Bullish (+1.0%)", "spy_trend_1y": "Bearish (-8.5%)", "vix_level": "18.0 (Low volatility)"}),
         patch("main.fetch_fundamental_info", return_value=fund_info),
         patch("main.evaluate_fundamentals",
-              return_value=Verdict(True, None, {"max_pe_ratio": 35.0})),
+              return_value=Verdict(True, None, {"max_forward_pe": 35.0})),
         patch("main.fetch_news_headlines", return_value=["headline A"]),
         patch("main.queries.get_cached_analysis", return_value=None),
         patch("main.queries.get_analyst_call_count_today", return_value=0),

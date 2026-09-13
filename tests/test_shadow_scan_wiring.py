@@ -64,7 +64,7 @@ async def test_fundamental_rejection_is_recorded(tmp_path):
          patch.object(main, "sweep_terminal_recommendations", new=AsyncMock()), \
          patch.object(main, "_drain_ops_outbox", new=AsyncMock()), \
          patch.object(main, "fetch_fundamental_info", return_value={"trailingPE": 900.0}), \
-         patch.object(main, "evaluate_fundamentals", return_value=Verdict(False, "pe_above_max", {"max_pe_ratio": 35.0})):
+         patch.object(main, "evaluate_fundamentals", return_value=Verdict(False, "forward_pe_above_max", {"max_forward_pe": 35.0})):
         await main.run_scan(bot, cfg)
     assert ("XOM", "rejected_fundamental") in _outcomes(cfg.db_path)
 
@@ -204,7 +204,7 @@ def _reaches_the_technical_gate(signal):
         patch.object(main, "_drain_ops_outbox", new=AsyncMock()),
         patch.object(main.outcomes, "mark_due_outcomes", new=AsyncMock(return_value=0)),
         patch.object(main, "fetch_fundamental_info", return_value={"trailingPE": 20.0}),
-        patch.object(main, "evaluate_fundamentals", return_value=Verdict(True, None, {"max_pe_ratio": 35.0})),
+        patch.object(main, "evaluate_fundamentals", return_value=Verdict(True, None, {"max_forward_pe": 35.0})),
         patch.object(main, "fetch_news_headlines", return_value=["a headline"]),
         patch.object(main, "analyze_with_cache",
                      new=AsyncMock(return_value={"signal": signal,
@@ -280,7 +280,7 @@ def _post_info_patches(*, signal="BUY", passes_fundamental=True,
         patch.object(main.outcomes, "mark_due_outcomes", new=AsyncMock(return_value=0)),
         patch.object(main, "fetch_fundamental_info",
                      return_value={"trailingPE": 20.0, "currentPrice": 195.9}),
-        patch.object(main, "evaluate_fundamentals", return_value=Verdict(passes_fundamental, None if passes_fundamental else "pe_above_max", {"max_pe_ratio": 35.0})),
+        patch.object(main, "evaluate_fundamentals", return_value=Verdict(passes_fundamental, None if passes_fundamental else "forward_pe_above_max", {"max_forward_pe": 35.0})),
         patch.object(main, "fetch_news_headlines", return_value=["a headline"]),
         patch.object(main, "analyze_with_cache", new=AsyncMock(return_value=analysis)),
         patch.object(main, "fetch_technical_data",

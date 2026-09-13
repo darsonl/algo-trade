@@ -3,14 +3,14 @@ import pytest
 from discord_bot.embeds import build_recommendation_embed, build_etf_recommendation_embed
 
 
-def make_embed(signal="BUY", ticker="AAPL", price=175.50, div_yield=0.006, pe_ratio=24.5):
+def make_embed(signal="BUY", ticker="AAPL", price=175.50, div_yield=0.006, forward_pe=24.5):
     return build_recommendation_embed(
         ticker=ticker,
         signal=signal,
         reasoning="Strong fundamentals and positive momentum.",
         price=price,
         dividend_yield=div_yield,
-        pe_ratio=pe_ratio,
+        forward_pe=forward_pe,
     )
 
 
@@ -69,8 +69,8 @@ def test_embed_has_dividend_yield_field():
     assert any("Dividend" in name or "Yield" in name for name in fields)
 
 
-def test_embed_has_pe_ratio_field():
-    embed = make_embed(pe_ratio=24.5)
+def test_embed_has_forward_pe_field():
+    embed = make_embed(forward_pe=24.5)
     fields = _field_values(embed)
     assert any("P/E" in name or "PE" in name for name in fields)
 
@@ -78,26 +78,26 @@ def test_embed_has_pe_ratio_field():
 def test_embed_shows_na_for_missing_dividend_yield():
     embed = build_recommendation_embed(
         ticker="MSFT", signal="BUY", reasoning="Good.",
-        price=400.0, dividend_yield=None, pe_ratio=30.0,
+        price=400.0, dividend_yield=None, forward_pe=30.0,
     )
-    values = " ".join(f.value for f in embed.fields)
-    assert "N/A" in values
+    # Per field, not "N/A anywhere": the PEG field is N/A here too and would
+    # make a whole-embed check pass regardless of the dividend field.
+    assert {f.name: f.value for f in embed.fields}["Dividend Yield"] == "N/A"
 
 
-def test_embed_shows_na_for_missing_pe_ratio():
+def test_embed_shows_na_for_missing_forward_pe():
     embed = build_recommendation_embed(
         ticker="MSFT", signal="BUY", reasoning="Good.",
-        price=400.0, dividend_yield=0.007, pe_ratio=None,
+        price=400.0, dividend_yield=0.007, forward_pe=None,
     )
-    values = " ".join(f.value for f in embed.fields)
-    assert "N/A" in values
+    assert {f.name: f.value for f in embed.fields}["Fwd P/E"] == "N/A"
 
 
 def test_embed_raises_on_invalid_signal():
     with pytest.raises(ValueError, match="signal"):
         build_recommendation_embed(
             ticker="AAPL", signal="MAYBE", reasoning="Dunno.",
-            price=100.0, dividend_yield=None, pe_ratio=None,
+            price=100.0, dividend_yield=None, forward_pe=None,
         )
 
 
@@ -191,7 +191,7 @@ def test_embed_earnings_date_shows_future_date():
         reasoning="Strong outlook.",
         price=175.0,
         dividend_yield=0.005,
-        pe_ratio=24.0,
+        forward_pe=24.0,
         earnings_date="Dec 15, 2025",
     )
     fields = _field_values(embed)
@@ -206,7 +206,7 @@ def test_embed_earnings_date_shows_na_when_none():
         reasoning="Strong outlook.",
         price=175.0,
         dividend_yield=0.005,
-        pe_ratio=24.0,
+        forward_pe=24.0,
     )
     fields = _field_values(embed)
     assert "Next Earnings" not in fields
@@ -220,7 +220,7 @@ def test_embed_earnings_date_shows_na_string():
         reasoning="Strong outlook.",
         price=175.0,
         dividend_yield=0.005,
-        pe_ratio=24.0,
+        forward_pe=24.0,
         earnings_date="N/A",
     )
     fields = _field_values(embed)
@@ -235,7 +235,7 @@ def test_embed_earnings_date_warning_prefix():
         reasoning="Strong outlook.",
         price=175.0,
         dividend_yield=0.005,
-        pe_ratio=24.0,
+        forward_pe=24.0,
         earnings_date="⚠️ Dec 18, 2025",
     )
     fields = _field_values(embed)
@@ -250,7 +250,7 @@ def test_embed_earnings_date_field_is_inline():
         reasoning="Strong outlook.",
         price=175.0,
         dividend_yield=0.005,
-        pe_ratio=24.0,
+        forward_pe=24.0,
         earnings_date="Dec 15, 2025",
     )
     next_earnings_field = next(f for f in embed.fields if f.name == "Next Earnings")
@@ -265,7 +265,7 @@ def test_embed_earnings_date_is_last_field_after_confidence():
         reasoning="Strong outlook.",
         price=175.0,
         dividend_yield=0.005,
-        pe_ratio=24.0,
+        forward_pe=24.0,
         confidence="high",
         earnings_date="Dec 15, 2025",
     )
@@ -283,7 +283,7 @@ def test_embed_price_field_includes_scan_time_when_provided():
         reasoning="Strong fundamentals.",
         price=175.50,
         dividend_yield=0.006,
-        pe_ratio=24.5,
+        forward_pe=24.5,
         scan_time="09:05",
     )
     fields = _field_values(embed)
@@ -298,7 +298,7 @@ def test_embed_price_field_plain_when_no_scan_time():
         reasoning="Strong fundamentals.",
         price=175.50,
         dividend_yield=0.006,
-        pe_ratio=24.5,
+        forward_pe=24.5,
     )
     fields = _field_values(embed)
     assert fields["Price"] == "$175.50"

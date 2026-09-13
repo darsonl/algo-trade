@@ -983,14 +983,15 @@ class TradingBot(discord.Client):
         reasoning: str,
         price: float,
         dividend_yield: float | None,
-        pe_ratio: float | None,
+        forward_pe: float | None,
         confidence: str | None = None,
         earnings_date: str | None = None,   # NEW — Phase 16 SIG-05
         scan_time: str | None = None,       # NEW — Phase 17 RISK-04
+        peg_ratio: float | None = None,
     ) -> str:
         """Fetch the configured channel, post a recommendation embed with Approve/Reject buttons, and return the message id as a string."""
         channel = await self._resolve_channel()
-        embed = build_recommendation_embed(ticker, signal, reasoning, price, dividend_yield, pe_ratio, confidence=confidence, earnings_date=earnings_date, scan_time=scan_time)
+        embed = build_recommendation_embed(ticker, signal, reasoning, price, dividend_yield, forward_pe, confidence=confidence, earnings_date=earnings_date, scan_time=scan_time, peg_ratio=peg_ratio)
         view = ApproveRejectView(rec_id, ticker, price, self.config, scan_time=scan_time)
         msg = await _send_message(channel, embed, view)
         return str(msg.id)

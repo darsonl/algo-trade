@@ -14,10 +14,11 @@ def build_recommendation_embed(
     reasoning: str,
     price: float,
     dividend_yield: float | None,
-    pe_ratio: float | None,
+    forward_pe: float | None,
     confidence: str | None = None,
     earnings_date: str | None = None,   # NEW — Phase 16 SIG-05
     scan_time: str | None = None,       # NEW — Phase 17 RISK-04
+    peg_ratio: float | None = None,
 ) -> discord.Embed:
     """Build a Discord embed for a BUY/HOLD/SKIP recommendation with price and fundamental fields."""
     if signal not in _SIGNAL_COLORS:
@@ -37,9 +38,15 @@ def build_recommendation_embed(
         value=f"{dividend_yield:.2%}" if dividend_yield is not None else "N/A",
         inline=True,
     )
+    # Forward P/E is what the fundamental gate judged; PEG is context only.
     embed.add_field(
-        name="P/E Ratio",
-        value=f"{pe_ratio:.1f}" if pe_ratio is not None else "N/A",
+        name="Fwd P/E",
+        value=f"{forward_pe:.1f}" if forward_pe is not None else "N/A",
+        inline=True,
+    )
+    embed.add_field(
+        name="PEG",
+        value=f"{peg_ratio:.2f}" if peg_ratio is not None else "N/A",
         inline=True,
     )
     if confidence is not None:

@@ -9,7 +9,7 @@ from config import Config
 def cfg():
     c = Config()
     c.min_dividend_yield = 0.02
-    c.max_pe_ratio = 25.0
+    c.max_forward_pe = 25.0
     c.min_earnings_growth = 0.05
     return c
 
@@ -17,7 +17,7 @@ def cfg():
 def make_info(pe=15.0, div_yield=3.0, earnings_growth=0.10):
     # dividendYield is in percent (yfinance >= 0.2.55 format): 3.0 means 3%
     return {
-        "trailingPE": pe,
+        "forwardPE": pe,
         "dividendYield": div_yield,
         "earningsGrowth": earnings_growth,
     }
@@ -42,7 +42,7 @@ def test_fails_when_earnings_growth_too_low(cfg):
 
 def test_fails_when_pe_is_none(cfg):
     info = make_info()
-    info["trailingPE"] = None
+    info["forwardPE"] = None
     assert evaluate_fundamentals(info, cfg).passed is False
 
 

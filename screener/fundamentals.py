@@ -29,6 +29,19 @@ def normalize_dividend_yield(raw: float | None) -> float | None:
     return raw / 100
 
 
+def finite_number(value) -> float | None:
+    """`value` as a float if it is a real, finite number; otherwise None.
+
+    Refuses bools (True is an int to isinstance), NaN (compares False to every
+    threshold, so it passes one), infinity, and strings -- Yahoo has served the
+    string "Infinity" in numeric `.info` fields.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    value = float(value)
+    return value if math.isfinite(value) else None
+
+
 class Verdict(NamedTuple):
     """One gate's decision, the criterion that produced it, and its settings.
 
@@ -52,13 +65,20 @@ def evaluate_fundamentals(info: dict, config: Config) -> Verdict:
     the FIRST -- reporting a later one would misattribute the rejection, and
     reporting all of them would imply the gate evaluated all of them.
 
-    Missing-data policy is unchanged:
-    - trailingPE: required -- reject if absent (valuation is non-negotiable).
+    Missing-data policy:
+    - forwardPE: required -- reject if unusable (valuation is non-negotiable),
+      and reject if <= 0. Yahoo OMITS trailingPE for a loss-maker, which is
+      what used to keep one out; forwardPE instead goes NEGATIVE when analysts
+      expect a loss, and a negative number is never "above the maximum".
     - dividendYield: optional -- skip if absent; non-dividend payers allowed.
     - earningsGrowth: optional -- skip if absent; let the analyst judge.
+
+    Forward rather than trailing because trailing misleads around one-off
+    events: HON read 8.3 trailing / 21.6 forward on a one-time gain, STX 61.4 /
+    15.4 on recovering earnings (2026-08-22 scan).
     """
     thresholds = {
-        "max_pe_ratio": config.max_pe_ratio,
+        "max_forward_pe": config.max_forward_pe,
         "min_dividend_yield": config.min_dividend_yield,
         "min_earnings_growth": config.min_earnings_growth,
     }
@@ -66,14 +86,16 @@ def evaluate_fundamentals(info: dict, config: Config) -> Verdict:
     def _fail(criterion):
         return Verdict(False, criterion, thresholds)
 
-    pe = info.get("trailingPE")
+    forward_pe = finite_number(info.get("forwardPE"))
     div_yield = normalize_dividend_yield(info.get("dividendYield"))
     earnings_growth = info.get("earningsGrowth")
 
-    if pe is None:
-        return _fail("pe_missing")
-    if pe > config.max_pe_ratio:
-        return _fail("pe_above_max")
+    if forward_pe is None:
+        return _fail("forward_pe_missing")
+    if forward_pe <= 0:
+        return _fail("forward_pe_non_positive")
+    if forward_pe > config.max_forward_pe:
+        return _fail("forward_pe_above_max")
     if div_yield is not None and div_yield < config.min_dividend_yield:
         return _fail("yield_below_min")
     if earnings_growth is not None and earnings_growth < config.min_earnings_growth:

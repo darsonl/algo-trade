@@ -28,7 +28,7 @@ from risk import kill_switch
 from database import queries
 from research import outcomes, shadow_log
 from screener.universe import get_watchlist, get_top_sp500_by_fundamentals, get_universe, partition_watchlist
-from screener.fundamentals import evaluate_fundamentals, fetch_fundamental_info, fetch_eps_data, normalize_dividend_yield, screen_price
+from screener.fundamentals import evaluate_fundamentals, fetch_fundamental_info, fetch_eps_data, finite_number, normalize_dividend_yield, screen_price
 from screener.technicals import passes_technical_filter, evaluate_technicals, fetch_technical_data
 from analyst.news import fetch_news_headlines
 from analyst.claude_analyst import analyze_ticker, create_analyst_client, create_fallback_client, create_fallback2_client, analyze_sell_ticker, analyze_etf_ticker
@@ -795,6 +795,8 @@ async def _run_scan_locked(bot: TradingBot, config: Config) -> None:
                 reasoning=analysis["reasoning"],
                 price=tech_data["price"],
                 dividend_yield=div_yield,
+                # The column keeps TRAILING P/E even though the gate judges
+                # forward: changing what it means would mislabel older rows.
                 pe_ratio=info.get("trailingPE"),
                 earnings_growth=info.get("earningsGrowth"),
                 confidence=analysis.get("confidence"),
@@ -807,7 +809,8 @@ async def _run_scan_locked(bot: TradingBot, config: Config) -> None:
                 reasoning=analysis["reasoning"],
                 price=tech_data["price"],
                 dividend_yield=div_yield,
-                pe_ratio=info.get("trailingPE"),
+                forward_pe=finite_number(info.get("forwardPE")),
+                peg_ratio=finite_number(info.get("pegRatio")),
                 confidence=analysis.get("confidence"),
                 earnings_date=earnings_date_embed,   # NEW — Phase 16 SIG-05
                 scan_time=scan_time,                 # NEW — Phase 17 RISK-04
