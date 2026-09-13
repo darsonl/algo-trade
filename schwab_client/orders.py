@@ -126,9 +126,19 @@ def _call_place_order(client, config, spec) -> object:
     The mode check runs BEFORE the kill-switch read because it is the cheaper
     and more fundamental refusal, and because a dry-run config is not required
     to point at a database that has a kill switch in it at all.
+
+    A `None` client is built HERE, after both refusals, so a halted bot does no
+    auth work. Both approval views pass None: the `place_*` wrappers that used to
+    build one were deleted, every approval test patched this function out, and a
+    live approval reached `_dispatch(None)` -> AttributeError -> `submit_unknown`
+    with nothing sent. `SchwabLoginRequired` from the build is raised before any
+    dispatch, so callers may treat it as a definitive non-submission.
     """
     _assert_live_execution(config)
     kill_switch.require_enabled(config)
+    if client is None:
+        from schwab_client.auth import get_client
+        client = get_client(config)
     return _dispatch(client, config.schwab_account_hash, spec)
 
 

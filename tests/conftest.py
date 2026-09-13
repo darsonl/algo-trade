@@ -1,7 +1,9 @@
 """Suite-wide fixtures.
 
-The only one here pins the exchange calendar, because without it the entire
-scan suite passes Monday to Friday and fails at weekends and on market holidays.
+Each pins something outside the code that a test must not depend on: the
+exchange calendar (the scan suite passed Monday to Friday and failed at
+weekends) and the Schwab token file on this machine (the scan suite passed here
+and failed in CI, which has none).
 """
 from unittest.mock import patch
 
@@ -27,4 +29,21 @@ def _assume_a_trading_session():
     so `tests/test_market_time.py` still exercises the real calendar.
     """
     with patch("main.is_trading_session", return_value=True):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _assume_a_fresh_schwab_login():
+    """Every scan test runs as though the Schwab login is valid.
+
+    Both scans post `schwab_login_warning` when the token is missing or near
+    expiry. That reads a real file, `schwab_token.json`, so scan tests that
+    count ops alerts passed on a machine with a fresh token and failed on one
+    without -- CI has none, and PR #51 went red on exactly three of them.
+
+    Same shape as the calendar pin: `main.schwab_login_warning` is patched, not
+    `schwab_client.auth`, so `tests/test_schwab_login.py` still exercises the
+    real function, and tests that ARE about the alert patch it locally and win.
+    """
+    with patch("main.schwab_login_warning", return_value=None):
         yield
