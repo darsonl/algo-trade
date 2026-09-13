@@ -185,7 +185,8 @@ def test_get_top_sp500_uses_rank_sum_not_value_sum(monkeypatch):
 
     u._top_sp500_cache = {}  # bypass the in-memory daily cache
     monkeypatch.setattr(u, "_load_top_cache", lambda: None)   # bypass the disk cache
-    monkeypatch.setattr(u, "_save_top_cache", lambda ranked: None)  # don't write repo-dir file
+    monkeypatch.setattr(u, "_save_top_cache", lambda ranked, deduped: None)  # don't write repo-dir file
+    monkeypatch.setattr(u, "get_sp500_company_ids", lambda: {})  # no network; dedupe has its own tests
     monkeypatch.setattr(u, "get_sp500_tickers", lambda: list(data))
     monkeypatch.setattr(u.time, "sleep", lambda *a, **k: None)
     monkeypatch.setattr(u.yf, "Ticker", mock_ticker)
@@ -220,7 +221,7 @@ def _patch_cache_path(monkeypatch, tmp_path):
 def test_top_cache_roundtrip(monkeypatch, tmp_path):
     import screener.universe as u
     _patch_cache_path(monkeypatch, tmp_path)
-    u._save_top_cache(["AAPL", "MSFT", "NVDA"])
+    u._save_top_cache(["AAPL", "MSFT", "NVDA"], deduped=True)
     loaded = u._load_top_cache()
     assert loaded["ranked"] == ["AAPL", "MSFT", "NVDA"]
 
@@ -253,7 +254,7 @@ def test_get_top_sp500_uses_disk_cache_after_restart(monkeypatch, tmp_path):
     from types import SimpleNamespace
     import screener.universe as u
     _patch_cache_path(monkeypatch, tmp_path)
-    u._save_top_cache(["AAPL", "MSFT", "NVDA", "GOOG"])
+    u._save_top_cache(["AAPL", "MSFT", "NVDA", "GOOG"], deduped=True)
     u._top_sp500_cache = {}  # simulate process restart
 
     def explode():
@@ -271,7 +272,7 @@ def test_get_top_sp500_slices_full_ranking_per_count(monkeypatch, tmp_path):
     from types import SimpleNamespace
     import screener.universe as u
     _patch_cache_path(monkeypatch, tmp_path)
-    u._save_top_cache(["AAPL", "MSFT", "NVDA", "GOOG"])
+    u._save_top_cache(["AAPL", "MSFT", "NVDA", "GOOG"], deduped=True)
     u._top_sp500_cache = {}
     monkeypatch.setattr(u, "get_sp500_tickers", lambda: [])
 
