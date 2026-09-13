@@ -95,6 +95,8 @@ python main.py
 | `screener/fundamentals.py` | yfinance fundamental fetch + threshold filter |
 | `screener/technicals.py` | RSI (Wilder's, 14-period), MA50, volume filter |
 | `screener/macro.py` | Prompt enrichment: SPY 1m/1y trend, VIX level, 52-week range position. All formatters are pure; `fetch_macro_context()` swallows failures and returns `None` values so a macro outage never blocks a scan |
+| `screener/market_trend.py` | `/market_trend` gauges: 2s10s curve (FRED), VIX, emergency rate cut (FRED `DFEDTARU` vs `fomc_calendar.py`), MOVE, SKEW trend, VVIX. Pure classifiers; `fetch_market_trend()` isolates each indicator and never raises |
+| `screener/fomc_calendar.py` | Scheduled FOMC decision dates 2009–2027, from federalreserve.gov. **Extend yearly** — past the last date the emergency-cut gauge reports `unknown` |
 | `screener/exit_signals.py` | Two-gate sell signal: RSI > sell_rsi_threshold AND MACD bearish |
 | `screener/positions.py` | `get_position_summary` — live yfinance price + P&L% per open position |
 | `analyst/claude_analyst.py` | Prompt building, API call (primary + fallback provider), signal parsing |
@@ -295,6 +297,7 @@ python main.py
 - **Config reads env at construction, not import**: `Config` fields use `field(default_factory=lambda: os.getenv(...))` (via the `_env_str/_int/_float/_bool` helpers), so `Config()` reflects the environment at call time. The old `= os.getenv(...)` defaults froze at import, forcing `importlib.reload(config)` in env-dependent tests — don't reintroduce that pattern. `test_config.py`'s reload-based USE_LIMIT_BUY tests still pass (now via construction-time reads).
 - **Analyst enrichment built only on cache miss**: in `run_scan`, the `fundamental_trend` block (`fetch_eps_data` → `quarterly_income_stmt`, a slow network call) is computed inside the cache-miss branch, after `get_cached_analysis`. A cache hit skips it. The earnings block stays *before* the cache check because `earnings_date_embed` is shown on the recommendation embed even on a hit.
 - **S&P 500 ranking — two-tier 24h cache**: `get_top_sp500_by_fundamentals` (~500 yfinance `.info` calls, 10-20 min) caches in-memory, then on disk at `sp500_top_cache.json` (gitignored) so a restart doesn't repay the cost. Both tiers store the **full** ranking and slice per `top_sp500_count` on read, so changing that count never invalidates the cache.
+- **`/market_trend` reads yields from FRED, not Yahoo, and judges emergency cuts by the calendar, not by size**: Yahoo has no 2-year cash yield — `2YY=F` is a futures contract and read 4.38 against the Treasury's 4.56 on 2026-09-10, enough to fake an inversion. An emergency cut is a cut in `DFEDTARU` that lands neither **on** a scheduled decision day **nor the weekday after**: FRED records both (Dec 2015/Dec 2016 same-day, everything since next-day), and a one-sided rule misfiles one group. Verified against all 31 real changes since 2008 — exactly 2020-03-04 and 2020-03-16 come out unscheduled, and the oracle test pins that. A 50bp cut is not the test (Sept 2024 was scheduled). The March 17–18, 2020 meeting is **excluded as cancelled**; keeping it would hide the 03-16 cut. Un-inversion within a year is a warning, not an all-clear. Read-only public data, so no allowlist; it defers before fetching (~3s).
 - **Channel object memoized**: `TradingBot._resolve_channel()` fetches the configured channel via `fetch_channel` once and caches it on the instance; the `send_*` methods reuse it instead of an API round-trip per post.
 
 ### Configuration
@@ -339,6 +342,7 @@ MAX_POSITION_SIZE_USD=500
 - `/stats` — win rate and P&L stats for closed trades
 - `/history` — last 20 closed trades
 - `/reconcile` — compare DB open positions against the Schwab account (report-only; skipped unless `EXECUTION_MODE=live`)
+- `/market_trend` — recession/fear gauges: 2s10s yield curve, VIX, emergency rate cut, MOVE, SKEW, VVIX (read-only, public data)
 - `/halt` — stop all new order submissions (durable, cross-process; allowlisted via `OPS_USER_IDS`)
 - `/resume` — re-enable submissions after a halt (same allowlist — both directions are guarded)
 - `/resolve` — the only operator exit from an ambiguous submission (`OPS_USER_IDS`). With no arguments it **reports**: searches the broker for orders that might be ours and shows how each differs from what we submitted. With `order_id` + `resolution` (`adopt`/`confirmed_absent`/`keep_blocked`) + `evidence` it **writes**, through the audited `resolve_order_manually`. An `order_id` without a resolution reports rather than defaulting — half a write is not a write.
@@ -357,7 +361,8 @@ Pre-flight helper: `.venv/Scripts/python.exe scripts/check_ops_ids.py` reports t
 
 ### Test Suite
 
-1352 tests as of 2026-09-13. Run with `.venv/Scripts/python.exe -m pytest -q` (~50s). Key test files:
+1415 tests as of 2026-09-13. Run with `.venv/Scripts/python.exe -m pytest -q` (~50s). Key test files:
+- `test_market_trend.py` — `/market_trend`: threshold edges, curve shape naming, un-inversion memory, the real-FRED emergency-cut oracle, per-indicator failure isolation, defer-before-fetch (63 tests, no network)
 - `tests/conftest.py` — the ONE autouse fixture: pins the exchange calendar so the scan suite does not pass Mon–Fri and fail at weekends
 - `test_session_window.py` / `test_logging_setup.py` — the session lifecycle (start before the open, exit at the bell, never come up on a non-session) and the console-handler gating that a wedged scheduler paid for (15 tests)
 - `test_order_status_sweep.py` / `test_order_status_mapping.py` / `test_active_rec_index.py` — step 11: chain-following, the sweep, the trustworthy-fill rule, and the index that cannot ship before its release valve (48 tests)

@@ -25,7 +25,7 @@ from risk.preflight import (
     check_authorization,
     evaluate_trade,
 )
-from discord_bot.embeds import build_recommendation_embed, build_positions_embed, build_sell_embed, build_etf_recommendation_embed, build_stats_embed, build_history_embed
+from discord_bot.embeds import build_recommendation_embed, build_positions_embed, build_sell_embed, build_etf_recommendation_embed, build_stats_embed, build_history_embed, build_market_trend_embed
 from schwab_client.orders import (
     build_limit_buy,
     build_marketable_sell,
@@ -830,6 +830,13 @@ class TradingBot(discord.Client):
                 callback=self._resolve_command,
             )
         )
+        self.tree.add_command(
+            app_commands.Command(
+                name="market_trend",
+                description="Recession and fear gauges: yield curve, VIX, emergency cuts, MOVE, SKEW, VVIX",
+                callback=self._market_trend_command,
+            )
+        )
         await self.tree.sync()
         self._register_persistent_views()
 
@@ -936,6 +943,25 @@ class TradingBot(discord.Client):
             return
         embed = build_history_embed(trades)
         await interaction.response.send_message(embed=embed)
+
+    async def _market_trend_command(self, interaction: discord.Interaction):
+        """Handle /market_trend: recession and fear gauges from public data (read-only).
+
+        Deferred FIRST: six network reads outlast Discord's 3-second reply window,
+        and an undeferred interaction simply shows "the application did not respond".
+        """
+        from screener.market_trend import fetch_market_trend
+        try:
+            await interaction.response.defer(thinking=True)
+        except Exception as exc:
+            logger.warning("/market_trend: could not defer interaction: %s", exc)
+            return
+        try:
+            readings = await asyncio.to_thread(fetch_market_trend)
+            await interaction.followup.send(embed=build_market_trend_embed(readings))
+        except Exception as exc:
+            logger.warning("/market_trend failed: %s", exc)
+            await interaction.followup.send("Market trend unavailable right now; see the bot log.")
 
     async def _resolve_channel(self):
         """Return the configured channel, fetching it from the API once and caching it.
