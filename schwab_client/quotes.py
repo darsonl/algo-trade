@@ -146,15 +146,26 @@ def fetch_quote(symbol: str, config, client=None, now: datetime | None = None) -
     Transport is validated BEFORE the body is parsed, so an HTTP error body
     cannot reach the parser and masquerade as data.
     """
-    if client is None:
-        from schwab_client.auth import get_client
-        client = get_client(config)
+    # Every way of NOT getting a quote is a QuoteUnavailable. Approve catches
+    # only that type and hands it to guard 4; anything else escaped the handler
+    # and left the Discord interaction hanging. That includes an expired login
+    # (no client can be built) and a token revoked early (authlib raises from
+    # inside the request) -- both are a missing quote, not a crash.
+    try:
+        if client is None:
+            from schwab_client.auth import get_client
+            client = get_client(config)
 
-    from schwab.client import Client as SchwabClient
+        from schwab.client import Client as SchwabClient
 
-    resp = client.get_quote(symbol, fields=SchwabClient.Quote.Fields.QUOTE)
-    resp.raise_for_status()
-    quote = parse_quote(symbol, resp.json())
+        resp = client.get_quote(symbol, fields=SchwabClient.Quote.Fields.QUOTE)
+        resp.raise_for_status()
+        payload = resp.json()
+    except QuoteUnavailable:
+        raise
+    except Exception as exc:
+        raise QuoteUnavailable(f"{symbol}: {exc}") from exc
+    quote = parse_quote(symbol, payload)
 
     max_age = getattr(config, "quote_max_age_s", 30)
     age = quote.age_seconds(now)

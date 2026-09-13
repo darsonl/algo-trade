@@ -14,7 +14,10 @@ uv pip install --python .venv/Scripts/python.exe -r requirements.txt
 # the fully-pinned lock with uv. Never hand-edit requirements.txt.
 #   uv pip compile requirements.in --universal --python-version 3.11 -o requirements.txt
 
-# Run the bot (opens browser on first run for Schwab OAuth2)
+# Log in to Schwab (browser). The bot NEVER logs in by itself; the token lasts 7 days
+.venv/Scripts/python.exe scripts/schwab_login.py
+
+# Run the bot
 .venv/Scripts/python.exe main.py
 
 # Run all tests
@@ -107,7 +110,7 @@ python main.py
 | `discord_bot/embeds.py` | Recommendation embed formatting (green/yellow/red) |
 | `database/models.py` | SQLite schema: `recommendations` + `trades` tables |
 | `database/queries.py` | CRUD for recommendations/trades, expiration, dupe check |
-| `schwab_client/auth.py` | OAuth2 via `schwab-py`, token stored at `schwab_token.json` |
+| `schwab_client/auth.py` | Loads the `schwab-py` client from `schwab_token.json` and **never logs in** (`SchwabLoginRequired`); `schwab_login_warning` for the per-scan expiry alert. Logging in is `scripts/schwab_login.py` |
 | `schwab_client/orders.py` | Market buy order construction, position parsing |
 | `schwab_client/reconcile.py` | Pure DB-vs-broker position diff (`diff_positions`) + report formatting |
 | `risk/kill_switch.py` | Durable, cross-process trading halt: persisted state, fail-closed reads, `submission_gate()`, audited transitions |
@@ -224,6 +227,9 @@ python main.py
 - **Sells are marketable limits priced through the bid; buys stay passive**: sells price `bid * (1 - APPROVAL_SLIPPAGE_BUFFER_PCT/100)` via `marketable_sell_limit`, rounded **down** to the tick (lower = more marketable for a sell), as a **DAY** order. Buys use `buy_limit_price` — `ask * (1 + buffer)` rounded **up** — as **GTC**. The asymmetry is deliberate: a missed buy costs an opportunity, a missed sell holds the position through the decline the signal fired on. **This becomes wrong if the sell trigger stops being a momentum exit.**
 
   Both prices are computed **inside the approval path**, from the quote the guards evaluated. `place_marketable_sell_order` has been **deleted**: it fetched a *second* quote of its own, so the price the guards checked and the price sent to the broker could differ. Leaving a second, unguarded way to sell in the module was an invitation to call it.
+- **The bot never logs in to Schwab — a stale login is a refusal, not a prompt**: `get_client` used `easy_client`, which discards a token older than 6.5 days and runs `client_from_login_flow(interactive=True)` — an `input()` call. The bot is unattended, and **Approve fetches a quote even in dry run**, so the first click after a week would crash on EOF (not a `QuoteUnavailable`, so the guard table never saw it) or hang holding `approval_gate()`. On 2026-09-13 the token was 155 days dead and nobody knew, because nobody had clicked Approve. `get_client` now loads the token file only and raises `SchwabLoginRequired` when the token is missing, unreadable, or past its **real 7-day lifetime** (not easy_client's proactive 6.5 — the last half day works). `fetch_quote` turns that, and every other transport failure including a token revoked early, into `QuoteUnavailable` so guard 4 refuses. Both scans post `schwab_login_warning` in the token's last day and after expiry, every run. `tests/test_schwab_login.py` pins **structurally** (by AST, so docstrings explaining the history don't trip it) that no production module references `easy_client` / `client_from_login_flow` / `client_from_manual_flow`; `scripts/schwab_login.py` is the one exemption, and it suppresses schwab-py's output by default because the authorization URL **contains the app key**.
+
+  **The same investigation found the order sink was never given a client.** Both approval views call `_call_place_order(None, ...)`; the `place_*` wrappers that built the client were deleted as orphans, and every approval test patched the sink out, so nothing noticed. A live approval reached `_dispatch(None)` → `AttributeError` → **`submit_unknown`**: nothing sent, capital reserved, ticker blocked behind `/resolve`, and a message saying the order "may or may not exist". The sink now builds the client itself, **after** the mode check and the kill switch (a halted bot does no auth work). A `SchwabLoginRequired` from that build is raised before any dispatch, so the views classify it **`submit_failed`**, like `TradingHalted` — never unknown. `test_a_live_buy_actually_reaches_the_broker` runs the real sink end to end; it is the test that was missing.
 - **Quote parsing has no defaults, and there is no market-order fallback**: every field in `parse_quote` is mandatory and every failure raises, because `.get("bidPrice", 0)` on an error body prices a sell at give-it-away — the same shape that made `get_positions` read a 401 as "the account holds nothing". Staleness is enforced separately (`QUOTE_MAX_AGE_S`) since a stale quote looks usable; `age_seconds` clamps at zero so clock skew cannot fake freshness. No usable quote means **no sell** — the recommendation re-opens for a human.
 - **`/resolve` reports; only a human resolves.** A `submit_unknown` row may or may not exist at the broker, and guard 11 blocks every new order for its ticker until it is settled — so before this existed, one ambiguous submission blocked a symbol **forever, silently**. The candidate search (`parse_candidate_orders` → `find_recent_orders` → `report_unknown_submissions`) never transitions an order, **not even on a single exact match**: matching fields establish an order's *shape*, not its *provenance*, and Schwab exposes no client-supplied correlation id, so two identical buys may both be ours. Only `resolve_order_manually` moves a row, and it demands an actor and an evidence string.
 
@@ -374,7 +380,8 @@ Pre-flight helper: `.venv/Scripts/python.exe scripts/check_ops_ids.py` reports t
 
 ### Test Suite
 
-1477 tests as of 2026-09-13. Run with `.venv/Scripts/python.exe -m pytest -q` (~50s). Key test files:
+1506 tests as of 2026-09-13. Run with `.venv/Scripts/python.exe -m pytest -q` (~50s). Key test files:
+- `test_schwab_login.py` — the bot never logs in: token-file-only client, the 7-day cutoff, login failure as `QuoteUnavailable` and as `submit_failed` at the sink, the per-scan expiry alert on both paths, the AST check that no module can start a login, and the real sink dispatching end to end (24 tests)
 - `test_technical_verdict.py` — the analyst counterfactual: verdict recorded at every stock exit past the fundamental gate, never leaking into `reject_reason`, NULL for ETFs and old rows, and technicals fetched before any quota is spent (12 tests)
 - `test_dual_class_dedupe.py` — one ticker per company: most-traded class kept, freed slot refilled, CIK-less tickers never merged, pre-dedupe caches rebuilt, fail-open without CIKs (14 tests)
 - `test_forward_pe_gate.py` — forward P/E gate: non-positive and unusable values rejected, inclusive ceiling, trailing no longer decides, `MAX_PE_RATIO` fails startup, dividend floor off by default, embed/prompt fields (23 tests)

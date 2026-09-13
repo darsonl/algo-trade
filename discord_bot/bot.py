@@ -35,9 +35,25 @@ from schwab_client.orders import (
     collect_broker_snapshot,
 )
 from risk.resolution import report_unknown_submissions
+from schwab_client.auth import SchwabLoginRequired
 from schwab_client.quotes import QuoteUnavailable, fetch_quote, marketable_sell_limit
 
 logger = logging.getLogger(__name__)
+
+
+def _login_required_outcome(exc: SchwabLoginRequired) -> SubmissionOutcome:
+    """A submission refused because no Schwab client could be built.
+
+    `submit_failed`, not `submit_unknown`: the failure is in building the
+    client, before `_dispatch`, so nothing can exist at the broker. Calling it
+    unknown would reserve capital and block the ticker behind /resolve for an
+    order that was never sent.
+    """
+    return SubmissionOutcome(
+        status="submit_failed", broker_order_id=None,
+        message=(f"No order was sent: {exc}. The recommendation stays open — "
+                 "approve again after logging in."),
+    )
 
 
 def _utcnow() -> datetime:
@@ -419,6 +435,11 @@ class ApproveRejectView(discord.ui.View):
                 message=("Trading is halted, so no order was sent. The "
                          "recommendation stays open — approve again after /resume."),
             )
+        except SchwabLoginRequired as exc:
+            # Raised while BUILDING the client, before any dispatch: as
+            # definitive as a halt, so the reservation is released too.
+            logger.error("Buy not sent for %s: %s", self.ticker, exc)
+            outcome = _login_required_outcome(exc)
         except Exception as exc:
             outcome = classify_submission(error=exc)
             logger.error(
@@ -659,6 +680,9 @@ class SellApproveRejectView(discord.ui.View):
                 message=("Trading is halted, so no order was sent. The "
                          "recommendation stays open — approve again after /resume."),
             )
+        except SchwabLoginRequired as exc:
+            logger.error("Sell not sent for %s: %s", self.ticker, exc)
+            outcome = _login_required_outcome(exc)
         except Exception as exc:
             outcome = classify_submission(error=exc)
             logger.error(

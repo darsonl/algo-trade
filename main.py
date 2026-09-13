@@ -37,6 +37,7 @@ from screener.exit_signals import check_exit_signals
 from database.order_accounting import DEFINITIVELY_UNFILLED_STATUSES, OPEN_ORDER_STATUSES
 from risk.resolution import alert_stuck_orders
 from risk.scan_lock import scan_lock
+from schwab_client.auth import schwab_login_warning
 from schwab_client.order_payload import extract_fills, map_broker_status
 from schwab_client.orders import fetch_order, get_positions
 from schwab_client.reconcile import diff_positions, format_reconciliation_report
@@ -479,6 +480,25 @@ async def analyze_with_cache(
     return analysis
 
 
+async def alert_schwab_login(bot: TradingBot) -> None:
+    """Post an ops alert when the Schwab login has expired or expires within a day.
+
+    Every scan, on both paths, like `alert_stuck_orders`: a refresh token lasts
+    7 days and only a human at the machine can renew it, so the warning has to
+    arrive while there is still time to act. Approve needs a Schwab quote even
+    in dry run, so this matters in every execution mode.
+
+    Never raises -- it is reporting, and must not abort the scan it runs in.
+    """
+    try:
+        message = await asyncio.to_thread(schwab_login_warning)
+        if message:
+            logger.warning("%s", message)
+            await bot.send_ops_alert(message)
+    except Exception:
+        logger.exception("Schwab login check failed; continuing the scan")
+
+
 async def _drain_ops_outbox(bot: TradingBot) -> None:
     """Retry ops alerts stranded by an earlier Discord outage.
 
@@ -581,6 +601,7 @@ async def _run_scan_locked(bot: TradingBot, config: Config) -> None:
     # Repeated on every scan: guard 11 blocks this ticker until a human
     # runs /resolve, and an alert nobody repeats is a block nobody sees.
     await alert_stuck_orders(bot, config)
+    await alert_schwab_login(bot)
     # Before anything is screened, not after: a ticker whose order the broker
     # has finished with should be eligible in THIS scan, not the next one.
     try:
@@ -1014,6 +1035,7 @@ async def _run_scan_etf_locked(bot: TradingBot, config: Config) -> None:
     # Repeated on every scan: guard 11 blocks this ticker until a human
     # runs /resolve, and an alert nobody repeats is a block nobody sees.
     await alert_stuck_orders(bot, config)
+    await alert_schwab_login(bot)
     # Before anything is screened, not after: a ticker whose order the broker
     # has finished with should be eligible in THIS scan, not the next one.
     # Both scan paths post recommendations, so both must be able to release a
