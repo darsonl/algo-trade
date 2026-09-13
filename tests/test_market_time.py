@@ -10,6 +10,7 @@ import pytest
 
 from market_time import (
     is_trading_session,
+    session_close_utc,
     intended_session_date,
     market_session_bounds_utc,
     market_session_date,
@@ -245,3 +246,45 @@ def test_the_session_is_judged_on_the_EASTERN_date_not_the_utc_one():
 def test_trading_session_defaults_to_now_without_raising():
     assert isinstance(is_trading_session(), bool)
 
+
+# ─── When does today's session close? ────────────────────────────────────────
+#
+# Every close below was read off the live XNYS calendar before being written
+# here. Two DST regimes and two different half-days, on purpose.
+
+
+def test_a_regular_summer_session_closes_at_1600_edt():
+    assert session_close_utc(datetime(2026, 9, 14, 13, 45, tzinfo=timezone.utc)) == datetime(
+        2026, 9, 14, 20, 0, tzinfo=timezone.utc
+    )
+
+
+def test_a_regular_winter_session_closes_at_1600_est():
+    """Same 16:00 ET, a DIFFERENT UTC instant. A hardcoded 20:00 UTC would be
+    an hour early all winter, shutting the bot down while the market trades."""
+    assert session_close_utc(datetime(2026, 1, 5, 13, 45, tzinfo=timezone.utc)) == datetime(
+        2026, 1, 5, 21, 0, tzinfo=timezone.utc
+    )
+
+
+def test_the_thanksgiving_half_day_closes_at_1300():
+    """The trap a hardcoded 16:00 falls into: three hours of the bot sitting up
+    after the market has gone home. Already documented for intended_session_date."""
+    assert session_close_utc(datetime(2026, 11, 27, 13, 45, tzinfo=timezone.utc)) == datetime(
+        2026, 11, 27, 18, 0, tzinfo=timezone.utc
+    )
+
+
+def test_christmas_eve_is_also_a_half_day():
+    assert session_close_utc(datetime(2026, 12, 24, 13, 45, tzinfo=timezone.utc)) == datetime(
+        2026, 12, 24, 18, 0, tzinfo=timezone.utc
+    )
+
+
+def test_a_non_session_has_no_close():
+    assert session_close_utc(datetime(2026, 9, 13, 13, 45, tzinfo=timezone.utc)) is None
+
+
+def test_the_close_is_timezone_aware_utc():
+    close = session_close_utc(datetime(2026, 9, 14, 13, 45, tzinfo=timezone.utc))
+    assert close.tzinfo is not None and close.utcoffset().total_seconds() == 0
