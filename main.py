@@ -5,9 +5,11 @@ import logging
 import logging.handlers
 import sqlite3
 import sys
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time as dtime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
+from apscheduler.events import EVENT_JOB_ERROR, EVENT_JOB_EXECUTED, EVENT_JOB_MISSED
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
@@ -23,6 +25,7 @@ from market_time import (
 )
 
 from config import Config
+from keep_awake import hold_system_awake
 from database.models import get_cursor, initialize_db
 from risk import kill_switch
 from database import queries
@@ -515,8 +518,86 @@ async def _drain_ops_outbox(bot: TradingBot) -> None:
         logger.error("Ops-alert outbox drain failed: %s", exc)
 
 
-def session_window_status(instant=None) -> str:
-    """"run" | "not_a_session" | "already_closed" -- should a process be up now?
+SCAN_JOB_PREFIXES = ("scan_", "etf_scan_")
+
+
+def last_scheduled_scan_utc(config: Config, instant=None) -> datetime | None:
+    """When the session's LAST scheduled scan is due, in UTC. None if none are scheduled.
+
+    Both schedules count: the ETF scan runs after the stock scan. Each time is
+    read on the session's Eastern date in SCAN_TIMEZONE -- the clock
+    `configure_scheduler` registers it on -- so 10:00 ET is 14:00 UTC in summer
+    and 15:00 UTC in winter. Without SCAN_TIMEZONE the scheduler reads times as
+    machine-local, and so does this.
+    """
+    times = list(config.scan_times) + list(config.etf_scan_times)
+    if not times:
+        return None
+    tz = ZoneInfo(config.scan_timezone) if config.scan_timezone else datetime.now().astimezone().tzinfo
+    session = market_session_date(instant)
+    due = []
+    for time_str in times:
+        hour, minute = map(int, time_str.split(":"))
+        due.append(datetime.combine(session, dtime(hour, minute), tzinfo=tz))
+    return max(due).astimezone(timezone.utc)
+
+
+def post_scan_shutdown_at(next_run_times, close_utc, now, window_min) -> datetime | None:
+    """When to exit, given the scan jobs' next run times -- or None while a scan is still due today.
+
+    A scan is still due only if its next run lies strictly between now and the
+    close. A run time already in the past is being processed, not waiting:
+    APScheduler emits a MISSED event before it advances that job's next run time,
+    and counting it as pending would keep the bot up until the bell. A paused
+    job (None) is not waiting either.
+    """
+    for run in next_run_times:
+        if run is not None and now < run and (close_utc is None or run < close_utc):
+            return None
+    return now + timedelta(minutes=window_min)
+
+
+def schedule_post_scan_shutdown(scheduler, shutdown_fn, when) -> None:
+    """Register (or move) the one-shot exit after the last scan's approval window."""
+    scheduler.add_job(
+        shutdown_fn,
+        trigger=DateTrigger(run_date=when),
+        id="post_scan_shutdown",
+        replace_existing=True,
+    )
+
+
+def make_post_scan_listener(jobs_fn, schedule_fn, close_utc, window_min, clock):
+    """The scheduler listener that arms the exit once the session's last scan is done.
+
+    Called after every job event; only scan jobs count, both as the trigger and
+    as "still pending" -- the bell shutdown sits before the close all day and
+    would otherwise read as a scan that never arrives. Registered for EXECUTED,
+    ERROR and MISSED alike: a scan that crashed or was slept through is just as
+    finished, since nothing re-runs a missed scan.
+    """
+    def _listener(event):
+        try:
+            if not str(getattr(event, "job_id", "")).startswith(SCAN_JOB_PREFIXES):
+                return
+            runs = [j.next_run_time for j in jobs_fn() if j.id.startswith(SCAN_JOB_PREFIXES)]
+            when = post_scan_shutdown_at(runs, close_utc, clock(), window_min)
+            if when is not None:
+                schedule_fn(when)
+        except Exception:
+            # A listener that raises is only logged by APScheduler; say what it was.
+            logger.exception("Could not arm the post-scan shutdown; the bell shutdown still applies")
+
+    return _listener
+
+
+def session_window_status(instant=None, config: Config | None = None) -> str:
+    """"run" | "not_a_session" | "already_closed" | "scans_done" -- should a process be up now?
+
+    `scans_done` (only when `config` is given): the session's last scheduled scan
+    plus its approval window is behind us. Nothing re-runs a missed scan, so a
+    process started now would only idle -- and hold the PC awake -- until the
+    bell. It is to the post-scan exit what `already_closed` is to the bell.
 
     Decided from the exchange calendar's own close, so half-days are handled:
     the Friday after Thanksgiving and Christmas Eve close at 13:00 ET, and a
@@ -536,6 +617,10 @@ def session_window_status(instant=None) -> str:
         return "not_a_session"
     if as_utc(instant) >= close:
         return "already_closed"
+    if config is not None:
+        last = last_scheduled_scan_utc(config, instant)
+        if last is not None and as_utc(instant) >= last + timedelta(minutes=config.post_scan_window_min):
+            return "scans_done"
     return "run"
 
 
@@ -1224,13 +1309,26 @@ def main() -> None:
     # Decided BEFORE Discord is touched: a process that should not be up must
     # not open a gateway connection it will only have to tear down, and must
     # not leave anything behind to be orphaned.
-    _status = session_window_status()
+    _status = session_window_status(config=config)
     if _status == "not_a_session":
         logger.info("%s is not an NYSE trading session — not starting.", market_session_date())
         return
     if _status == "already_closed":
         logger.info("Session %s has already closed — not starting.", market_session_date())
         return
+    if _status == "scans_done":
+        logger.info(
+            "Session %s: the scheduled scans and their %d-min approval window are over — not starting.",
+            market_session_date(), config.post_scan_window_min,
+        )
+        return
+
+    # On the main thread, which lives exactly as long as the process: Windows
+    # drops the request when it exits, so normal sleep resumes by itself.
+    if hold_system_awake():
+        logger.info("Holding the PC awake while the bot runs (released when it exits).")
+    else:
+        logger.warning("Could not hold the PC awake: an idle sleep can freeze the scheduled scans.")
 
     initialize_db(config.db_path)
 
@@ -1295,12 +1393,41 @@ def main() -> None:
 
             schedule_session_shutdown(scheduler, _shutdown_at_the_bell, _close)
 
+            def _shutdown_after_scans():
+                logger.info("Scans done and the approval window is over — shutting down until the next session.")
+                # NOT .result(), for the same reason as the bell shutdown.
+                asyncio.run_coroutine_threadsafe(bot.close(), bot.loop)
+
+            def _arm_post_scan_shutdown(when):
+                schedule_post_scan_shutdown(scheduler, _shutdown_after_scans, when)
+                logger.info(
+                    "Last scheduled scan is done — shutting down at %s (%d-min approval window).",
+                    when.astimezone().strftime("%H:%M %Z"), config.post_scan_window_min,
+                )
+
+            scheduler.add_listener(
+                make_post_scan_listener(
+                    jobs_fn=scheduler.get_jobs,
+                    schedule_fn=_arm_post_scan_shutdown,
+                    close_utc=_close,
+                    window_min=config.post_scan_window_min,
+                    clock=lambda: datetime.now(timezone.utc),
+                ),
+                EVENT_JOB_EXECUTED | EVENT_JOB_ERROR | EVENT_JOB_MISSED,
+            )
+
         scheduler.start()
         if _close is not None:
             logger.info(
                 "Shutting down at the close: %s",
                 _close.astimezone().strftime("%Y-%m-%d %H:%M %Z"),
             )
+            # Restarted inside the approval window (the startup guard let it
+            # through): no scan job will fire today, so no event will arm the
+            # exit. Arm it here, at the window's end rather than a fresh 30 min.
+            _last = last_scheduled_scan_utc(config)
+            if _last is not None and datetime.now(timezone.utc) >= _last:
+                _arm_post_scan_shutdown(_last + timedelta(minutes=config.post_scan_window_min))
         logger.info(
             "%s", scheduler_summary("Stock scan", config.scan_times, config.scan_timezone)
         )

@@ -162,6 +162,10 @@ class Config:
     etf_scan_hour: int = _env_int("ETF_SCAN_HOUR", "9")
     etf_scan_minute: int = _env_int("ETF_SCAN_MINUTE", "30")
     etf_scan_times: list = field(default_factory=_parse_etf_scan_times)
+    # Minutes the bot stays up after the session's LAST scheduled scan finishes,
+    # so its recommendations can be approved while the process that answers the
+    # buttons is still alive. Then it exits; see main.make_post_scan_listener.
+    post_scan_window_min: int = _env_int("POST_SCAN_WINDOW_MIN", "30")
     top_sp500_count: int = _env_int("TOP_SP500_COUNT", "50")
     analyst_call_delay_s: float = _env_float("ANALYST_CALL_DELAY_S", "4.0")
 
