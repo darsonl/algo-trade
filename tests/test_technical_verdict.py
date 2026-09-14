@@ -108,7 +108,6 @@ def _config(tmp_path):
     c.db_path = str(tmp_path / "s.db")
     c.dry_run = True
     c.max_rsi = 70.0
-    c.min_volume_ratio = 1.0
     initialize_db(c.db_path)
     return c
 

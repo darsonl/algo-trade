@@ -296,6 +296,13 @@ git commit -m "feat: explicit missing-data policy for the fundamental filter"
 
 ### Task 2: Completed-bar volume statistics
 
+> **SUPERSEDED 2026-09-15 — never executed; do not execute.** The volume criterion was
+> removed from the technical gate instead (see CLAUDE.md, *The technical gate has NO volume
+> criterion*). The bug this task describes shipped to production and rejected every stock at
+> the 2026-09-14 09:45 ET scan. A completed-bar fix was rejected because, measured on four years
+> of complete bars, the rule blocked ~3.5% of candidates — mostly on half-days — without them
+> underperforming, and this fix would have moved that holiday artifact one session later.
+
 **Files:**
 - Modify: `screener/technicals.py:99-135`
 - Test: `tests/test_volume_completed_bar.py`

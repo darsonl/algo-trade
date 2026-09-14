@@ -75,12 +75,6 @@ def test_fails_when_price_below_ma50(cfg):
     assert passes_technical_filter(make_ticker_data(price=90.0, ma50=100.0), cfg) is False
 
 
-def test_fails_when_volume_below_average(cfg):
-    assert passes_technical_filter(
-        make_ticker_data(volume=400_000, avg_volume=1_000_000), cfg
-    ) is False
-
-
 def test_passes_at_rsi_boundary(cfg):
     assert passes_technical_filter(make_ticker_data(rsi=70.0), cfg) is True
 
