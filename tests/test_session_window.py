@@ -1,6 +1,8 @@
 """The bot runs for one session and then goes home.
 
-Three states, decided once at startup and again by a scheduled shutdown:
+Three states, decided once at startup and again by a scheduled shutdown (a
+fourth, `scans_done` -- the scans and their approval window are over -- needs
+the config and lives in tests/test_post_scan_exit.py):
 
 * `not_a_session` -- a weekend or a market holiday. Exit before touching
   Discord, so nothing idles and nothing can be orphaned.
