@@ -33,7 +33,6 @@ def _config(**over):
     c.min_dividend_yield = 0.02
     c.min_earnings_growth = 0.05
     c.max_rsi = 70.0
-    c.min_volume_ratio = 1.0
     for k, v in over.items():
         setattr(c, k, v)
     return c
@@ -138,15 +137,9 @@ def test_a_price_below_the_moving_average_is_named():
     assert v.failed_on == "price_below_ma50"
 
 
-def test_volume_below_the_required_ratio_is_named():
-    v = evaluate_technicals({**_TECH_PASSING, "volume": 100}, _config())
-    assert v.failed_on == "volume_below_min_ratio"
-
-
 def test_the_technical_gate_carries_its_thresholds():
     v = evaluate_technicals(_TECH_PASSING, _config(max_rsi=55.0))
-    assert v.thresholds["max_rsi"] == 55.0
-    assert v.thresholds["min_volume_ratio"] == 1.0
+    assert v.thresholds == {"max_rsi": 55.0}
 
 
 def test_the_first_failing_technical_criterion_wins():

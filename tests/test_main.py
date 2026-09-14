@@ -58,10 +58,6 @@ def test_buy_signal_with_price_below_ma50_does_not_recommend():
     assert should_recommend("BUY", make_tech(price=90.0, ma50=100.0), make_cfg()) is False
 
 
-def test_buy_signal_with_low_volume_does_not_recommend():
-    assert should_recommend("BUY", make_tech(volume=300_000, avg_volume=1_000_000), make_cfg()) is False
-
-
 # --- configure_scheduler ---
 
 def _dummy_job():

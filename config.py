@@ -148,7 +148,6 @@ class Config:
     analyst_daily_limit: int = _env_int("ANALYST_DAILY_LIMIT", "450")
     analyst_fallback_daily_limit: int = _env_int("ANALYST_FALLBACK_DAILY_LIMIT", "18")
     analyst_fallback2_daily_limit: int = _env_int("ANALYST_FALLBACK2_DAILY_LIMIT", "18")
-    min_volume_ratio: float = _env_float("MIN_VOLUME_RATIO", "0.5")
     etf_max_expense_ratio: float = _env_float("ETF_MAX_EXPENSE_RATIO", "0.005")
 
     max_position_size_usd: float = _env_float("MAX_POSITION_SIZE_USD", "500.0")
@@ -226,6 +225,15 @@ class Config:
                 "gate now values stocks on forward P/E, not trailing. "
                 f"Your current value was MAX_PE_RATIO={os.environ['MAX_PE_RATIO']}; "
                 "rename it in .env after checking it still suits forward P/E."
+            )
+        # Not renamed but REMOVED: the technical gate has no volume criterion. Left
+        # in .env it would read as a selection rule still in force.
+        if "MIN_VOLUME_RATIO" in os.environ:
+            raise ValueError(
+                "MIN_VOLUME_RATIO has been removed: the technical gate no longer has a "
+                "volume criterion (it read today's still-forming bar, so the opening "
+                f"scan rejected every stock). Your value was MIN_VOLUME_RATIO="
+                f"{os.environ['MIN_VOLUME_RATIO']}; delete the line from .env."
             )
 
     def validate(self):

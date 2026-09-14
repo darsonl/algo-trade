@@ -76,10 +76,16 @@ def evaluate_technicals(ticker_data: dict, config: Config) -> Verdict:
     `thresholds` cannot describe it. That rule can still change -- in the code
     rather than in config -- which is one reason `failed_on` is recorded
     independently of the threshold set rather than derived from it.
+
+    There is no volume criterion (removed 2026-09-15). It read the last daily bar,
+    which during market hours is today's, still forming, so the 09:45 ET scan
+    rejected every stock; and on complete bars it blocked ~3.5% of candidates,
+    mostly on half-days, without them doing any worse afterwards. Volume is still
+    FETCHED -- it is research data in `technicals_json` -- but it must not decide,
+    including through `data_missing`. See tests/test_no_volume_gate.py.
     """
     thresholds = {
         "max_rsi": config.max_rsi,
-        "min_volume_ratio": config.min_volume_ratio,
     }
 
     def _fail(criterion):
@@ -88,26 +94,22 @@ def evaluate_technicals(ticker_data: dict, config: Config) -> Verdict:
     rsi = ticker_data.get("rsi")
     price = ticker_data.get("price")
     ma50 = ticker_data.get("ma50")
-    volume = ticker_data.get("volume")
-    avg_volume = ticker_data.get("avg_volume")
 
-    if any(v is None for v in (rsi, price, ma50, volume, avg_volume)):
+    if any(v is None for v in (rsi, price, ma50)):
         return _fail("data_missing")
     if rsi > config.max_rsi:
         return _fail("rsi_above_max")
     if price < ma50:
         return _fail("price_below_ma50")
-    if volume < avg_volume * config.min_volume_ratio:
-        return _fail("volume_below_min_ratio")
     return Verdict(True, None, thresholds)
 
 
 def passes_technical_filter(ticker_data: dict, config: Config) -> bool:
     """
-    Return True only if all three technical criteria are met: RSI <= config.max_rsi,
-    price >= ma50, and volume >= avg_volume * config.min_volume_ratio.
+    Return True only if both technical criteria are met: RSI <= config.max_rsi and
+    price >= ma50.
 
-    Expects keys: 'rsi', 'price', 'ma50', 'volume', 'avg_volume'. Returns False if any value is None.
+    Expects keys: 'rsi', 'price', 'ma50'. Returns False if any of them is None.
     """
     return evaluate_technicals(ticker_data, config).passed
 
