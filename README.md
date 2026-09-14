@@ -131,7 +131,7 @@ MAX_POSITION_SIZE_USD=500   # ceiling per trade
 MAX_PORTFOLIO_USD=20000     # total exposure ceiling; Approve is blocked above it
 ```
 
-Screener thresholds (`MIN_DIVIDEND_YIELD`, `MAX_FORWARD_PE`, `MIN_EARNINGS_GROWTH`, `MAX_RSI`, `SELL_RSI_THRESHOLD`, `MIN_VOLUME_RATIO`) are all tunable without touching code.
+Screener thresholds (`MIN_DIVIDEND_YIELD`, `MAX_FORWARD_PE`, `MIN_EARNINGS_GROWTH`, `MAX_RSI`, `SELL_RSI_THRESHOLD`) are all tunable without touching code.
 
 Set `SCAN_TIMEZONE=America/New_York` if you want the schedule pinned to market hours across DST rather than to your machine's clock.
 
