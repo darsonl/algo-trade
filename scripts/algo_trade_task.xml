@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="UTF-16"?>
+﻿<?xml version="1.0" encoding="UTF-8"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
     <Date>2026-09-12T00:00:00</Date>
@@ -22,6 +22,7 @@
       <Interval>PT5M</Interval>
     </RestartOnFailure>
     <StartWhenAvailable>true</StartWhenAvailable>
+    <WakeToRun>true</WakeToRun>
     <RunOnlyIfNetworkAvailable>true</RunOnlyIfNetworkAvailable>
     <IdleSettings>
       <StopOnIdleEnd>false</StopOnIdleEnd>
@@ -34,7 +35,7 @@
       <StartBoundary>2026-09-13T20:00:00+08:00</StartBoundary>
       <Repetition>
         <Interval>PT30M</Interval>
-        <Duration>PT9H</Duration>
+        <Duration>PT4H30M</Duration>
       </Repetition>
       <ScheduleByDay>
         <DaysInterval>1</DaysInterval>
