@@ -58,12 +58,14 @@ test exercised the function, and `main.py` swallowed the exception into a log wa
 ```
 python main.py
   → Config.validate() (fast-fail if Schwab/Discord/Anthropic keys missing)
-  → session_window_status(): EXIT here (before Discord) if today is not an NYSE
-    session, or if today's close has already passed. The task restarts it daily.
+  → session_window_status(config=config): EXIT here (before Discord) if today is
+    not an NYSE session, today's close has passed, or today's last scheduled scan
+    + POST_SCAN_WINDOW_MIN has passed (`scans_done`). The task restarts it daily.
+  → hold_system_awake(): the PC may not idle-sleep while the process lives
   → DB init (SQLite, creates tables if absent)
   → Discord bot + APScheduler start
-  → one-shot shutdown job registered at session_close_utc() — 16:00 ET, or 13:00
-    on a half-day. The bot runs for one session and then exits.
+  → exit armed when the session's LAST scan job finishes (+30-min approval
+    window); a one-shot job at session_close_utc() stays as the backstop.
   → Daily cron at each SCAN_TIMES entry (SCAN_HOUR/MINUTE only as fallback)
       → run_scan():
           → scan_allowed_now(): skip if not a trading session (fails OPEN)
@@ -185,9 +187,16 @@ python main.py
 
   **`scan_allowed_now()` fails OPEN, inverting this codebase's usual rule, deliberately.** The kill switch and the preflight table protect *capital*, so an unknown there must refuse. This guard protects *data quality*, and a scan places no orders. A junk weekend row is identifiable by `session_date` and deletable; a trading day lost to a flaky calendar lookup is gone.
 
-  `session_window_status()` returns `run` / `not_a_session` / `already_closed`; the latter two exit **before Discord is touched**. `already_closed` is what makes the task's repeating trigger safe. `session_close_utc()` is read from the calendar because **16:00 ET is not a constant** (two half-days close 13:00) and **not constant in UTC** either (20:00 UTC summer, 21:00 winter). The shutdown job deliberately does **not** call `.result()`, unlike the scan jobs beside it: both run on the scheduler thread, but waiting on the coroutine that tears down the loop you are waiting through is how you deadlock.
+  `session_window_status()` returns `run` / `not_a_session` / `already_closed` (and `scans_done` when given the config — see the post-scan exit below); the latter two exit **before Discord is touched**. `already_closed` is what makes the task's repeating trigger safe. `session_close_utc()` is read from the calendar because **16:00 ET is not a constant** (two half-days close 13:00) and **not constant in UTC** either (20:00 UTC summer, 21:00 winter). The shutdown job deliberately does **not** call `.result()`, unlike the scan jobs beside it: both run on the scheduler thread, but waiting on the coroutine that tears down the loop you are waiting through is how you deadlock.
 
   **`tests/conftest.py` exists because of this guard.** It made ~36 unrelated scan tests depend on the wall clock — they all went red the moment it landed, on a Sunday. One autouse fixture pins the calendar suite-wide, the same principle as threading an `instant` through every time-dependent query: the clock is not a test input. Tests that *are* about the guard override it locally and win.
+- **The bot exits once the session's scans are done, and holds the PC awake only until then** (2026-09-15). Everything it does on a schedule happens in two scans (stock 09:35 ET, ETF 10:00 ET), so staying up to the bell was six idle hours of gateway — and nothing asked Windows not to sleep: the host sleeps after 45 idle minutes, slept through 2026-09-14 08:33→20:06, and a sleep inside a session freezes APScheduler as silently as the console wedge did. `WakeToRun` alone does not fix that, because a timer wake gets Windows' ~2-minute *unattended* idle timeout.
+
+  **The exit is armed by the scheduler, not a clock.** `make_post_scan_listener` runs on every job event (EXECUTED, ERROR *and* MISSED — nothing re-runs a slept-through scan) and arms `post_scan_shutdown` at *now + `POST_SCAN_WINDOW_MIN`* (default 30) once no scan job's next run lies before the close. **Only scan jobs count**, both as the trigger and as "pending": the bell shutdown sits before the close all day and would otherwise read as a scan that never arrives. **A next run time in the past is not pending** — APScheduler emits MISSED before advancing it. The window exists because the Approve/Reject buttons answer only while the process is alive; they re-attach on the next start, but a recommendation expires 24h after posting.
+
+  **`scans_done` is to this exit what `already_closed` is to the bell**: the task repeats every 30 minutes, and without it a repeat after the window would start a bot that idles until the close holding the PC awake. A restart *inside* the window arms the exit at the window's end, not a fresh 30 minutes.
+
+  **The awake hold is `SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)` on the main thread** (`keep_awake.py`) — system, not display. Windows withdraws it when the process ends, **including a crash or a kill**, so there is no sleep setting to restore; that is why it beat toggling `powercfg`, which a killed process leaves disabled. Verified on this host: the thread's state reads `0x80000001`. `argtypes` must be `c_uint32` — `0x80000000` overflows ctypes' default C int. Off Windows (CI) it is a logged no-op. `main()`'s use of all of this is pinned by AST tests, so a wiring revert fails the suite.
 - **The bot logs to a console ONLY when one is being watched**: `build_log_handlers()` adds a `StreamHandler` only if the stream is a terminal, and it tests **`sys.stderr`** — `logging.StreamHandler()` defaults to stderr, so gating on `sys.stdout` is a no-op that reads correctly. `bot.run(..., log_handler=None)` separately stops discord.py attaching its own handler to the `discord` logger (it never sets `propagate=False`, so every `discord.*` record printed twice).
 
   This is not cosmetic. A Windows console has **QuickEdit Mode on by default** and a stray text selection suspends every write to it; the first thread to log then blocks forever **holding the `logging` module lock**, and every other thread queues behind it — including the APScheduler executor, which logs `Running job` before invoking its target. On 2026-09-12 that wedged the scheduler and silently cost a scan: process alive, all logging stopped, job never submitted. See `docs/superpowers/HANDOFF-2026-09-13.md` §2.
@@ -385,7 +394,7 @@ Pre-flight helper: `.venv/Scripts/python.exe scripts/check_ops_ids.py` reports t
 
 ### Test Suite
 
-1528 tests as of 2026-09-15. Run with `.venv/Scripts/python.exe -m pytest -q` (~50s). Without a `.env` (a fresh worktree), 7 scan tests fail on `openai.OpenAIError` unless the four dummy analyst keys from `.github/workflows/ci.yml` are exported — an environment gap, not a regression. Key test files:
+1557 tests as of 2026-09-15. Run with `.venv/Scripts/python.exe -m pytest -q` (~50s). Without a `.env` (a fresh worktree), 7 scan tests fail on `openai.OpenAIError` unless the four dummy analyst keys from `.github/workflows/ci.yml` are exported — an environment gap, not a regression. Key test files:
 - `test_no_volume_gate.py` — the technical gate has no volume rule: an opening-bar BUY is recommended, missing volume is not `data_missing`, no `min_volume_ratio` threshold recorded, a leftover `MIN_VOLUME_RATIO` fails startup (8 tests)
 - `test_after_hours_approval.py` — a real Approve click through the real `fetch_quote`, parser, guard table and calendar (only the Schwab client faked): pre-open prices off the last close, a stale quote mid-session is still refused (2 tests)
 - `test_schwab_login.py` — the bot never logs in: token-file-only client, the 7-day cutoff, login failure as `QuoteUnavailable` and as `submit_failed` at the sink, the per-scan expiry alert on both paths, the AST check that no module can start a login, and the real sink dispatching end to end (24 tests)
@@ -394,6 +403,7 @@ Pre-flight helper: `.venv/Scripts/python.exe scripts/check_ops_ids.py` reports t
 - `test_forward_pe_gate.py` — forward P/E gate: non-positive and unusable values rejected, inclusive ceiling, trailing no longer decides, `MAX_PE_RATIO` fails startup, dividend floor off by default, embed/prompt fields (23 tests)
 - `test_market_trend.py` — `/market_trend`: threshold edges, curve shape naming, un-inversion memory, the real-FRED emergency-cut oracle, per-indicator failure isolation, defer-before-fetch (63 tests, no network)
 - `tests/conftest.py` — the ONE autouse fixture: pins the exchange calendar so the scan suite does not pass Mon–Fri and fail at weekends
+- `test_post_scan_exit.py` — exit after the last scan + approval window: last scan across both schedules and DST, `scans_done`, only scan jobs count as pending, past run times are not pending, the real-scheduler shutdown job, the awake hold's flags, and AST checks that `main()` wires it all (29 tests)
 - `test_session_window.py` / `test_logging_setup.py` — the session lifecycle (start before the open, exit at the bell, never come up on a non-session) and the console-handler gating that a wedged scheduler paid for (15 tests)
 - `test_order_status_sweep.py` / `test_order_status_mapping.py` / `test_active_rec_index.py` — step 11: chain-following, the sweep, the trustworthy-fill rule, and the index that cannot ship before its release valve (48 tests)
 - `test_gate_provenance.py` — the gate that judged a candidate and what it was set to: first-failing-criterion, every-gate-not-just-the-decider, and an explicit reason surviving a gate's (23 tests, no mocks)
