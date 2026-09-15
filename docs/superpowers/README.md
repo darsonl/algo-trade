@@ -34,7 +34,7 @@ Read top-down: newest first.
 | [`HANDOFF-2026-09-13b.md`](HANDOFF-2026-09-13b.md) | §2 the #45–#48 reasoning; §3 the 2026-09-14 rule boundary |
 | [`HANDOFF-2026-09-13.md`](HANDOFF-2026-09-13.md) | §2 **the wedged scheduler** (cited from `CLAUDE.md`); §3 the orphaned-process and `StopAtDurationEnd` defects; §4 the session lifecycle |
 | [`HANDOFF-2026-08-30.md`](HANDOFF-2026-08-30.md) | §1 **the NaN/NULL trap**; §2b **why `cp` is unsafe on this WAL database** |
-| [`HANDOFF-2026-08-28.md`](HANDOFF-2026-08-28.md) | §1 **only** — the correction of the marks-due date (08-29, not 08-27, because the session date is 08-22 not 08-20). `HANDOFF-2026-08-22c.md` and `HANDOFF-2026-08-23.md` both carry the wrong date inline and point here for the fix, so this file cannot be removed without first inlining that correction into both |
+| [`HANDOFF-2026-08-28.md`](HANDOFF-2026-08-28.md) | **Nothing — removable.** Its §1 was the correction of the marks-due date; on 2026-09-15 that correction was inlined as a banner in both files that depended on it (08-22c and 08-23), and its durable lesson moved to `CLAUDE.md` (*"a mark-due date must be re-derived from the rows"*). Nothing now points here |
 | [`HANDOFF-2026-08-23.md`](HANDOFF-2026-08-23.md) | What the total-return fix and the gate-provenance change actually **do** |
 | [`HANDOFF-2026-08-22c.md`](HANDOFF-2026-08-22c.md) | The 78% fix's design, and the Codex review that reshaped it |
 | [`HANDOFF-2026-08-22b.md`](HANDOFF-2026-08-22b.md) | The shadow log's build (Tasks 1–8) and the acceptance scan |
