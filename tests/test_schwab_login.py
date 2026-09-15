@@ -388,3 +388,162 @@ async def test_a_fresh_login_posts_nothing(tmp_path):
 async def test_a_failing_login_check_does_not_abort_the_scan(tmp_path):
     alerts = await _scan("stock", None, tmp_path, error=RuntimeError("boom"))
     assert "Scan complete: 0 recommendations posted." in alerts
+
+
+# --- when is the NEXT scheduled scan? (the warning's deadline) ---
+#
+# The warning is delivered BY A SCAN, and scans only run on trading sessions.
+# Asking "is the token old?" therefore answers the wrong question: a token that
+# expires on a Sunday is never old on a day anything is running to say so. The
+# question that matters is "will this token outlive the next scan?".
+
+def _sched(stock=("09:35",), etf=("10:00",), tz="America/New_York"):
+    from config import Config
+    c = Config()
+    c.scan_times = list(stock)
+    c.etf_scan_times = list(etf)
+    c.scan_timezone = tz
+    return c
+
+
+def test_the_next_scan_is_the_earliest_time_after_the_instant():
+    """2026-09-16 is a Wednesday. 09:35 ET == 13:35 UTC, 10:00 ET == 14:00 UTC."""
+    import main
+    after_stock = datetime(2026, 9, 16, 13, 35, tzinfo=timezone.utc)
+    assert main.next_scheduled_scan_utc(_sched(), after_stock) == \
+        datetime(2026, 9, 16, 14, 0, tzinfo=timezone.utc)
+
+
+def test_the_next_scan_after_fridays_last_skips_the_weekend():
+    """THE bug. Fails if the walk steps one calendar day: Saturday has no scan,
+    so a token dying on Sunday is never announced by anything.
+
+    `main.is_trading_session` is restored to the real calendar because
+    conftest's autouse fixture pins it True -- which would make a naive
+    implementation pass by answering Saturday.
+    """
+    import main
+    import market_time
+    friday_etf = datetime(2026, 9, 18, 14, 0, tzinfo=timezone.utc)
+    with patch("main.is_trading_session", market_time.is_trading_session):
+        assert main.next_scheduled_scan_utc(_sched(), friday_etf) == \
+            datetime(2026, 9, 21, 13, 35, tzinfo=timezone.utc)
+
+
+def test_the_next_scan_skips_a_market_holiday_that_is_not_a_federal_one():
+    """Good Friday 2026-04-03 is closed but is a weekday, so a `mon-fri` rule
+    answers it. The next scan after Thursday's last is Monday 2026-04-06."""
+    import main
+    import market_time
+    thursday_etf = datetime(2026, 4, 2, 14, 0, tzinfo=timezone.utc)
+    with patch("main.is_trading_session", market_time.is_trading_session):
+        assert main.next_scheduled_scan_utc(_sched(), thursday_etf) == \
+            datetime(2026, 4, 6, 13, 35, tzinfo=timezone.utc)
+
+
+def test_an_unreadable_calendar_means_the_next_scan_is_unknown_not_a_crash():
+    """The deadline is a nice-to-have; the warning is not. A calendar outage
+    must degrade to "unknown", so the caller can fall back on token age --
+    never propagate into `alert_schwab_login` and swallow an EXPIRED alert."""
+    import main
+    with patch("main.is_trading_session", side_effect=RuntimeError("calendar down")):
+        assert main.next_scheduled_scan_utc(_sched(), _NOW) is None
+
+
+def test_no_scheduled_scans_means_no_next_scan():
+    import main
+    assert main.next_scheduled_scan_utc(_sched(stock=(), etf=()), _NOW) is None
+
+
+def test_the_next_scan_is_a_market_time_across_dst():
+    """09:35 ET is 13:35 UTC in September and 14:35 UTC in December. Fails if
+    the walk pins a fixed UTC offset."""
+    import main
+    winter = datetime(2026, 12, 1, 20, 0, tzinfo=timezone.utc)   # Tue after the close
+    assert main.next_scheduled_scan_utc(_sched(), winter) == \
+        datetime(2026, 12, 2, 14, 35, tzinfo=timezone.utc)
+
+
+# --- the warning's deadline is the next scan, not the token's age ---
+#
+# Oracle: the token live on this machine at the time of writing. Created
+# 2026-09-13 14:42 UTC, so it expires SUNDAY 2026-09-20 14:42 UTC. Under the
+# >=6-day rule the warn window opened Saturday 09-19 14:42 and the first scan
+# that could read it was Monday 09-21 09:35 ET -- by which point the token was
+# already dead. The operator got NO warning at all, which is what this fixes.
+
+_LIVE_CREATED = datetime(2026, 9, 13, 14, 42, tzinfo=timezone.utc)
+
+
+def _token_created(tmp_path, created):
+    path = tmp_path / "schwab_token.json"
+    path.write_text(json.dumps({"creation_timestamp": int(created.timestamp()),
+                                "token": {"refresh_token": "x"}}))
+    return str(path)
+
+
+def test_a_token_that_dies_before_the_next_scan_warns_on_this_one(tmp_path):
+    """Friday's last scan is the last chance to say anything. Fails under the
+    >=6-day rule: the token is only 4.97 days old here, so nothing warns."""
+    import main
+    friday_etf = datetime(2026, 9, 18, 14, 0, tzinfo=timezone.utc)
+    with patch("main.is_trading_session", __import__("market_time").is_trading_session):
+        next_scan = main.next_scheduled_scan_utc(_sched(), friday_etf)
+    msg = auth.schwab_login_warning(_token_created(tmp_path, _LIVE_CREATED),
+                                    now=friday_etf, next_scan=next_scan)
+    assert msg is not None
+    assert "2026-09-20 14:42" in msg          # when it dies
+    assert "2026-09-21 13:35" in msg          # the scan it will not reach
+    assert "scripts/schwab_login.py" in msg
+
+
+def test_a_token_that_outlives_the_next_scan_is_not_warned_about(tmp_path):
+    """Today's scan is not the last chance, so it stays quiet. Without this the
+    rule degenerates to warning on every scan, which is a warning nobody reads."""
+    import main
+    wednesday_stock = datetime(2026, 9, 16, 13, 35, tzinfo=timezone.utc)
+    next_scan = main.next_scheduled_scan_utc(_sched(), wednesday_stock)
+    assert auth.schwab_login_warning(_token_created(tmp_path, _LIVE_CREATED),
+                                     now=wednesday_stock, next_scan=next_scan) is None
+
+
+def test_the_next_scan_rule_never_silences_the_age_warning(tmp_path):
+    """The two rules are a UNION, so the new one can only ADD warnings. A token
+    in its last day still warns even though it survives the next scan an hour
+    from now -- fails if the age floor was replaced rather than joined."""
+    soon = _NOW + timedelta(hours=1)
+    msg = auth.schwab_login_warning(_token(tmp_path, age_s=6.5 * DAY),
+                                    now=_NOW, next_scan=soon)
+    assert msg is not None and "12h" in msg
+
+
+def test_an_unknown_next_scan_falls_back_to_the_age_rule(tmp_path):
+    """A calendar outage leaves next_scan None. Degrading to today's behaviour
+    is the fail-safe direction: an extra warning costs nothing, a missed one
+    costs the Monday scan."""
+    assert auth.schwab_login_warning(_token(tmp_path, age_s=6.5 * DAY),
+                                     now=_NOW, next_scan=None) is not None
+
+
+@pytest.mark.asyncio
+async def test_the_scan_alert_measures_the_token_against_the_next_scan(tmp_path):
+    """End to end through the REAL warning and the REAL calendar, with only the
+    token file and the clock pinned: Friday's scan must announce a token that
+    dies on Sunday. Fails if `alert_schwab_login` still asks only about age.
+
+    conftest pins `main.schwab_login_warning` to None for every other test in
+    the suite, so this restores the real one -- the same override the calendar
+    fixture documents.
+    """
+    import main
+    import market_time
+    bot = MagicMock()
+    bot.send_ops_alert = AsyncMock()
+    friday_etf = datetime(2026, 9, 18, 14, 0, tzinfo=timezone.utc)
+    with patch("main.schwab_login_warning", auth.schwab_login_warning), \
+         patch("schwab_client.auth.get_token_path",
+               return_value=_token_created(tmp_path, _LIVE_CREATED)), \
+         patch("main.is_trading_session", market_time.is_trading_session):
+        await main.alert_schwab_login(bot, _sched(), now=friday_etf)
+    bot.send_ops_alert.assert_awaited_once()
+    assert "2026-09-21 13:35" in bot.send_ops_alert.await_args[0][0]
