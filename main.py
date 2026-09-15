@@ -809,7 +809,9 @@ async def _run_scan_locked(bot: TradingBot, config: Config) -> None:
                         earnings_date_prompt = _date_str
 
             headlines = await asyncio.to_thread(
-                fetch_news_headlines, ticker, alpha_vantage_api_key=config.alpha_vantage_api_key
+                fetch_news_headlines, ticker,
+                finnhub_api_key=config.finnhub_api_key,
+                alpha_vantage_api_key=config.alpha_vantage_api_key,
             )
             headline_fetches += 1
             if not headlines:
@@ -1029,7 +1031,9 @@ async def _run_scan_locked(bot: TradingBot, config: Config) -> None:
                 hold_days = 0
 
             headlines = await asyncio.to_thread(
-                fetch_news_headlines, ticker, alpha_vantage_api_key=config.alpha_vantage_api_key
+                fetch_news_headlines, ticker,
+                finnhub_api_key=config.finnhub_api_key,
+                alpha_vantage_api_key=config.alpha_vantage_api_key,
             )
 
             # D-11: quota guard for sell analyst call
@@ -1203,7 +1207,9 @@ async def _run_scan_etf_locked(bot: TradingBot, config: Config) -> None:
 
             # Fetch news headlines (per D-01)
             headlines = await asyncio.to_thread(
-                fetch_news_headlines, ticker, alpha_vantage_api_key=config.alpha_vantage_api_key
+                fetch_news_headlines, ticker,
+                finnhub_api_key=config.finnhub_api_key,
+                alpha_vantage_api_key=config.alpha_vantage_api_key,
             )
 
             async def _analyze_etf():

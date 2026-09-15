@@ -75,7 +75,10 @@ def test_extract_headlines_content_not_dict_falls_back():
 # quotes the caller's own API key came to be logged verbatim 43 times.
 # ---------------------------------------------------------------------------
 
+import datetime as _dt
+import io
 import json
+import pathlib
 import logging
 from unittest.mock import patch
 
@@ -112,7 +115,7 @@ class _FakeResponse:
 @pytest.fixture(autouse=True)
 def _reset_breaker(monkeypatch):
     """Each test starts with the Alpha Vantage day-breaker disarmed."""
-    monkeypatch.setattr(news, "_av_unavailable_on", None)
+    monkeypatch.setattr(news, "_unavailable_on", {})
 
 
 def test_quota_refusal_does_not_leak_the_api_key_into_the_log(monkeypatch, caplog):
@@ -142,7 +145,7 @@ def test_a_quota_refusal_is_not_retried():
         return _FakeResponse(_QUOTA_BODY)
 
     with patch("urllib.request.urlopen", side_effect=_spy):
-        with pytest.raises(news.AlphaVantageUnavailable):
+        with pytest.raises(news.NewsProviderUnavailable):
             news._fetch_from_alpha_vantage("AAPL", _KEY)
 
     assert len(calls) == 1, "a spent daily budget cannot succeed on retry"
@@ -220,4 +223,221 @@ def test_a_successful_fetch_does_not_arm_the_breaker():
     body = {"feed": [{"title": "All quiet"}]}
     with patch("urllib.request.urlopen", return_value=_FakeResponse(body)):
         news.fetch_news_headlines("NVDA", alpha_vantage_api_key=_KEY)
-    assert news._av_unavailable_on is None
+    assert news._unavailable_on == {}
+
+
+# ---------------------------------------------------------------------------
+# Finnhub, and the provider chain: Finnhub -> Alpha Vantage -> yfinance.
+#
+# Shapes below are what the live API actually returned on 2026-09-15, not what
+# the docs describe -- the docs say `datetime` is ISO 8601; it is a Unix epoch
+# int. A bad token answers HTTP 401 with {"error":"Invalid API key"} and does
+# NOT echo the token, unlike Alpha Vantage.
+# ---------------------------------------------------------------------------
+
+import urllib.error
+
+_FINNHUB_KEY = "FINNHUBKEY000000000000000000000000000000"
+
+
+def _finnhub_item(headline: str, ts: int = 1789477500) -> dict:
+    return {
+        "category": "company", "datetime": ts, "headline": headline,
+        "id": 1234, "image": "https://example.com/i.png", "related": "AAPL",
+        "source": "Yahoo", "summary": "...", "url": "https://example.com/a",
+    }
+
+
+def _http_error(code: int, body: bytes = b'{"error":"Invalid API key"}'):
+    return urllib.error.HTTPError(
+        url="https://finnhub.io/api/v1/company-news?token=SECRET",
+        code=code, msg="err", hdrs=None, fp=io.BytesIO(body),
+    )
+
+
+def test_finnhub_returns_headlines_newest_first():
+    body = [_finnhub_item(f"Headline {i}", ts=1789477500 - i) for i in range(8)]
+    with patch("urllib.request.urlopen", return_value=_FakeResponse(body)):
+        assert news._fetch_from_finnhub("AAPL", _FINNHUB_KEY) == [
+            f"Headline {i}" for i in range(5)
+        ]
+
+
+def test_finnhub_skips_items_without_a_headline():
+    body = [_finnhub_item(""), {"category": "company"}, _finnhub_item("Real news")]
+    with patch("urllib.request.urlopen", return_value=_FakeResponse(body)):
+        assert news._fetch_from_finnhub("AAPL", _FINNHUB_KEY) == ["Real news"]
+
+
+def test_finnhub_requests_a_window_ending_today():
+    seen = {}
+
+    def _spy(url, *a, **kw):
+        seen["url"] = url
+        return _FakeResponse([_finnhub_item("x")])
+
+    with patch("urllib.request.urlopen", side_effect=_spy):
+        news._fetch_from_finnhub("AAPL", _FINNHUB_KEY)
+
+    today = _dt.datetime.now(_dt.timezone.utc).date()
+    assert f"to={today.isoformat()}" in seen["url"]
+    assert f"from={(today - _dt.timedelta(days=news._FINNHUB_WINDOW_DAYS)).isoformat()}" in seen["url"]
+
+
+def test_finnhub_rejects_a_bad_key_without_retrying():
+    calls = []
+
+    def _spy(*a, **kw):
+        calls.append(1)
+        raise _http_error(401)
+
+    with patch("urllib.request.urlopen", side_effect=_spy):
+        with pytest.raises(news.NewsProviderUnavailable):
+            news._fetch_from_finnhub("AAPL", _FINNHUB_KEY)
+
+    assert len(calls) == 1, "a rejected key cannot start working on retry"
+
+
+def test_finnhub_rate_limit_is_retried(monkeypatch):
+    # Finnhub's 429 is a PER-MINUTE cap, not a daily budget: unlike Alpha
+    # Vantage's refusal, backing off and trying again can genuinely succeed.
+    calls = []
+
+    def _spy(*a, **kw):
+        calls.append(1)
+        raise _http_error(429, b'{"error":"API limit reached"}')
+
+    monkeypatch.setattr(news._fetch_from_finnhub.retry, "sleep", lambda *_: None)
+    with patch("urllib.request.urlopen", side_effect=_spy):
+        with pytest.raises(urllib.error.HTTPError):
+            news._fetch_from_finnhub("AAPL", _FINNHUB_KEY)
+
+    assert len(calls) == 3
+
+
+def test_a_finnhub_failure_never_logs_the_token(monkeypatch, caplog):
+    # Finnhub carries the key in the query string, so any message quoting the
+    # URL leaks it -- the Alpha Vantage lesson applied before it bites.
+    def _spy(*a, **kw):
+        raise RuntimeError(f"failed calling ...&token={_FINNHUB_KEY}")
+
+    monkeypatch.setattr(news._fetch_from_finnhub.retry, "sleep", lambda *_: None)
+
+    with patch("urllib.request.urlopen", side_effect=_spy), \
+         patch.object(news, "_fetch_from_yfinance", return_value=["fallback"]):
+        with caplog.at_level(logging.WARNING):
+            news.fetch_news_headlines("AAPL", finnhub_api_key=_FINNHUB_KEY)
+
+    assert _FINNHUB_KEY not in caplog.text
+
+
+def test_the_chain_prefers_finnhub_over_alpha_vantage():
+    with patch.object(news, "_fetch_from_finnhub", return_value=["from finnhub"]) as fh, \
+         patch.object(news, "_fetch_from_alpha_vantage") as av, \
+         patch.object(news, "_fetch_from_yfinance") as yf:
+        result = news.fetch_news_headlines(
+            "AAPL", alpha_vantage_api_key=_KEY, finnhub_api_key=_FINNHUB_KEY
+        )
+
+    assert result == ["from finnhub"]
+    assert fh.called and not av.called and not yf.called
+
+
+def test_alpha_vantage_covers_a_finnhub_failure():
+    with patch.object(news, "_fetch_from_finnhub", side_effect=RuntimeError("boom")), \
+         patch.object(news, "_fetch_from_alpha_vantage", return_value=["from av"]), \
+         patch.object(news, "_fetch_from_yfinance") as yf:
+        result = news.fetch_news_headlines(
+            "AAPL", alpha_vantage_api_key=_KEY, finnhub_api_key=_FINNHUB_KEY
+        )
+
+    assert result == ["from av"]
+    assert not yf.called
+
+
+def test_yfinance_is_the_last_resort():
+    with patch.object(news, "_fetch_from_finnhub", side_effect=RuntimeError("boom")), \
+         patch.object(news, "_fetch_from_alpha_vantage", side_effect=RuntimeError("boom")), \
+         patch.object(news, "_fetch_from_yfinance", return_value=["from yf"]):
+        assert news.fetch_news_headlines(
+            "AAPL", alpha_vantage_api_key=_KEY, finnhub_api_key=_FINNHUB_KEY
+        ) == ["from yf"]
+
+
+def test_an_empty_provider_result_falls_through_to_the_next():
+    # A ticker Finnhub has no coverage for should still get a second chance,
+    # rather than reaching the analyst with no headlines at all.
+    with patch.object(news, "_fetch_from_finnhub", return_value=[]), \
+         patch.object(news, "_fetch_from_alpha_vantage", return_value=["from av"]):
+        assert news.fetch_news_headlines(
+            "AAPL", alpha_vantage_api_key=_KEY, finnhub_api_key=_FINNHUB_KEY
+        ) == ["from av"]
+
+
+def test_a_provider_without_a_key_is_skipped():
+    with patch.object(news, "_fetch_from_finnhub") as fh, \
+         patch.object(news, "_fetch_from_alpha_vantage", return_value=["from av"]):
+        news.fetch_news_headlines("AAPL", alpha_vantage_api_key=_KEY)
+    assert not fh.called
+
+
+def test_a_spent_alpha_vantage_budget_does_not_disable_finnhub():
+    # The breaker is per provider. One shared flag would let Alpha Vantage's
+    # 25/day cap silently switch off a provider with a 60/MINUTE limit.
+    with patch.object(news, "_fetch_from_alpha_vantage",
+                      side_effect=news.NewsProviderUnavailable("spent")), \
+         patch.object(news, "_fetch_from_finnhub", return_value=[]), \
+         patch.object(news, "_fetch_from_yfinance", return_value=["yf"]):
+        news.fetch_news_headlines("A", alpha_vantage_api_key=_KEY, finnhub_api_key=_FINNHUB_KEY)
+
+    assert "alpha_vantage" in news._unavailable_on
+    assert "finnhub" not in news._unavailable_on
+
+
+def test_a_finnhub_refusal_arms_only_the_finnhub_breaker():
+    with patch.object(news, "_fetch_from_finnhub",
+                      side_effect=news.NewsProviderUnavailable("bad key")), \
+         patch.object(news, "_fetch_from_alpha_vantage", return_value=["av"]):
+        news.fetch_news_headlines("A", alpha_vantage_api_key=_KEY, finnhub_api_key=_FINNHUB_KEY)
+
+    assert "finnhub" in news._unavailable_on
+    assert "alpha_vantage" not in news._unavailable_on
+
+
+# ---------------------------------------------------------------------------
+# Wiring. Structural, by AST, for the same reason test_schwab_login.py is: a
+# provider that is configured but never passed through is invisible to every
+# behavioural test -- FINNHUB_API_KEY sat in .env doing nothing until this.
+# ---------------------------------------------------------------------------
+
+import ast
+
+
+def _news_call_keywords():
+    """Every fetch_news_headlines call site in main.py, as keyword-name sets."""
+    tree = ast.parse(pathlib.Path("main.py").read_text(encoding="utf-8"))
+    sites = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        name = getattr(node.func, "id", None) or getattr(node.func, "attr", None)
+        if name == "fetch_news_headlines":
+            sites.append({kw.arg for kw in node.keywords})
+        # asyncio.to_thread(fetch_news_headlines, ticker, key=...) -- the real
+        # shape in this codebase, where the callable is the first argument.
+        elif node.args and getattr(node.args[0], "id", None) == "fetch_news_headlines":
+            sites.append({kw.arg for kw in node.keywords})
+    return sites
+
+
+def test_every_news_call_site_passes_both_provider_keys():
+    sites = _news_call_keywords()
+    assert sites, "no fetch_news_headlines call sites found in main.py"
+    for kwargs in sites:
+        assert "finnhub_api_key" in kwargs, f"call site missing finnhub key: {kwargs}"
+        assert "alpha_vantage_api_key" in kwargs, f"call site missing AV key: {kwargs}"
+
+
+def test_config_exposes_a_finnhub_key():
+    from config import Config
+    assert hasattr(Config(), "finnhub_api_key")
