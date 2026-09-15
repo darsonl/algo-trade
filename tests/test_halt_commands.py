@@ -184,7 +184,18 @@ async def test_halt_persists_before_waiting_on_the_gate(db_path):
 
     async def holder():
         async with gate:
-            await asyncio.sleep(0.05)
+            # Hold the gate until /halt is actually QUEUED behind it, then look.
+            # This used to sleep a fixed 50 ms, but the halt is persisted on a
+            # worker thread and a loaded CI runner took longer than that, so the
+            # test failed on a correct implementation (PR #55, Python 3.11). Waiting
+            # for the waiter keeps the property exact: a halt that persisted only
+            # AFTER taking the gate would be queued here with the switch still
+            # ENABLED. `_waiters` is asyncio.Lock's own queue of blocked acquirers.
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + 5
+            while not gate._waiters and loop.time() < deadline:
+                await asyncio.sleep(0.005)
+            assert gate._waiters, "/halt never queued behind the held gate"
             # While the gate is still held, the halt must already be durable.
             observed["state_during"] = kill_switch.get_state(db_path)
 
