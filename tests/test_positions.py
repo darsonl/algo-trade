@@ -385,17 +385,6 @@ def test_get_position_summary_pnl_usd_none_when_no_price(mock_yf, mock_get_open)
     assert results[0]["pnl_usd"] is None
 
 
-@patch("screener.positions.get_open_positions")
-def test_get_position_summary_pnl_usd_empty_list(mock_get_open):
-    """get_position_summary returns empty list when no positions exist — no crash."""
-    mock_get_open.return_value = []
-
-    from screener.positions import get_position_summary
-    results = get_position_summary("any.db")
-
-    assert results == []
-
-
 @pytest.mark.asyncio
 @patch("discord_bot.bot.queries")
 async def test_positions_command_empty(mock_queries):

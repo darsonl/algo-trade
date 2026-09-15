@@ -4,8 +4,19 @@ Both gemini tiers are provider 'gemini', so `provider_used` cannot distinguish
 the 500-RPD primary from the 20-RPD fallback. PR #34 removed exactly this
 conflation from quota accounting; the result dict still had it.
 """
+import pytest
+
 from analyst.claude_analyst import _run_with_fallbacks
 from config import Config
+
+
+@pytest.fixture(autouse=True)
+def _no_retry_backoff(monkeypatch):
+    """A failing tier is retried 3 times with real 2 s + 4 s back-off, so the two
+    fallback tests slept 6 s and 12 s -- 18 s, over a third of the whole suite --
+    to prove which MODEL is reported, which the waiting has nothing to do with.
+    Same patch as tests/test_analyze_ticker.py."""
+    monkeypatch.setattr("analyst.claude_analyst.time.sleep", lambda seconds: None)
 
 
 class _Client:
