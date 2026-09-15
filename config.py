@@ -170,6 +170,7 @@ class Config:
     analyst_call_delay_s: float = _env_float("ANALYST_CALL_DELAY_S", "4.0")
 
     alpha_vantage_api_key: str = _env_str("ALPHA_VANTAGE_API_KEY", secret=True)
+    finnhub_api_key: str = _env_str("FINNHUB_API_KEY", secret=True)
 
     db_path: str = _env_str("DB_PATH", _DEFAULT_DB_PATH)
     log_level: str = _env_str("LOG_LEVEL", "INFO")
