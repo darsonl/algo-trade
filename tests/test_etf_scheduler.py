@@ -38,19 +38,30 @@ def test_parse_etf_scan_times_zero_pads_single_digit(monkeypatch):
 # Config.etf_scan_hour / etf_scan_minute / etf_scan_times field defaults
 # ---------------------------------------------------------------------------
 
-def test_config_etf_scan_hour_default():
+@pytest.fixture
+def no_etf_env(monkeypatch):
+    """A DEFAULT is only observable with the override absent. Config reads the
+    environment at construction, and `.env` is loaded into it -- so on a machine
+    whose .env sets ETF_SCAN_HOUR (the deployment host, since 2026-09-15) these
+    asserted the host's schedule instead of the code's default, and failed there
+    while passing in CI, which has no .env."""
+    monkeypatch.delenv("ETF_SCAN_HOUR", raising=False)
+    monkeypatch.delenv("ETF_SCAN_MINUTE", raising=False)
+
+
+def test_config_etf_scan_hour_default(no_etf_env):
     """Config().etf_scan_hour defaults to 9."""
     cfg = Config()
     assert cfg.etf_scan_hour == 9
 
 
-def test_config_etf_scan_minute_default():
+def test_config_etf_scan_minute_default(no_etf_env):
     """Config().etf_scan_minute defaults to 30."""
     cfg = Config()
     assert cfg.etf_scan_minute == 30
 
 
-def test_config_etf_scan_times_default():
+def test_config_etf_scan_times_default(no_etf_env):
     """Config().etf_scan_times defaults to ["09:30"]."""
     cfg = Config()
     assert cfg.etf_scan_times == ["09:30"]
