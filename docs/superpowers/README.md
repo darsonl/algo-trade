@@ -34,7 +34,6 @@ Read top-down: newest first.
 | [`HANDOFF-2026-09-13b.md`](HANDOFF-2026-09-13b.md) | §2 the #45–#48 reasoning; §3 the 2026-09-14 rule boundary |
 | [`HANDOFF-2026-09-13.md`](HANDOFF-2026-09-13.md) | §2 **the wedged scheduler** (cited from `CLAUDE.md`); §3 the orphaned-process and `StopAtDurationEnd` defects; §4 the session lifecycle |
 | [`HANDOFF-2026-08-30.md`](HANDOFF-2026-08-30.md) | §1 **the NaN/NULL trap**; §2b **why `cp` is unsafe on this WAL database** |
-| [`HANDOFF-2026-08-28.md`](HANDOFF-2026-08-28.md) | **Nothing — removable.** Its §1 was the correction of the marks-due date; on 2026-09-15 that correction was inlined as a banner in both files that depended on it (08-22c and 08-23), and its durable lesson moved to `CLAUDE.md` (*"a mark-due date must be re-derived from the rows"*). Nothing now points here |
 | [`HANDOFF-2026-08-23.md`](HANDOFF-2026-08-23.md) | What the total-return fix and the gate-provenance change actually **do** |
 | [`HANDOFF-2026-08-22c.md`](HANDOFF-2026-08-22c.md) | The 78% fix's design, and the Codex review that reshaped it |
 | [`HANDOFF-2026-08-22b.md`](HANDOFF-2026-08-22b.md) | The shadow log's build (Tasks 1–8) and the acceptance scan |
@@ -43,14 +42,29 @@ Read top-down: newest first.
 | [`HANDOFF-2026-08-16.md`](HANDOFF-2026-08-16.md) | **Why the design rounds were abandoned**, and the GitHub/uv workflow quirks |
 | [`HANDOFF-2026-08-15.md`](HANDOFF-2026-08-15.md) | **Phase 0 ledger internals**, and (with 08-16) why the design rounds were abandoned |
 
-`HANDOFF-2026-08-14.md` was **removed on 2026-09-15**. It was the only file in the chain its
-successor described as carrying no retained value — *"describes an approach that has since been
-abandoned"* — and nothing cited it but 08-15's supersession line. It remains in git history:
+## Removed
+
+Two handoffs have been deleted. Both remain in git history in full:
 
 ```bash
 git log --all --diff-filter=D -- docs/superpowers/HANDOFF-2026-08-14.md   # find the SHA
 git show <sha>^:docs/superpowers/HANDOFF-2026-08-14.md                    # read it
 ```
+
+- **`HANDOFF-2026-08-14.md`** (removed 2026-09-15) — the only file in the chain its successor
+  described as carrying no retained value: *"describes an approach that has since been abandoned"*.
+  Nothing cited it but 08-15's supersession line.
+- **`HANDOFF-2026-08-28.md`** (removed 2026-09-15) — existed only for its §1, the correction of the
+  marks-due date. That correction is now a **banner at the head of both files that depended on it**,
+  `HANDOFF-2026-08-22c.md` and `HANDOFF-2026-08-23.md`, so each reads correctly standalone; its
+  durable lesson is in `CLAUDE.md` (*a mark-due date must be re-derived from the rows, never copied
+  from the last document that mentioned it*).
+
+**Before deleting a handoff, grep for its informal name too** — `08-28`, `the 08-16 file` — not just
+`HANDOFF-2026-08-28.md`. Two live references to 08-28 sat in `HANDOFF-2026-08-30.md` under the
+informal form and a filename search missed both; they were repointed at `CLAUDE.md` before the
+delete. This is the same failure the deleted file itself documents: a fact quoted forward by name
+rather than re-derived from the source.
 
 ## The other directories
 
