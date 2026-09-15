@@ -20,8 +20,11 @@ from config import Config
 
 @pytest.fixture(autouse=True)
 def _clean_env(monkeypatch):
-    """Config reads env at CONSTRUCTION, so each test gets a clean slate."""
-    for name in ("EXECUTION_MODE", "DRY_RUN", "PAPER_TRADING"):
+    """Config reads env at CONSTRUCTION, so each test gets a clean slate.
+
+    Includes every RETIRED name validate() refuses, because the valid-config test
+    below is the one positive control for all of those refusals."""
+    for name in ("EXECUTION_MODE", "DRY_RUN", "PAPER_TRADING", "MAX_PE_RATIO", "MIN_VOLUME_RATIO"):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -141,6 +144,11 @@ def test_an_unrecognised_mode_fails_startup():
 
 
 def test_a_valid_dry_run_config_passes_validation():
+    """The positive control for EVERY startup refusal of a retired setting --
+    DRY_RUN / PAPER_TRADING here, MAX_PE_RATIO (test_forward_pe_gate.py) and
+    MIN_VOLUME_RATIO (test_no_volume_gate.py). Each of those files kept an
+    identical copy of this test; one is enough, since a refusal that fired on a
+    clean config would fail it whichever file the refusal belongs to."""
     _valid(Config()).validate()  # must not raise
 
 

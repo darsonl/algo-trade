@@ -122,10 +122,6 @@ def test_a_leftover_max_pe_ratio_fails_startup(clean_env):
         _valid(Config()).validate()
 
 
-def test_a_config_without_the_old_name_validates(clean_env):
-    _valid(Config()).validate()
-
-
 # ─── Dividend floor: off by default ─────────────────────────────────────────
 # With a floor, a token payer (META 0.38%) was rejected while a stock paying
 # nothing (APP) skipped the check and passed -- it selected against small

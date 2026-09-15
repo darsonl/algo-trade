@@ -61,7 +61,12 @@ def test_marketable_sell_is_a_day_order():
 #                                    test_missing_symbol_key_raises
 #                                  test_sell_approval_ledger.py::
 #                                    test_no_usable_quote_refuses_the_sell
-#   stale quote blocks it       -> test_quotes.py::test_fetch_rejects_a_stale_quote
+#   stale quote blocks it       -> test_preflight.py::test_stale_quote_is_rejected_during_regular_hours
+#                                  test_after_hours_approval.py::
+#                                    test_a_stale_quote_during_the_session_is_still_refused
+#                                  (guard 4 owns staleness since PR #52; fetch_quote no
+#                                   longer judges it -- test_quotes.py::
+#                                   test_fetch_leaves_staleness_to_guard_4)
 #   zero bid blocks it          -> test_quotes.py::
 #                                    test_non_positive_or_non_numeric_bid_raises,
 #                                    test_sell_limit_refuses_a_non_positive_bid

@@ -97,7 +97,3 @@ def test_a_leftover_min_volume_ratio_fails_startup(clean_env):
     clean_env.setenv("MIN_VOLUME_RATIO", "0.5")
     with pytest.raises(ValueError, match=r"MIN_VOLUME_RATIO.*0\.5"):
         _valid(Config()).validate()
-
-
-def test_a_config_without_it_validates(clean_env):
-    _valid(Config()).validate()
