@@ -1260,6 +1260,15 @@ async def _run_scan_etf_locked(bot: TradingBot, config: Config) -> None:
             if expense_ratio is None:
                 logger.debug("Expense ratio unavailable for %s", ticker)
 
+            # ONE screen price per cohort, stock or ETF. The technical price
+            # (closes.iloc[-1]) is NOT interchangeable with .info: a different
+            # endpoint, fetched minutes later, auto-adjusted where .info is
+            # raw. Computed here, once, because .info is already in hand for
+            # the expense ratio -- and passed as an ARGUMENT to _record_shadow
+            # below, so it is evaluated before that wrapper's try block.
+            # screen_price is total by contract and never raises.
+            _screen_price, _screen_src = screen_price(info)
+
             # Fetch news headlines (per D-01)
             headlines = await asyncio.to_thread(
                 fetch_news_headlines, ticker,
@@ -1281,7 +1290,9 @@ async def _run_scan_etf_locked(bot: TradingBot, config: Config) -> None:
             if analysis is None:
                 _record_shadow(config, ticker, "etf", "analyst",
                                "skipped_quota_exhausted", technicals=tech_data,
-                               headlines=headlines, macro=macro_context)
+                               headlines=headlines, macro=macro_context,
+                               reference_price=_screen_price,
+                               reference_price_source=_screen_src)
                 continue  # all providers quota-exhausted
 
             # ETF uses BUY signal check but no technical filter (no fundamental filter per ETF-02)
@@ -1289,7 +1300,8 @@ async def _run_scan_etf_locked(bot: TradingBot, config: Config) -> None:
                 _record_shadow(config, ticker, "etf", "technical", "rejected_signal",
                                technicals=tech_data, headlines=headlines,
                                macro=macro_context, analysis=analysis,
-                               reference_price=tech_data.get("price"))
+                               reference_price=_screen_price,
+                               reference_price_source=_screen_src)
                 continue
 
             rec_id = queries.create_recommendation(
@@ -1323,7 +1335,8 @@ async def _run_scan_etf_locked(bot: TradingBot, config: Config) -> None:
                            technicals=tech_data, headlines=headlines,
                            macro=macro_context, analysis=analysis,
                            recommendation_id=rec_id,
-                           reference_price=tech_data.get("price"))
+                           reference_price=_screen_price,
+                           reference_price_source=_screen_src)
 
         except sqlite3.OperationalError as exc:
             logger.error("ETF scan aborted — DB schema error: %s", exc)

@@ -356,3 +356,84 @@ async def test_an_info_with_no_usable_price_still_records_the_observation(tmp_pa
                              return_value={"trailingPE": 20.0}),)
     await _run(patches, cfg)
     assert _priced(cfg.db_path)["rejected_fundamental"] == (None, None)
+
+
+# --- the ETF path prices from .info too -------------------------------------
+#
+# The ETF loop already fetches .info for the expense ratio, so the screen price
+# is in hand at every post-.info exit. It used to store tech_data["price"] --
+# the auto-adjusted history close that screen_price's own docstring names as
+# NOT interchangeable with .info -- and recorded no source at all. ETF and
+# stock rows therefore sat on different bases with nothing in the row to say
+# so, which is the provenance-as-outcome confound reference_price_source was
+# added to prevent.
+
+def _etf_post_info_patches(*, signal="BUY", analysis_none=False, info=None):
+    analysis = None if analysis_none else {
+        "signal": signal, "reasoning": "r", "confidence": "high"}
+    if info is None:
+        info = {"netExpenseRatio": 0.0003, "currentPrice": 195.9}
+    return (
+        patch.object(main, "partition_watchlist",
+                     side_effect=lambda t, i=None: ([], ["SPY"])),
+        patch.object(main, "fetch_macro_context", return_value={}),
+        patch.object(main, "alert_stuck_orders", new=AsyncMock()),
+        patch.object(main, "sweep_terminal_recommendations", new=AsyncMock()),
+        patch.object(main, "_drain_ops_outbox", new=AsyncMock()),
+        patch.object(main.outcomes, "mark_due_outcomes", new=AsyncMock(return_value=0)),
+        patch.object(main, "fetch_fundamental_info", return_value=info),
+        patch.object(main, "fetch_news_headlines", return_value=["a headline"]),
+        patch.object(main, "analyze_with_cache", new=AsyncMock(return_value=analysis)),
+        patch.object(main, "fetch_technical_data",
+                     return_value={"price": 999.0, "rsi": 50.0, "ma50": 900.0}),
+    )
+
+
+async def _run_etf(patches, cfg):
+    bot = MagicMock()
+    bot.send_ops_alert = AsyncMock()
+    bot.send_etf_recommendation = AsyncMock(return_value=123)
+    for p in patches:
+        p.start()
+    try:
+        await main.run_scan_etf(bot, cfg)
+    finally:
+        for p in patches:
+            p.stop()
+
+
+@pytest.mark.asyncio
+async def test_an_etf_signal_reject_is_priced_from_INFO_not_the_technicals(tmp_path):
+    """fetch_technical_data returns 999.0 here and .info returns 195.9. The
+    stored price must be 195.9 -- one source for every cohort, stock or ETF.
+    The technical price still exists in technicals_json; it is not this column."""
+    cfg = _config(tmp_path)
+    await _run_etf(_etf_post_info_patches(signal="HOLD"), cfg)
+    assert _priced(cfg.db_path)["rejected_signal"] == (195.9, "info.currentPrice")
+
+
+@pytest.mark.asyncio
+async def test_an_etf_recommendation_is_priced_from_info(tmp_path):
+    cfg = _config(tmp_path)
+    await _run_etf(_etf_post_info_patches(signal="BUY"), cfg)
+    assert _priced(cfg.db_path)["recommended"] == (195.9, "info.currentPrice")
+
+
+@pytest.mark.asyncio
+async def test_an_etf_quota_exhausted_candidate_is_priced(tmp_path):
+    """This exit carried no price at all. Quota exhaustion depends on scan
+    order, day and provider budget, so leaving it unpriced makes markability
+    correlate with HOW the row exited -- a selection effect in the denominator."""
+    cfg = _config(tmp_path)
+    await _run_etf(_etf_post_info_patches(analysis_none=True), cfg)
+    assert _priced(cfg.db_path)["skipped_quota_exhausted"] == (195.9, "info.currentPrice")
+
+
+@pytest.mark.asyncio
+async def test_an_etf_with_no_usable_info_price_still_records_the_observation(tmp_path):
+    """No price is not an error, and it is not a reason to fall back to the
+    technical price: the row must exist, simply unmarkable."""
+    cfg = _config(tmp_path)
+    await _run_etf(
+        _etf_post_info_patches(signal="HOLD", info={"netExpenseRatio": 0.0003}), cfg)
+    assert _priced(cfg.db_path)["rejected_signal"] == (None, None)
