@@ -483,18 +483,25 @@ async def analyze_with_cache(
     return analysis
 
 
-async def alert_schwab_login(bot: TradingBot) -> None:
-    """Post an ops alert when the Schwab login has expired or expires within a day.
+async def alert_schwab_login(bot: TradingBot, config: Config, now=None) -> None:
+    """Post an ops alert when the Schwab login has expired or cannot reach the next scan.
 
     Every scan, on both paths, like `alert_stuck_orders`: a refresh token lasts
     7 days and only a human at the machine can renew it, so the warning has to
     arrive while there is still time to act. Approve needs a Schwab quote even
     in dry run, so this matters in every execution mode.
 
+    The deadline passed in is the NEXT SCAN, because a scan is the only moment
+    this alert can be delivered -- see `schwab_login_warning`. Computing it here
+    rather than inside that function keeps the scheduling knowledge on this side
+    of the boundary, the same way `preflight` is handed `trading_enabled` rather
+    than reading the kill switch itself.
+
     Never raises -- it is reporting, and must not abort the scan it runs in.
     """
     try:
-        message = await asyncio.to_thread(schwab_login_warning)
+        next_scan = next_scheduled_scan_utc(config, now)
+        message = await asyncio.to_thread(schwab_login_warning, None, now, next_scan)
         if message:
             logger.warning("%s", message)
             await bot.send_ops_alert(message)
@@ -540,6 +547,54 @@ def last_scheduled_scan_utc(config: Config, instant=None) -> datetime | None:
         hour, minute = map(int, time_str.split(":"))
         due.append(datetime.combine(session, dtime(hour, minute), tzinfo=tz))
     return max(due).astimezone(timezone.utc)
+
+
+# A fortnight is far longer than any market closure, so failing to find a scan
+# within it means the schedule is empty of usable times, not that the calendar
+# is busy. Bounds the walk instead of trusting the calendar to terminate it.
+_SCAN_SEARCH_DAYS = 14
+
+
+def next_scheduled_scan_utc(config: Config, after=None) -> datetime | None:
+    """The next instant a scan will actually run, in UTC. None if none will.
+
+    The sibling of `last_scheduled_scan_utc`, reading the SAME two lists on the
+    same clock, and walking forward instead of naming one session's last.
+
+    "Actually" is the whole point: a cron trigger fires every calendar day, but
+    `scan_allowed_now()` returns early off the real XNYS calendar, so a Saturday
+    firing is not a scan. Anything that needs to know when the operator can next
+    be reached -- which is what a scan is, for reporting purposes -- has to skip
+    non-sessions, or it will name a Sunday and promise a message nobody sends.
+
+    Returns None rather than raising when the calendar cannot answer; callers
+    treat that as "the deadline is unknown" and fall back on something weaker.
+    """
+    times = list(config.scan_times) + list(config.etf_scan_times)
+    tz = ZoneInfo(config.scan_timezone) if config.scan_timezone else datetime.now().astimezone().tzinfo
+    start = as_utc(after)
+    first_session = market_session_date(start)
+    for offset in range(_SCAN_SEARCH_DAYS):
+        day = first_session + timedelta(days=offset)
+        runs = sorted(
+            datetime.combine(day, dtime(*map(int, t.split(":"))), tzinfo=tz).astimezone(timezone.utc)
+            for t in times
+        )
+        later = [run for run in runs if run > start]
+        if not later:
+            continue
+        try:
+            if not is_trading_session(later[0]):
+                continue
+        except Exception:
+            # The deadline is a refinement; the warning it refines is not. A
+            # calendar outage must degrade to "unknown" here rather than
+            # propagate into `alert_schwab_login`, whose except would swallow
+            # an EXPIRED alert along with it.
+            logger.warning("Could not read the exchange calendar; the next scan time is unknown")
+            return None
+        return later[0]
+    return None
 
 
 def post_scan_shutdown_at(next_run_times, close_utc, now, window_min) -> datetime | None:
@@ -686,7 +741,7 @@ async def _run_scan_locked(bot: TradingBot, config: Config) -> None:
     # Repeated on every scan: guard 11 blocks this ticker until a human
     # runs /resolve, and an alert nobody repeats is a block nobody sees.
     await alert_stuck_orders(bot, config)
-    await alert_schwab_login(bot)
+    await alert_schwab_login(bot, config)
     # Before anything is screened, not after: a ticker whose order the broker
     # has finished with should be eligible in THIS scan, not the next one.
     try:
@@ -1124,7 +1179,7 @@ async def _run_scan_etf_locked(bot: TradingBot, config: Config) -> None:
     # Repeated on every scan: guard 11 blocks this ticker until a human
     # runs /resolve, and an alert nobody repeats is a block nobody sees.
     await alert_stuck_orders(bot, config)
-    await alert_schwab_login(bot)
+    await alert_schwab_login(bot, config)
     # Before anything is screened, not after: a ticker whose order the broker
     # has finished with should be eligible in THIS scan, not the next one.
     # Both scan paths post recommendations, so both must be able to release a
