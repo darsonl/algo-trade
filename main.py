@@ -613,13 +613,39 @@ def post_scan_shutdown_at(next_run_times, close_utc, now, window_min) -> datetim
 
 
 def schedule_post_scan_shutdown(scheduler, shutdown_fn, when) -> None:
-    """Register (or move) the one-shot exit after the last scan's approval window."""
+    """Register (or move) the one-shot exit after the last scan's approval window.
+
+    `misfire_grace_time=None` means "run however late". APScheduler's default is
+    ONE SECOND, and on 2026-09-17 the host slept from 22:01 to 06:58 -- straight
+    through this job's 22:31 fire time. It was discarded as a misfire rather than
+    run, `bot.close()` was never called, and the process was still up 25 hours
+    later. Arriving at the exit eight hours late is not a stale job; it is still
+    the exit. Scans keep the 1-second default on purpose -- see configure_scheduler.
+    """
     scheduler.add_job(
         shutdown_fn,
         trigger=DateTrigger(run_date=when),
         id="post_scan_shutdown",
         replace_existing=True,
+        misfire_grace_time=None,
     )
+
+
+def scheduler_needs_setup(scheduler) -> bool:
+    """False once the scheduler is running, so a Discord reconnect cannot set it up twice.
+
+    `on_ready` is not a startup hook. discord.py fires it again on every gateway
+    RESUME, and on 2026-09-17 it fired 46 times in one session. Re-running the
+    setup re-added the scan jobs harmlessly (stable IDs, `replace_existing`), but
+    it also appended ANOTHER post-scan listener each time -- `add_listener` has no
+    dedup -- and then raised `SchedulerAlreadyRunningError` from `start()`.
+
+    That raise is the damaging part: it abandoned the rest of `on_ready`,
+    including the approval-window re-arm below the `start()` call, which is
+    exactly the code that recovers a shutdown lost to a sleep. The recovery path
+    was unreachable from the reconnect that needed it.
+    """
+    return not scheduler.running
 
 
 def make_post_scan_listener(jobs_fn, schedule_fn, close_utc, window_min, clock):
@@ -685,12 +711,18 @@ def schedule_session_shutdown(scheduler, shutdown_fn, close_utc) -> None:
     A DateTrigger rather than a cron entry, because the close is not a fixed
     time of day -- see session_close_utc. The bot exits daily and is started
     again by the task, so only today's close is ever needed.
+
+    `misfire_grace_time=None` for the same reason as the post-scan exit: the
+    2026-09-17 sleep swallowed this backstop too (missed by 2:59:07). The bell is
+    what catches a post-scan exit that never armed, so the two being discarded by
+    the same sleep is precisely the case that leaves nothing to stop the process.
     """
     scheduler.add_job(
         shutdown_fn,
         trigger=DateTrigger(run_date=close_utc),
         id="session_shutdown",
         replace_existing=True,
+        misfire_grace_time=None,
     )
 
 
@@ -1433,6 +1465,15 @@ def main() -> None:
             raise RuntimeError(
                 f"Discord channel {config.discord_channel_id} not accessible: {exc}"
             ) from exc
+
+        # The channel check above runs on every reconnect -- it is a live health
+        # check and costs one API call. Everything below runs exactly once.
+        if not scheduler_needs_setup(scheduler):
+            logger.info(
+                "Reconnected to the gateway; the scheduler is already running, "
+                "so its jobs and listener are left exactly as they are."
+            )
+            return
 
         banner = live_execution_banner(config)
         if banner:
