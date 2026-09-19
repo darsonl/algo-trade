@@ -2,7 +2,7 @@
 
 ## Start here
 
-**The newest handoff is the only one with current status: [`HANDOFF-2026-09-17.md`](HANDOFF-2026-09-17.md).**
+**The newest handoff is the only one with current status: [`HANDOFF-2026-09-18.md`](HANDOFF-2026-09-18.md).**
 
 Every other handoff has been superseded *for status* and its "current state" block is stale by
 construction. They are kept because each one is still the reference for specific reasoning that was
@@ -28,7 +28,8 @@ Read top-down: newest first.
 
 | File | Still the reference for |
 |---|---|
-| [`HANDOFF-2026-09-17.md`](HANDOFF-2026-09-17.md) | **CURRENT STATUS.** The 2026-09-17 session verified (§1b passed 10/10 — **#61 confirmed live**); the ETF `info.regularMarketPrice` label and the first use of `_SCREEN_PRICE_FIELDS`' second entry; **`OPS_USER_IDS` set**; the four locks as a chain; **why the Schwab refresh token cannot self-renew** |
+| [`HANDOFF-2026-09-18.md`](HANDOFF-2026-09-18.md) | **CURRENT STATUS.** The 25-hour stuck process: **a slept-through exit discarded by the 1-second misfire default**, and `on_ready` re-running on every gateway RESUME; why the grace change is scoped to the exits and not the scans; **the recovery code sitting behind the line that threw**; the 09-17 exit claim corrected |
+| [`HANDOFF-2026-09-17.md`](HANDOFF-2026-09-17.md) | The 2026-09-17 session verified (§1b passed 10/10 — **#61 confirmed live**); the ETF `info.regularMarketPrice` label and the first use of `_SCREEN_PRICE_FIELDS`' second entry; **`OPS_USER_IDS` set**; the four locks as a chain; **why the Schwab refresh token cannot self-renew** |
 | [`HANDOFF-2026-09-16b.md`](HANDOFF-2026-09-16b.md) | The 2026-09-16 session verified (§1a passed 9/9, the #60 sample start is VALID); **#61 the ETF `reference_price` fix** and its ETF-only rule boundary; the two ETF items deliberately left unbuilt; the corrected 53-line credential baseline |
 | [`HANDOFF-2026-09-16.md`](HANDOFF-2026-09-16.md) | #59 the expiry deadline; #60 the analyst preregistration; the Saturday-row delete; **why the 09-16 §1b check was a precondition** |
 | [`HANDOFF-2026-09-15b.md`](HANDOFF-2026-09-15b.md) | The 2026-09-15 session verified live (all 7 checks); #57 key redaction; #58 news provider chain; **the §1b checklist itself**, which 09-16 points back to rather than restating |
