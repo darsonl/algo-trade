@@ -3,6 +3,7 @@ import asyncio
 import hashlib
 import logging
 import logging.handlers
+import os
 import sqlite3
 import sys
 from datetime import date, datetime, time as dtime, timedelta, timezone
@@ -26,6 +27,7 @@ from market_time import (
 
 from config import Config
 from keep_awake import hold_system_awake
+from process_watchdog import handle_overdue, start_watchdog, watchdog_deadline
 from database.models import get_cursor, initialize_db
 from risk import kill_switch
 from database import queries
@@ -1548,6 +1550,35 @@ def main() -> None:
         )
         logger.info(
             "%s", scheduler_summary("ETF scan", config.etf_scan_times, config.scan_timezone)
+        )
+
+    # Armed HERE and not in on_ready: a process that never reaches on_ready --
+    # the gateway never connects, or the channel check raises -- is exactly as
+    # stuck as one that does, and on_ready has already shown it can abandon its
+    # own tail partway through. The startup guard above has already established
+    # that this is a session, so the close is known.
+    _watchdog_close = session_close_utc()
+    if _watchdog_close is not None:
+        _deadline = watchdog_deadline(
+            _watchdog_close, config.post_scan_window_min, config.watchdog_grace_min
+        )
+        start_watchdog(
+            _deadline,
+            on_overdue=lambda overdue: handle_overdue(
+                overdue,
+                deadline=_deadline,
+                db_path=config.db_path,
+                # NOT bot.send_ops_alert: that is a coroutine on the very loop
+                # we are no longer willing to assume is healthy.
+                request_close=lambda: asyncio.run_coroutine_threadsafe(
+                    bot.close(), bot.loop
+                ),
+                force_exit=lambda: os._exit(1),
+            ),
+        )
+        logger.info(
+            "Watchdog armed: forcing an exit if still running at %s.",
+            _deadline.astimezone().strftime("%Y-%m-%d %H:%M %Z"),
         )
 
     # log_handler=None stops discord.py adding a StreamHandler to the 'discord'

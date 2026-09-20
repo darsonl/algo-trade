@@ -166,6 +166,10 @@ class Config:
     # so its recommendations can be approved while the process that answers the
     # buttons is still alive. Then it exits; see main.make_post_scan_listener.
     post_scan_window_min: int = _env_int("POST_SCAN_WINDOW_MIN", "30")
+    # Slack on top of the close + approval window before the watchdog ends a
+    # process that should already be gone. It absorbs a slow bot.close() and one
+    # watchdog tick, so a healthy shutdown in progress is never cut short.
+    watchdog_grace_min: int = _env_int("WATCHDOG_GRACE_MIN", "15")
     top_sp500_count: int = _env_int("TOP_SP500_COUNT", "50")
     analyst_call_delay_s: float = _env_float("ANALYST_CALL_DELAY_S", "4.0")
 
