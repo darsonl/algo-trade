@@ -2,7 +2,7 @@
 
 ## Start here
 
-**The newest handoff is the only one with current status: [`HANDOFF-2026-09-20.md`](HANDOFF-2026-09-20.md).**
+**The newest handoff is the only one with current status: [`HANDOFF-2026-09-24.md`](HANDOFF-2026-09-24.md).**
 
 Every other handoff has been superseded *for status* and its "current state" block is stale by
 construction. They are kept because each one is still the reference for specific reasoning that was
@@ -28,7 +28,8 @@ Read top-down: newest first.
 
 | File | Still the reference for |
 |---|---|
-| [`HANDOFF-2026-09-20.md`](HANDOFF-2026-09-20.md) | **CURRENT STATUS.** #64 the stuck-process watchdog; **why `IgnoreNew` makes a startup check unreachable** and which log lines actually prove a process started; why the deadman is a daemon thread and not an APScheduler job; **the microsecond defect only a real clock could produce** |
+| [`HANDOFF-2026-09-24.md`](HANDOFF-2026-09-24.md) | **CURRENT STATUS.** #65 the analyst quota undercount: **counting logical tiers while the provider meters requests**, and both SDKs retrying by default underneath tenacity; **why `gemini-3.7-flash` was the clean control**; the cross-program collision no test in either repo could see; **why `skipped_active_recommendation` rows are deliberately unpriced** (censoring vs declining) |
+| [`HANDOFF-2026-09-20.md`](HANDOFF-2026-09-20.md) | #64 the stuck-process watchdog; **why `IgnoreNew` makes a startup check unreachable** and which log lines actually prove a process started; why the deadman is a daemon thread and not an APScheduler job; **the microsecond defect only a real clock could produce** |
 | [`HANDOFF-2026-09-19.md`](HANDOFF-2026-09-19.md) | #62 merged and the Schwab login moved to a weekly Saturday rhythm; **why `creation_timestamp` is the only proof a real login happened**; and a CI watch that reported silence because its filter could not tell "nothing yet" from "I cannot see" |
 | [`HANDOFF-2026-09-18.md`](HANDOFF-2026-09-18.md) | The 25-hour stuck process: **a slept-through exit discarded by the 1-second misfire default**, and `on_ready` re-running on every gateway RESUME; why the grace change is scoped to the exits and not the scans; **the recovery code sitting behind the line that threw**; the 09-17 exit claim corrected |
 | [`HANDOFF-2026-09-17.md`](HANDOFF-2026-09-17.md) | The 2026-09-17 session verified (§1b passed 10/10 — **#61 confirmed live**); the ETF `info.regularMarketPrice` label and the first use of `_SCREEN_PRICE_FIELDS`' second entry; **`OPS_USER_IDS` set**; the four locks as a chain; **why the Schwab refresh token cannot self-renew** |
