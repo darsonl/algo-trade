@@ -1,5 +1,6 @@
 import pytest
 from unittest.mock import MagicMock, patch
+from analyst import claude_analyst
 from analyst.claude_analyst import analyze_ticker
 from config import Config
 
@@ -87,21 +88,33 @@ def test_on_attempt_called_once_for_successful_primary():
     assert attempts == ["claude"]
 
 
+def _failing_client(exc_message="quota exhausted"):
+    """A client whose every request fails, so tenacity exhausts its attempts."""
+    client = MagicMock()
+    client.messages.create.side_effect = RuntimeError(exc_message)
+    return client
+
+
 def test_on_attempt_counts_failed_primary_and_fallback():
-    """A primary call that reaches the provider and fails still burned quota — both attempts count."""
+    """A primary call that reaches the provider and fails still burned quota.
+
+    These drive real CLIENTS rather than patching `_call_api`, because the
+    counter now lives inside it -- a patched `_call_api` counts nothing, which
+    is exactly the blind spot that let the old undercount go unnoticed. Each
+    REQUEST counts, so a primary tenacity retries three times is three units of
+    quota. See tests/test_quota_counts_requests.py.
+    """
     c = _make_config()
     c.analyst_fallback_provider = "github"
     attempts = []
-    with patch(
-        "analyst.claude_analyst._call_api",
-        side_effect=[RuntimeError("quota exhausted"), "SIGNAL: BUY\nREASONING: ok."],
-    ):
+    with patch.object(claude_analyst._call_api.retry, "sleep"):
         result = analyze_ticker(
             "AAPL", {}, [], c,
-            client=MagicMock(), fallback_client=MagicMock(),
+            client=_failing_client(),
+            fallback_client=_make_anthropic_client("SIGNAL: BUY\nREASONING: ok."),
             on_attempt=lambda provider, model: attempts.append(provider),
         )
-    assert attempts == ["claude", "github"]
+    assert attempts == ["claude"] * 3 + ["github"]
     assert result["provider_used"] == "github"
 
 
@@ -110,16 +123,15 @@ def test_on_attempt_counts_all_three_providers_in_chain():
     c.analyst_fallback_provider = "github"
     c.analyst_fallback2_provider = "deepseek"
     attempts = []
-    with patch(
-        "analyst.claude_analyst._call_api",
-        side_effect=[RuntimeError("boom"), RuntimeError("boom"), "SIGNAL: BUY\nREASONING: ok."],
-    ):
+    with patch.object(claude_analyst._call_api.retry, "sleep"):
         result = analyze_ticker(
             "AAPL", {}, [], c,
-            client=MagicMock(), fallback_client=MagicMock(), fallback2_client=MagicMock(),
+            client=_failing_client("boom"),
+            fallback_client=_failing_client("boom"),
+            fallback2_client=_make_anthropic_client("SIGNAL: BUY\nREASONING: ok."),
             on_attempt=lambda provider, model: attempts.append(provider),
         )
-    assert attempts == ["claude", "github", "deepseek"]
+    assert attempts == ["claude"] * 3 + ["github"] * 3 + ["deepseek"]
     assert result["provider_used"] == "deepseek"
 
 

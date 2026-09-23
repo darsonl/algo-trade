@@ -68,6 +68,23 @@ _retry = retry(
     reraise=True,
 )
 
+# TENACITY IS THE ONLY RETRY AUTHORITY ON THIS PATH.
+#
+# Both SDKs retry on their own -- openai and anthropic each default to
+# max_retries=2, i.e. up to 3 requests -- and no constructor here passed the
+# argument. Stacked under `_retry`'s own 3 attempts, one logical call was worth
+# up to 9 requests to the provider, all of them billed against a per-model quota
+# and none of them visible to `analyst_calls`.
+#
+# `_should_retry` cannot bound the SDK layer: it governs tenacity only, and
+# short-circuits solely on a `QuotaFailure`/`PerDay` detail, which the 503
+# "high demand" body this tier actually returns does not carry.
+#
+# Measured 2026-09-23 against the AI Studio dashboard: 50 counted attempts,
+# ~205 real requests. `gemini-3.7-flash` -- which nothing else calls, so it
+# isolates the effect -- showed 23/20 RPD and 7/5 RPM against 7 counted.
+_SDK_MAX_RETRIES = 0
+
 _VALID_SIGNALS = {"BUY", "HOLD", "SKIP", "SELL"}
 _VALID_CONFIDENCE = {"high", "medium", "low"}
 
@@ -128,10 +145,12 @@ def create_analyst_client(config: Config):
     api_key = config.analyst_api_key
 
     if provider == "claude":
-        return anthropic.Anthropic(api_key=api_key or config.anthropic_api_key)
+        return anthropic.Anthropic(api_key=api_key or config.anthropic_api_key,
+                                   max_retries=_SDK_MAX_RETRIES)
 
     base_url = _OPENAI_BASE_URLS.get(provider)  # None → default OpenAI endpoint
-    return openai.OpenAI(api_key=api_key, base_url=base_url)
+    return openai.OpenAI(api_key=api_key, base_url=base_url,
+                         max_retries=_SDK_MAX_RETRIES)
 
 
 def create_fallback_client(config: Config):
@@ -140,7 +159,8 @@ def create_fallback_client(config: Config):
     if not provider or not config.analyst_fallback_api_key:
         return None
     if provider == "claude":
-        return anthropic.Anthropic(api_key=config.analyst_fallback_api_key)
+        return anthropic.Anthropic(api_key=config.analyst_fallback_api_key,
+                                   max_retries=_SDK_MAX_RETRIES)
     base_url = _OPENAI_BASE_URLS.get(provider)
     reason = degenerate_fallback_reason(
         config.analyst_provider,
@@ -151,7 +171,8 @@ def create_fallback_client(config: Config):
     if reason:
         # Once per scan, where the client is built -- not once per ticker.
         logger.warning("Analyst fallback will not help: %s", reason)
-    return openai.OpenAI(api_key=config.analyst_fallback_api_key, base_url=base_url)
+    return openai.OpenAI(api_key=config.analyst_fallback_api_key, base_url=base_url,
+                         max_retries=_SDK_MAX_RETRIES)
 
 
 def create_fallback2_client(config: Config):
@@ -160,9 +181,11 @@ def create_fallback2_client(config: Config):
     if not provider or not config.analyst_fallback2_api_key:
         return None
     if provider == "claude":
-        return anthropic.Anthropic(api_key=config.analyst_fallback2_api_key)
+        return anthropic.Anthropic(api_key=config.analyst_fallback2_api_key,
+                                   max_retries=_SDK_MAX_RETRIES)
     base_url = _OPENAI_BASE_URLS.get(provider)
-    return openai.OpenAI(api_key=config.analyst_fallback2_api_key, base_url=base_url)
+    return openai.OpenAI(api_key=config.analyst_fallback2_api_key, base_url=base_url,
+                         max_retries=_SDK_MAX_RETRIES)
 
 
 def build_prompt(
@@ -343,8 +366,16 @@ def parse_claude_response(text: str) -> dict:
 
 
 @_retry
-def _call_api(client, model: str, prompt: str) -> str:
-    """Make the LLM API call. Only this function is retried, not prompt building or response parsing."""
+def _call_api(client, model: str, prompt: str, on_attempt=None, provider: str = "") -> str:
+    """Make the LLM API call. Only this function is retried, not prompt building or response parsing.
+
+    The quota increment lives HERE, inside the retried body, because a provider
+    meters REQUESTS and this is the only place a request is made. Counting one
+    tier higher counted retries as one call: measured 2026-09-23, 50 counted
+    against 205 real requests to Google, with the fallback tier's 20 RPD gone
+    while the counter read 7. See `tests/test_quota_counts_requests.py`.
+    """
+    _note_attempt(on_attempt, provider, model)
     if hasattr(client, "messages"):
         response = client.messages.create(
             model=model,
@@ -458,8 +489,8 @@ def _run_with_fallbacks(
 
     # --- Primary provider ---
     try:
-        _note_attempt(on_attempt, config.analyst_provider, model)
-        text = _call_api(client, model, prompt)
+        text = _call_api(client, model, prompt,
+                         on_attempt=on_attempt, provider=config.analyst_provider)
         result = parse_claude_response(text)
         return _attribute(result, config.analyst_provider, model, prompt, text)
     except ValueError as exc:
@@ -479,8 +510,9 @@ def _run_with_fallbacks(
 
     # --- First fallback provider ---
     try:
-        _note_attempt(on_attempt, config.analyst_fallback_provider, fallback_model)
-        text = _call_api(fallback_client, fallback_model, prompt)
+        text = _call_api(fallback_client, fallback_model, prompt,
+                         on_attempt=on_attempt,
+                         provider=config.analyst_fallback_provider)
         result = parse_claude_response(text)
         return _attribute(result, config.analyst_fallback_provider,
                           fallback_model, prompt, text)
@@ -500,8 +532,9 @@ def _run_with_fallbacks(
         )
 
     # --- Second fallback provider (failure propagates from here) ---
-    _note_attempt(on_attempt, config.analyst_fallback2_provider, fallback2_model)
-    text = _call_api(fallback2_client, fallback2_model, prompt)
+    text = _call_api(fallback2_client, fallback2_model, prompt,
+                     on_attempt=on_attempt,
+                     provider=config.analyst_fallback2_provider)
     result = parse_claude_response(text)
     return _attribute(result, config.analyst_fallback2_provider,
                       fallback2_model, prompt, text)
