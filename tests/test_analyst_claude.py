@@ -242,7 +242,7 @@ def test_analyze_etf_ticker_calls_build_etf_prompt_not_build_prompt():
     mock_client = MagicMock()
     captured_prompts = []
 
-    def capture_call(client, model, prompt):
+    def capture_call(client, model, prompt, **kwargs):
         captured_prompts.append(prompt)
         return "SIGNAL: HOLD\nREASONING: Neutral momentum, wait for confirmation."
 
@@ -283,7 +283,7 @@ def test_analyze_etf_ticker_uses_fallback_on_primary_failure():
 
     call_count = {"n": 0}
 
-    def api_side_effect(client, model, prompt):
+    def api_side_effect(client, model, prompt, **kwargs):
         call_count["n"] += 1
         if call_count["n"] == 1:
             raise RuntimeError("quota exhausted")
@@ -559,7 +559,7 @@ def test_analyze_ticker_forwards_fundamental_trend_to_build_prompt():
     fundamental_trend = {"pe_direction": "contracting", "eps_trend": None}
     captured_prompts = []
 
-    def capture_call(client, model, prompt):
+    def capture_call(client, model, prompt, **kwargs):
         captured_prompts.append(prompt)
         return "SIGNAL: BUY\nREASONING: Strong trend confirmed.\nCONFIDENCE: high"
 
@@ -621,7 +621,7 @@ def test_analyze_ticker_forwards_earnings_date_to_build_prompt():
     )
     captured_prompts = []
 
-    def capture_call(client, model, prompt):
+    def capture_call(client, model, prompt, **kwargs):
         captured_prompts.append(prompt)
         return "SIGNAL: BUY\nREASONING: Earnings proximity noted.\nCONFIDENCE: medium"
 
@@ -700,7 +700,7 @@ def test_analyze_etf_ticker_uses_fallback2_when_both_primary_and_fallback_fail()
 
     call_count = {"n": 0}
 
-    def api_side_effect(client, model, prompt):
+    def api_side_effect(client, model, prompt, **kwargs):
         call_count["n"] += 1
         if call_count["n"] <= 2:
             raise RuntimeError("provider unavailable")
@@ -744,7 +744,7 @@ def test_analyze_etf_ticker_propagates_when_fallback_fails_and_no_fallback2():
         "macd_histogram": 0.05, "price": 500.0, "ma50": 490.0,
     }
 
-    def always_fail(client, model, prompt):
+    def always_fail(client, model, prompt, **kwargs):
         raise RuntimeError("all providers down")
 
     with patch("analyst.claude_analyst._call_api", side_effect=always_fail):
@@ -835,7 +835,7 @@ def test_analyze_ticker_uses_fallback_on_primary_parse_error():
     config = _make_fallback_config()
     call_count = {"n": 0}
 
-    def api_side_effect(client, model, prompt):
+    def api_side_effect(client, model, prompt, **kwargs):
         call_count["n"] += 1
         if call_count["n"] == 1:
             return "SIGNAL: <BUY|HOLD|SKIP>\nREASONING: template echo"
@@ -857,7 +857,7 @@ def test_analyze_ticker_uses_fallback2_on_fallback_parse_error():
     config = _make_fallback_config()
     call_count = {"n": 0}
 
-    def api_side_effect(client, model, prompt):
+    def api_side_effect(client, model, prompt, **kwargs):
         call_count["n"] += 1
         if call_count["n"] <= 2:
             return "SIGNAL: <BUY|HOLD|SKIP>\nREASONING: template echo"
@@ -894,7 +894,7 @@ def test_analyze_etf_ticker_uses_fallback_on_primary_parse_error():
                  "macd_histogram": 0.05, "price": 450.0, "ma50": 440.0}
     call_count = {"n": 0}
 
-    def api_side_effect(client, model, prompt):
+    def api_side_effect(client, model, prompt, **kwargs):
         call_count["n"] += 1
         if call_count["n"] == 1:
             return "SIGNAL: <BUY|HOLD|SKIP>\nREASONING: template echo"
@@ -919,7 +919,7 @@ def test_analyze_sell_ticker_uses_fallback_on_primary_failure():
     config = _make_fallback_config()
     call_count = {"n": 0}
 
-    def api_side_effect(client, model, prompt):
+    def api_side_effect(client, model, prompt, **kwargs):
         call_count["n"] += 1
         if call_count["n"] == 1:
             raise RuntimeError("quota exhausted")
@@ -942,7 +942,7 @@ def test_analyze_sell_ticker_uses_fallback_on_primary_parse_error():
     config = _make_fallback_config()
     call_count = {"n": 0}
 
-    def api_side_effect(client, model, prompt):
+    def api_side_effect(client, model, prompt, **kwargs):
         call_count["n"] += 1
         if call_count["n"] == 1:
             return "SIGNAL: <SELL|HOLD>\nREASONING: template echo"
@@ -965,7 +965,7 @@ def test_analyze_sell_ticker_uses_fallback2_when_both_primary_and_fallback_fail(
     config = _make_fallback_config()
     call_count = {"n": 0}
 
-    def api_side_effect(client, model, prompt):
+    def api_side_effect(client, model, prompt, **kwargs):
         call_count["n"] += 1
         if call_count["n"] <= 2:
             raise RuntimeError("provider down")
@@ -988,7 +988,7 @@ def test_analyze_sell_ticker_uses_fallback2_on_fallback_parse_error():
     config = _make_fallback_config()
     call_count = {"n": 0}
 
-    def api_side_effect(client, model, prompt):
+    def api_side_effect(client, model, prompt, **kwargs):
         call_count["n"] += 1
         if call_count["n"] <= 2:
             return "SIGNAL: <SELL|HOLD>\nREASONING: template echo"
@@ -1026,7 +1026,7 @@ def test_analyze_ticker_uses_fallback_on_primary_failure():
     config = _make_fallback_config()
     call_count = {"n": 0}
 
-    def api_side_effect(client, model, prompt):
+    def api_side_effect(client, model, prompt, **kwargs):
         call_count["n"] += 1
         if call_count["n"] == 1:
             raise RuntimeError("quota exhausted")
@@ -1048,7 +1048,7 @@ def test_analyze_ticker_uses_fallback2_on_fallback_api_failure():
     config = _make_fallback_config()
     call_count = {"n": 0}
 
-    def api_side_effect(client, model, prompt):
+    def api_side_effect(client, model, prompt, **kwargs):
         call_count["n"] += 1
         if call_count["n"] <= 2:
             raise RuntimeError("down")
@@ -1072,7 +1072,7 @@ def test_analyze_etf_ticker_uses_fallback2_on_fallback_parse_error():
                  "macd_histogram": 0.05, "price": 450.0, "ma50": 440.0}
     call_count = {"n": 0}
 
-    def api_side_effect(client, model, prompt):
+    def api_side_effect(client, model, prompt, **kwargs):
         call_count["n"] += 1
         if call_count["n"] <= 2:
             return "SIGNAL: <BUY|HOLD|SKIP>\nREASONING: template echo"
