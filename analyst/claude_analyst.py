@@ -9,6 +9,7 @@ from config import Config
 from tenacity import retry, retry_if_exception, stop_after_attempt
 from screener.macro import compute_52w_position
 from screener.fundamentals import normalize_dividend_yield
+from analyst.model_breaker import ModelSkipped
 
 logger = logging.getLogger(__name__)
 
@@ -433,6 +434,30 @@ def _note_attempt(on_attempt, provider: str, model: str) -> None:
         )
 
 
+def _ask(breaker, client, model: str, prompt: str, on_attempt, provider: str) -> str:
+    """One tier of the chain, behind the scan's per-model breaker.
+
+    An open breaker raises `ModelSkipped` BEFORE any request, so a skipped
+    model spends no quota and `_note_attempt` never fires for it. Only an
+    exception out of `_call_api` -- a request that failed after its retries --
+    counts toward the streak; the parse happens later, in the caller.
+    """
+    if breaker is not None and breaker.is_open(provider, model):
+        raise ModelSkipped(
+            f"'{provider}'/'{model}' skipped: it failed "
+            f"{breaker.threshold} tickers in a row this scan")
+    try:
+        text = _call_api(client, model, prompt,
+                         on_attempt=on_attempt, provider=provider)
+    except Exception:
+        if breaker is not None:
+            breaker.record_failure(provider, model)
+        raise
+    if breaker is not None:
+        breaker.record_success(provider, model)
+    return text
+
+
 def _attribute(result: dict, provider: str, model: str, prompt: str, text: str) -> dict:
     """Stamp a parsed result with what produced it.
 
@@ -457,6 +482,7 @@ def _run_with_fallbacks(
     ticker: str,
     log_context: str = "",
     on_attempt=None,
+    breaker=None,
 ) -> dict:
     """Run a built prompt through the primary → fallback → fallback2 analyst chain.
 
@@ -481,6 +507,11 @@ def _run_with_fallbacks(
     quota just like successes did. (Tenacity retries inside _call_api still
     count as one attempt; close enough, and _should_retry already stops
     retrying once a daily quota is exhausted.)
+
+    `breaker` is the scan's `ModelBreaker` (None = every tier always asked). A
+    tier whose model has failed K tickers in a row raises `ModelSkipped`
+    without a request and falls through like any other failure; see
+    `analyst/model_breaker.py`.
     """
     model = config.analyst_model or _DEFAULT_MODELS.get(config.analyst_provider, "")
     fallback_model = config.analyst_fallback_model or _DEFAULT_MODELS.get(config.analyst_fallback_provider, "")
@@ -489,8 +520,8 @@ def _run_with_fallbacks(
 
     # --- Primary provider ---
     try:
-        text = _call_api(client, model, prompt,
-                         on_attempt=on_attempt, provider=config.analyst_provider)
+        text = _ask(breaker, client, model, prompt, on_attempt,
+                    config.analyst_provider)
         result = parse_claude_response(text)
         return _attribute(result, config.analyst_provider, model, prompt, text)
     except ValueError as exc:
@@ -510,9 +541,8 @@ def _run_with_fallbacks(
 
     # --- First fallback provider ---
     try:
-        text = _call_api(fallback_client, fallback_model, prompt,
-                         on_attempt=on_attempt,
-                         provider=config.analyst_fallback_provider)
+        text = _ask(breaker, fallback_client, fallback_model, prompt,
+                    on_attempt, config.analyst_fallback_provider)
         result = parse_claude_response(text)
         return _attribute(result, config.analyst_fallback_provider,
                           fallback_model, prompt, text)
@@ -532,9 +562,8 @@ def _run_with_fallbacks(
         )
 
     # --- Second fallback provider (failure propagates from here) ---
-    text = _call_api(fallback2_client, fallback2_model, prompt,
-                     on_attempt=on_attempt,
-                     provider=config.analyst_fallback2_provider)
+    text = _ask(breaker, fallback2_client, fallback2_model, prompt,
+                on_attempt, config.analyst_fallback2_provider)
     result = parse_claude_response(text)
     return _attribute(result, config.analyst_fallback2_provider,
                       fallback2_model, prompt, text)
@@ -552,6 +581,7 @@ def analyze_ticker(
     earnings_date: str | None = None,        # NEW — Phase 16 SIG-06
     fallback2_client=None,
     on_attempt=None,
+    breaker=None,
 ) -> dict:
     """
     Call the configured analyst provider to get a BUY/HOLD/SKIP signal.
@@ -572,6 +602,7 @@ def analyze_ticker(
     return _run_with_fallbacks(
         prompt, config, client, fallback_client, fallback2_client, ticker,
         on_attempt=on_attempt,
+        breaker=breaker,
     )
 
 
@@ -586,6 +617,7 @@ def analyze_etf_ticker(
     macro_context: dict | None = None,
     fallback2_client=None,
     on_attempt=None,
+    breaker=None,
 ) -> dict:
     """Call the analyst for an ETF BUY/HOLD/SKIP signal (per D-01, D-03).
     Returns {"signal": str, "reasoning": str, "provider_used": str}.
@@ -615,6 +647,7 @@ def analyze_etf_ticker(
         prompt, config, client, fallback_client, fallback2_client, ticker,
         log_context="ETF analysis",
         on_attempt=on_attempt,
+        breaker=breaker,
     )
 
 
@@ -701,6 +734,7 @@ def analyze_sell_ticker(
     info: dict | None = None,
     fallback2_client=None,
     on_attempt=None,
+    breaker=None,
 ) -> dict:
     """Call the analyst to get a SELL/HOLD signal for an open position.
 
@@ -725,4 +759,5 @@ def analyze_sell_ticker(
         prompt, config, client, fallback_client, fallback2_client, ticker,
         log_context="sell analysis",
         on_attempt=on_attempt,
+        breaker=breaker,
     )
