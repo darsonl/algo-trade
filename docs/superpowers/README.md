@@ -2,7 +2,7 @@
 
 ## Start here
 
-**The newest handoff is the only one with current status: [`HANDOFF-2026-09-26.md`](HANDOFF-2026-09-26.md).**
+**The newest handoff is the only one with current status: [`HANDOFF-2026-10-01.md`](HANDOFF-2026-10-01.md).**
 
 Every other handoff has been superseded *for status* and its "current state" block is stale by
 construction. They are kept because each one is still the reference for specific reasoning that was
@@ -28,7 +28,8 @@ Read top-down: newest first.
 
 | File | Still the reference for |
 |---|---|
-| [`HANDOFF-2026-09-26.md`](HANDOFF-2026-09-26.md) | **CURRENT STATUS.** #65 verified exact on real sessions; **the 503 hypothesis refuted by the first-request test**; the open per-scan, per-model breaker decision |
+| [`HANDOFF-2026-10-01.md`](HANDOFF-2026-10-01.md) | **CURRENT STATUS.** The per-scan, per-model breaker built and merged (#66), with **the replay that chose K=3**; the Schwab deadline no longer falls on a fixed weekday |
+| [`HANDOFF-2026-09-26.md`](HANDOFF-2026-09-26.md) | #65 verified exact on real sessions; **the 503 hypothesis refuted by the first-request test**; the 09-24/09-25 outage numbers behind the breaker |
 | [`HANDOFF-2026-09-24.md`](HANDOFF-2026-09-24.md) | #65 the analyst quota undercount: **counting logical tiers while the provider meters requests**, and both SDKs retrying by default underneath tenacity; **why `gemini-3.7-flash` was the clean control**; the cross-program collision no test in either repo could see; **why `skipped_active_recommendation` rows are deliberately unpriced** (censoring vs declining) |
 | [`HANDOFF-2026-09-20.md`](HANDOFF-2026-09-20.md) | #64 the stuck-process watchdog; **why `IgnoreNew` makes a startup check unreachable** and which log lines actually prove a process started; why the deadman is a daemon thread and not an APScheduler job; **the microsecond defect only a real clock could produce** |
 | [`HANDOFF-2026-09-19.md`](HANDOFF-2026-09-19.md) | #62 merged and the Schwab login moved to a weekly Saturday rhythm; **why `creation_timestamp` is the only proof a real login happened**; and a CI watch that reported silence because its filter could not tell "nothing yet" from "I cannot see" |
