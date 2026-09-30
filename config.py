@@ -148,6 +148,12 @@ class Config:
     analyst_daily_limit: int = _env_int("ANALYST_DAILY_LIMIT", "450")
     analyst_fallback_daily_limit: int = _env_int("ANALYST_FALLBACK_DAILY_LIMIT", "18")
     analyst_fallback2_daily_limit: int = _env_int("ANALYST_FALLBACK2_DAILY_LIMIT", "18")
+    # Skip a model for the rest of a scan after it fails this many tickers in a
+    # row (0 = never). 3 was replayed against 09-24..09-30: it trips early in
+    # the 09-24 outage and never skips a model that would have answered; 2
+    # would have sent 7 answerable tickers to the paid tier. See
+    # analyst/model_breaker.py.
+    analyst_breaker_threshold: int = _env_int("ANALYST_BREAKER_THRESHOLD", "3")
     etf_max_expense_ratio: float = _env_float("ETF_MAX_EXPENSE_RATIO", "0.005")
 
     max_position_size_usd: float = _env_float("MAX_POSITION_SIZE_USD", "500.0")

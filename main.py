@@ -37,6 +37,7 @@ from screener.fundamentals import evaluate_fundamentals, fetch_fundamental_info,
 from screener.technicals import passes_technical_filter, evaluate_technicals, fetch_technical_data
 from analyst.news import fetch_news_headlines
 from analyst.claude_analyst import analyze_ticker, create_analyst_client, create_fallback_client, create_fallback2_client, analyze_sell_ticker, analyze_etf_ticker
+from analyst.model_breaker import ModelBreaker
 from screener.macro import fetch_macro_context
 from screener.exit_signals import check_exit_signals
 from database.order_accounting import DEFINITIVELY_UNFILLED_STATUSES, OPEN_ORDER_STATUSES
@@ -819,6 +820,9 @@ async def _run_scan_locked(bot: TradingBot, config: Config) -> None:
     client = create_analyst_client(config)
     fallback_client = create_fallback_client(config)
     fallback2_client = create_fallback2_client(config)
+    # One per scan: a model that fails K tickers in a row is skipped until the
+    # next scan builds a fresh breaker. See analyst/model_breaker.py.
+    breaker = ModelBreaker(config.analyst_breaker_threshold)
 
     def on_attempt(provider: str, model: str) -> None:
         # Count every attempt against today's quota — calls that reach a
@@ -945,6 +949,7 @@ async def _run_scan_locked(bot: TradingBot, config: Config) -> None:
                     earnings_date=earnings_date_prompt,   # Phase 16 SIG-06
                     fallback2_client=fallback2_client,
                     on_attempt=on_attempt,
+                    breaker=breaker,
                 )
 
             # Technicals BEFORE the analyst, though the gate still decides after
@@ -1143,6 +1148,7 @@ async def _run_scan_locked(bot: TradingBot, config: Config) -> None:
                 info=sell_info,
                 fallback2_client=fallback2_client,
                 on_attempt=on_attempt,
+                breaker=breaker,
             )
 
             if analysis["signal"] != "SELL":
@@ -1252,6 +1258,9 @@ async def _run_scan_etf_locked(bot: TradingBot, config: Config) -> None:
     client = create_analyst_client(config)
     fallback_client = create_fallback_client(config)
     fallback2_client = create_fallback2_client(config)
+    # One per scan: a model that fails K tickers in a row is skipped until the
+    # next scan builds a fresh breaker. See analyst/model_breaker.py.
+    breaker = ModelBreaker(config.analyst_breaker_threshold)
 
     def on_attempt(provider: str, model: str) -> None:
         # Count every attempt against today's quota, per model (see run_scan).
@@ -1317,6 +1326,7 @@ async def _run_scan_etf_locked(bot: TradingBot, config: Config) -> None:
                     macro_context=macro_context,
                     fallback2_client=fallback2_client,
                     on_attempt=on_attempt,
+                    breaker=breaker,
                 )
 
             # Shared analyst-cache + quota path (same helper as the run_scan buy pass)
