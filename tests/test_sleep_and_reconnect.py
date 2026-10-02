@@ -19,8 +19,10 @@ process never called `bot.close()` and was still alive the next evening.
 
 A shutdown is the one job that is always worth running late: arriving at "exit"
 eight hours after the bell is not a stale scan, it is simply the exit. A scan
-keeps the 1-second default on purpose -- nothing re-runs a missed scan, and the
-post-scan listener depends on that.
+keeps a FINITE grace on purpose -- nothing re-runs a missed scan, and the
+post-scan listener depends on that. Finite, not one second: on 2026-10-02 a
++1.363 s NTP clock step made the stock scan 1.4 s late and the 1-second default
+discarded it (`main.SCAN_MISFIRE_GRACE_S`, tests at the foot of this file).
 
 The second failure compounded the first. `on_ready` is not a startup hook:
 discord.py fires it again on every gateway RESUME, 46 times that session. Each
@@ -107,6 +109,63 @@ def test_a_missed_scan_is_still_discarded():
             "a missed scan must not be re-run hours late; only the exits may be"
     finally:
         scheduler.shutdown(wait=False)
+
+
+# --- a scan seconds late is not a missed scan ---
+
+def _scan_due(seconds_ago: float):
+    """A real scheduler holding one scan job, made due `seconds_ago`.
+
+    Returns (scheduler, fired, missed). The job's next run time is moved into
+    the past while the scheduler is paused, so resuming it is exactly a wake-up
+    that arrives late -- the comparison APScheduler makes against the grace.
+    """
+    from apscheduler.events import EVENT_JOB_MISSED
+    from config import Config
+
+    cfg = Config()
+    cfg.scan_times = ["09:35"]
+    fired, missed = threading.Event(), threading.Event()
+    scheduler = BackgroundScheduler()
+    main.configure_scheduler(scheduler, cfg, fired.set)
+    scheduler.add_listener(lambda e: missed.set(), EVENT_JOB_MISSED)
+    scheduler.start(paused=True)
+    scheduler.get_job("scan_0").modify(
+        next_run_time=datetime.now(UTC) - timedelta(seconds=seconds_ago))
+    scheduler.resume()
+    return scheduler, fired, missed
+
+
+def test_a_scan_a_second_and_a_half_late_still_runs():
+    """2026-10-02: Windows' time service stepped the clock +1.363 s at 20:00:19,
+    three seconds after the scheduler had computed its wait for 21:35. The
+    wait is monotonic, so the job woke at a wall-clock 21:35:01.397 -- "missed
+    by 0:00:01.397457" -- and the 1-second default discarded the stock scan.
+    Over the 33 scans logged before it, the worst start latency was 44 ms."""
+    scheduler, fired, missed = _scan_due(1.4)
+    try:
+        assert fired.wait(timeout=5), \
+            "a scan 1.4 s late was discarded as a misfire, not run"
+        assert not missed.is_set()
+    finally:
+        scheduler.shutdown(wait=False)
+
+
+def test_a_scan_slept_through_for_hours_is_still_discarded():
+    """The grace widens jitter tolerance only: a scan due 3 h ago is MISSED,
+    which is what the post-scan listener arms the exit on."""
+    scheduler, fired, missed = _scan_due(3 * 3600)
+    try:
+        assert missed.wait(timeout=5), "the scan was neither run nor missed"
+        assert not fired.is_set(), "a scan was re-run hours late"
+    finally:
+        scheduler.shutdown(wait=False)
+
+
+def test_the_scan_grace_ends_before_the_etf_scan_could_collide():
+    """A late stock scan (09:35 ET) must start well before the 10:00 ET ETF
+    scan; a colliding scan is SKIPPED by the shared scan lock."""
+    assert 60 <= main.SCAN_MISFIRE_GRACE_S <= 15 * 60
 
 
 # --- on_ready is fired again on every reconnect ---
