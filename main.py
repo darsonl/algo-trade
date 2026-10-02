@@ -169,6 +169,17 @@ def scheduler_summary(label: str, times: list[str], timezone: str | None) -> str
     return f"{label} scheduled at {', '.join(times)} ({where})"
 
 
+#: How late a scan may start and still run. APScheduler's default is ONE
+#: second, which on 2026-10-02 discarded the stock scan: Windows' time service
+#: stepped the clock +1.363 s three seconds after the scheduler computed its
+#: (monotonic) wait, so the job woke at a wall-clock 21:35:01.397 -- a
+#: "missed" scan, on a host whose worst start latency over 33 scans was 44 ms.
+#: Finite on purpose: a scan slept through for hours must still be MISSED (the
+#: post-scan exit arms on it, and its prices would be stale), and ten minutes
+#: keeps a late 09:35 ET stock scan clear of the 10:00 ET ETF scan.
+SCAN_MISFIRE_GRACE_S = 10 * 60
+
+
 def configure_scheduler(
     scheduler: BackgroundScheduler,
     config: Config,
@@ -194,6 +205,7 @@ def configure_scheduler(
             trigger=CronTrigger(hour=hour, minute=minute, timezone=tz),
             id=f"{job_id_prefix}_{i}",
             replace_existing=True,
+            misfire_grace_time=SCAN_MISFIRE_GRACE_S,
         )
 
 
@@ -623,7 +635,7 @@ def schedule_post_scan_shutdown(scheduler, shutdown_fn, when) -> None:
     through this job's 22:31 fire time. It was discarded as a misfire rather than
     run, `bot.close()` was never called, and the process was still up 25 hours
     later. Arriving at the exit eight hours late is not a stale job; it is still
-    the exit. Scans keep the 1-second default on purpose -- see configure_scheduler.
+    the exit. Scans get a FINITE grace (`SCAN_MISFIRE_GRACE_S`, 10 min) -- see its comment.
     """
     scheduler.add_job(
         shutdown_fn,
