@@ -2,7 +2,7 @@
 
 ## Start here
 
-**The newest handoff is the only one with current status: [`HANDOFF-2026-10-02.md`](HANDOFF-2026-10-02.md).**
+**The newest handoff is the only one with current status: [`HANDOFF-2026-10-03.md`](HANDOFF-2026-10-03.md).**
 
 Every other handoff has been superseded *for status* and its "current state" block is stale by
 construction. They are kept because each one is still the reference for specific reasoning that was
@@ -28,7 +28,8 @@ Read top-down: newest first.
 
 | File | Still the reference for |
 |---|---|
-| [`HANDOFF-2026-10-02.md`](HANDOFF-2026-10-02.md) | **CURRENT STATUS.** #67 a scan skipped by an NTP clock step: **a monotonic wait vs a wall-clock misfire check**, why the scan grace is finite (10 min), and the 44 ms latency baseline |
+| [`HANDOFF-2026-10-03.md`](HANDOFF-2026-10-03.md) | **CURRENT STATUS.** #68 the task fires Mon–Fri only: **why the Taipei weekday equals the US session weekday**, why holidays stay out of the trigger, and **registering the task XML from a UTF-16 copy** |
+| [`HANDOFF-2026-10-02.md`](HANDOFF-2026-10-02.md) | #67 a scan skipped by an NTP clock step: **a monotonic wait vs a wall-clock misfire check**, why the scan grace is finite (10 min), and the 44 ms latency baseline |
 | [`HANDOFF-2026-10-01.md`](HANDOFF-2026-10-01.md) | The per-scan, per-model breaker built and merged (#66), with **the replay that chose K=3**; the Schwab deadline no longer falls on a fixed weekday |
 | [`HANDOFF-2026-09-26.md`](HANDOFF-2026-09-26.md) | #65 verified exact on real sessions; **the 503 hypothesis refuted by the first-request test**; the 09-24/09-25 outage numbers behind the breaker |
 | [`HANDOFF-2026-09-24.md`](HANDOFF-2026-09-24.md) | #65 the analyst quota undercount: **counting logical tiers while the provider meters requests**, and both SDKs retrying by default underneath tenacity; **why `gemini-3.7-flash` was the clean control**; the cross-program collision no test in either repo could see; **why `skipped_active_recommendation` rows are deliberately unpriced** (censoring vs declining) |
