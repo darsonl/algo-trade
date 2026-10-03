@@ -37,9 +37,16 @@
         <Interval>PT30M</Interval>
         <Duration>PT4H30M</Duration>
       </Repetition>
-      <ScheduleByDay>
-        <DaysInterval>1</DaysInterval>
-      </ScheduleByDay>
+      <ScheduleByWeek>
+        <WeeksInterval>1</WeeksInterval>
+        <DaysOfWeek>
+          <Monday />
+          <Tuesday />
+          <Wednesday />
+          <Thursday />
+          <Friday />
+        </DaysOfWeek>
+      </ScheduleByWeek>
     </CalendarTrigger>
   </Triggers>
   <Actions Context="Author">
