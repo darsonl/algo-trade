@@ -35,7 +35,15 @@ def _parse_retry_delay(exc) -> float | None:
 
 
 def _should_retry(exc) -> bool:
-    """Return False when daily quota is exhausted or retryDelay > 60s — don't retry."""
+    """Return False when daily quota is exhausted or retryDelay > 60s — don't retry.
+
+    Nor after a timeout: the deadline (ANALYST_REQUEST_TIMEOUT_S) has already
+    been paid in full, and retrying triples it for a model that has just shown
+    it is slow. The next tier is a different model. See
+    tests/test_analyst_request_timeout.py.
+    """
+    if isinstance(exc, (openai.APITimeoutError, anthropic.APITimeoutError)):
+        return False
     if exc and hasattr(exc, "response"):
         try:
             data = exc.response.json()
@@ -147,11 +155,13 @@ def create_analyst_client(config: Config):
 
     if provider == "claude":
         return anthropic.Anthropic(api_key=api_key or config.anthropic_api_key,
-                                   max_retries=_SDK_MAX_RETRIES)
+                                   max_retries=_SDK_MAX_RETRIES,
+                                   timeout=config.analyst_request_timeout_s)
 
     base_url = _OPENAI_BASE_URLS.get(provider)  # None → default OpenAI endpoint
     return openai.OpenAI(api_key=api_key, base_url=base_url,
-                         max_retries=_SDK_MAX_RETRIES)
+                         max_retries=_SDK_MAX_RETRIES,
+                         timeout=config.analyst_request_timeout_s)
 
 
 def create_fallback_client(config: Config):
@@ -161,7 +171,8 @@ def create_fallback_client(config: Config):
         return None
     if provider == "claude":
         return anthropic.Anthropic(api_key=config.analyst_fallback_api_key,
-                                   max_retries=_SDK_MAX_RETRIES)
+                                   max_retries=_SDK_MAX_RETRIES,
+                                   timeout=config.analyst_request_timeout_s)
     base_url = _OPENAI_BASE_URLS.get(provider)
     reason = degenerate_fallback_reason(
         config.analyst_provider,
@@ -173,7 +184,8 @@ def create_fallback_client(config: Config):
         # Once per scan, where the client is built -- not once per ticker.
         logger.warning("Analyst fallback will not help: %s", reason)
     return openai.OpenAI(api_key=config.analyst_fallback_api_key, base_url=base_url,
-                         max_retries=_SDK_MAX_RETRIES)
+                         max_retries=_SDK_MAX_RETRIES,
+                         timeout=config.analyst_request_timeout_s)
 
 
 def create_fallback2_client(config: Config):
@@ -183,10 +195,12 @@ def create_fallback2_client(config: Config):
         return None
     if provider == "claude":
         return anthropic.Anthropic(api_key=config.analyst_fallback2_api_key,
-                                   max_retries=_SDK_MAX_RETRIES)
+                                   max_retries=_SDK_MAX_RETRIES,
+                                   timeout=config.analyst_request_timeout_s)
     base_url = _OPENAI_BASE_URLS.get(provider)
     return openai.OpenAI(api_key=config.analyst_fallback2_api_key, base_url=base_url,
-                         max_retries=_SDK_MAX_RETRIES)
+                         max_retries=_SDK_MAX_RETRIES,
+                         timeout=config.analyst_request_timeout_s)
 
 
 def build_prompt(
