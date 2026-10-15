@@ -154,6 +154,11 @@ class Config:
     # would have sent 7 answerable tickers to the paid tier. See
     # analyst/model_breaker.py.
     analyst_breaker_threshold: int = _env_int("ANALYST_BREAKER_THRESHOLD", "3")
+    # Deadline per analyst REQUEST. Unset, both SDKs wait 600 s: on 2026-10-12
+    # Gemini answered 200 OK in 60-124 s per call, the stock scan overran the
+    # 22:00 ETF slot and the ETF scan was skipped. A timed-out request is not
+    # retried (see _should_retry); it falls through to the next tier.
+    analyst_request_timeout_s: float = _env_float("ANALYST_REQUEST_TIMEOUT_S", "60.0")
     etf_max_expense_ratio: float = _env_float("ETF_MAX_EXPENSE_RATIO", "0.005")
 
     max_position_size_usd: float = _env_float("MAX_POSITION_SIZE_USD", "500.0")
@@ -251,10 +256,19 @@ class Config:
                 f"{os.environ['MIN_VOLUME_RATIO']}; delete the line from .env."
             )
 
+    def _validate_analyst_timeout(self):
+        # 0 cannot mean "off": the SDKs read a falsy timeout as NO deadline,
+        # strictly worse than the 600 s default this setting replaces.
+        if not self.analyst_request_timeout_s > 0:
+            raise ValueError(
+                "ANALYST_REQUEST_TIMEOUT_S must be a positive number of seconds, "
+                f"got {self.analyst_request_timeout_s!r}")
+
     def validate(self):
         """Call this at startup (in main.py) to fail fast if credentials are missing."""
         self._validate_execution_mode()
         self._validate_renamed_thresholds()
+        self._validate_analyst_timeout()
         if not self.schwab_app_key:
             raise ValueError("SCHWAB_APP_KEY is required in .env")
         if not self.schwab_app_secret:
